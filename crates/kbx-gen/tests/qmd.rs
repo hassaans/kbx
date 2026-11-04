@@ -198,7 +198,7 @@ fn arguments_are_query_json_limit_collections_and_one_line_of_text() {
     let vault = Vault::new();
     let log = vault.dir.path().join("args");
     let script = format!(
-        "for a in \"$@\"; do echo \"$a\" >> '{}'; done; echo '[]'",
+        "for a in \"$@\"; do printf '%s\\n' \"$a\" >> '{}'; done; echo '[]'",
         log.display()
     );
     let query = Query::Section {
