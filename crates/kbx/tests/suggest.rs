@@ -61,7 +61,8 @@ fn with_fake_qmd(vault: &Fixture) {
         "qmd://operations/{}-cookie-lifetime.md",
         id(13).to_lowercase()
     );
-    let answer = vault.root().join(".kbx/qmd-answer.json");
+    // In parts: batch's `type` can't read a path with a `/` in it.
+    let answer = vault.root().join(".kbx").join("qmd-answer.json");
     let json = format!("[{{\"score\":0.75,\"file\":\"{handle}\",\"line\":7}}]");
     fs::write(&answer, json).unwrap();
     // By full path: the fake `PATH` holds nothing else.

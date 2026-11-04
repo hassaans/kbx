@@ -203,7 +203,7 @@ fn file_uri(path: &Path) -> String {
     }
 }
 
-/// A Windows path with `/` separators and without the `\\\\?\\` prefix that
+/// A Windows path with `/` separators and without the `\\?\` prefix that
 /// `canonicalize` adds, which means nothing in a URI.
 fn forward_slashes(path: &str) -> String {
     let plain = match path.strip_prefix(r"\\?\UNC\") {
