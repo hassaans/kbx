@@ -113,6 +113,7 @@ mod tests {
     struct Recorder {
         id: JudgeId,
         availability: Availability,
+        probe_usd: f64,
         pairs: Arc<Mutex<Vec<CandidateView>>>,
     }
 
@@ -121,8 +122,15 @@ mod tests {
             Recorder {
                 id,
                 availability,
+                probe_usd: 0.0,
                 pairs: Arc::default(),
             }
+        }
+
+        /// Makes checking on it a paid call.
+        fn priced(mut self, probe_usd: f64) -> Recorder {
+            self.probe_usd = probe_usd;
+            self
         }
 
         fn boxed(&self) -> Box<dyn Judge> {
@@ -154,6 +162,14 @@ mod tests {
 
         async fn available(&self) -> Availability {
             self.availability
+        }
+
+        fn probe_quote(&self) -> f64 {
+            self.probe_usd
+        }
+
+        fn probe_spend(&self) -> f64 {
+            self.probe_usd
         }
 
         async fn judge(
@@ -217,6 +233,17 @@ mod tests {
             general: &[&Recorder],
             pinned: &[&Recorder],
         ) -> Routes {
+            self.route_within(None, pins, pairs, general, pinned).await
+        }
+
+        async fn route_within(
+            &self,
+            budget_usd: Option<f64>,
+            pins: &[(&str, &str)],
+            pairs: &[(&str, &str)],
+            general: &[&Recorder],
+            pinned: &[&Recorder],
+        ) -> Routes {
             let overrides = pins
                 .iter()
                 .map(|(folder, id)| (folder.to_string(), id.to_string()))
@@ -229,7 +256,7 @@ mod tests {
                 &overrides,
                 boxed(general),
                 boxed(pinned),
-                None,
+                budget_usd,
             )
             .await
             .unwrap()
@@ -355,15 +382,58 @@ mod tests {
 
     #[tokio::test]
     async fn a_scope_pinned_to_no_backend_is_shown_to_none() {
-        let vault = Vault::new();
         let claude = ready(JudgeId::ClaudeCli);
         for name in ["none", "olama"] {
+            // A vault each, or the second pass would find the first's verdict.
+            let vault = Vault::new();
             let routes = vault
                 .route(&[("legal", name)], &PAIRS, &[&claude], &[])
                 .await;
             vault.judge(&routes).await;
         }
         assert_eq!(claude.cids(), ["ab", "ab"]);
+    }
+
+    #[tokio::test]
+    async fn a_pinned_backend_the_budget_cannot_probe_waits() {
+        let vault = Vault::new();
+        let claude = ready(JudgeId::ClaudeCli).priced(0.01);
+        let codex = ready(JudgeId::CodexCli).priced(0.01);
+        let routes = vault
+            .route_within(
+                Some(0.015),
+                &[("legal", "codex-cli")],
+                &PAIRS,
+                &[&claude],
+                &[&codex],
+            )
+            .await;
+
+        assert!(routes.halted);
+        assert_eq!(routes.probes_usd, 0.01);
+        let judges: Vec<JudgeId> = routes.assignments.iter().map(|a| a.judge.id()).collect();
+        assert_eq!(judges, [JudgeId::ClaudeCli]);
+    }
+
+    #[tokio::test]
+    async fn a_free_pinned_backend_runs_when_the_budget_stops_a_paid_one() {
+        let vault = Vault::new();
+        let claude = ready(JudgeId::ClaudeCli).priced(0.01);
+        let ollama = ready(JudgeId::Ollama);
+        let routes = vault
+            .route_within(
+                Some(0.0),
+                &[("legal", "ollama")],
+                &PAIRS,
+                &[&claude],
+                &[&ollama],
+            )
+            .await;
+
+        assert!(routes.halted);
+        assert_eq!(routes.probes_usd, 0.0);
+        let judges: Vec<JudgeId> = routes.assignments.iter().map(|a| a.judge.id()).collect();
+        assert_eq!(judges, [JudgeId::Ollama]);
     }
 
     #[tokio::test]

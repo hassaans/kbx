@@ -177,17 +177,15 @@ fn stage(
     })
 }
 
+type Backends = Vec<Box<dyn Backend>>;
+
 /// The backends `choice` allows, best first, those folders are pinned to, and
 /// the one it names if it does.
 fn eligible(
     choice: Judge,
     config: &JudgeConfig,
     project: &Project,
-) -> (
-    Vec<Box<dyn Backend>>,
-    Vec<Box<dyn Backend>>,
-    Option<JudgeId>,
-) {
+) -> (Backends, Backends, Option<JudgeId>) {
     let vault = Some(project.vault.as_path());
     let named = match choice {
         Judge::None => return (Vec::new(), Vec::new(), None),
@@ -240,8 +238,11 @@ fn judge(
                 plan.budget_usd,
             )
             .await?;
-            // A CLI that was never installed is no surprise, and `auto` is the default.
-            let worth_saying = |p: &&(JudgeId, Availability)| p.1 != Availability::NotInstalled;
+            // A backend that was never installed is no surprise, and `auto` is the
+            // default, unless a folder is waiting for it.
+            let pinned_to = |id: JudgeId| config.overrides.values().any(|name| name == id.as_str());
+            let worth_saying =
+                |p: &&(JudgeId, Availability)| p.1 != Availability::NotInstalled || pinned_to(p.0);
             for (id, availability) in routes.passed_over.iter().filter(worth_saying) {
                 eprintln!("warning: {id} skipped: {availability}");
             }
@@ -338,7 +339,6 @@ fn print_tally(id: JudgeId, model: &str, tally: &Tally, reported: f64, budget_us
         tally.accepted, tally.rejected, tally.unsure, tally.unjudged, tally.errored, tally.cached
     );
     let cost = tally.cost_usd.map(|cost| cost - reported);
-    let cost = cost.filter(|cost| *cost > 0.0);
     let cost = cost.map_or(String::new(), |cost| format!("${cost:.4}, "));
     println!("  {cost}{} cached tokens", tally.cached_tokens);
     if let (true, Some(budget)) = (tally.halted, budget_usd) {

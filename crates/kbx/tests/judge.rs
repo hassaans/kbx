@@ -1374,6 +1374,23 @@ mod cost_controls {
     }
 
     #[test]
+    fn one_budget_covers_every_backend_in_the_run() {
+        let vault = indexed();
+        logged_in_codex(&vault.path);
+        // Over the limit in one call, which leaves nothing for codex.
+        answering_claude(&vault.path, 0.2);
+        pin(&vault, "operations", "codex-cli");
+        let mut args = vec!["suggest", "--judge", "auto", "--budget-usd", "0.10"];
+        args.extend(WIDE);
+        let out = vault.ok(&args);
+
+        assert_eq!(batches(&vault.path), 1);
+        assert!(out.contains("judged by codex-cli"), "{out}");
+        let steps = calls(&vault.path, "codex");
+        assert!(!steps.iter().any(|step| step == "batch"), "{steps:?}");
+    }
+
+    #[test]
     fn a_budget_too_small_for_the_first_batch_spends_nothing() {
         let vault = indexed();
         answering_claude(&vault.path, 0.06);

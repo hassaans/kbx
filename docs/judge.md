@@ -1,9 +1,9 @@
 # Judging and what it costs
 
 `kbx suggest` judges candidates with the first ready backend in `judge.order`.
-That sends excerpts of your notes to the logged-in `claude` or `codex` CLI. Use
-`--judge none` to stop at the candidates, and `[judge.overrides]` to keep a
-folder from a backend. `kbx watch --suggest` never judges.
+That sends excerpts of your notes to the logged-in `claude` or `codex` CLI, or
+failing those to a local `ollama` or `llama-server`. Use `--judge none` to stop
+at the candidates, and `[judge.overrides]` to keep a folder from a backend. `kbx watch --suggest` never judges.
 
 ## Batches
 
@@ -44,7 +44,9 @@ A failed call that still cost money counts against the budget. Its cost reaches
 
 `--budget-usd X` stops before the next call would take this run past `X`, and
 prints what was spent. The limit is per run: run again to carry on, and pairs
-already judged cost nothing.
+already judged cost nothing. A run with folders pinned to other backends has one
+limit, not one each: each backend starts from what the last one spent, and a
+free local backend still runs once the paid ones have stopped.
 
 The once-a-day login probe is a paid call too. It counts towards the spend and
 isn't made if the budget can't cover it. Its cost isn't in `verdicts`.
