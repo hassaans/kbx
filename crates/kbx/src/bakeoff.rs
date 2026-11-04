@@ -16,9 +16,11 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use kbx_core::{
-    Graph, IndexState, JUDGE_ERROR, NONE, Ontology, Project, cid, index_state, ordered,
+    Graph, IndexState, JUDGE_ERROR, NONE, Ontology, Project, cid, index_state, ordered, section_cid,
 };
-use kbx_gen::{Budget, Proposal, QmdSearch, Run, Scope, generators, store, suggest};
+use kbx_gen::{
+    Budget, Proposal, QmdSearch, Run, Scope, generators, place_sections, store, suggest,
+};
 use kbx_judge::{
     CandidateView, Judge, JudgeContext, JudgeId, NoteView, Plan, backend, backend_with_model,
     first_ready, judge_all, pending, views,
@@ -99,15 +101,35 @@ struct Pair {
     dst_type: Option<String>,
     src_excerpt: Option<String>,
     dst_excerpt: Option<String>,
+    /// The section at each end, under `write.section_anchors`. A note-level
+    /// pair has neither key, as in `kbx review --json`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    src_section: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dst_section: Option<String>,
+}
+
+impl Pair {
+    /// The section keys, unless `anchors` is off: then a file written with it
+    /// on still means note-level pairs, as everything else in the vault does.
+    fn sections(&self, anchors: bool) -> (Option<String>, Option<String>) {
+        match anchors {
+            true => (self.src_section.clone(), self.dst_section.clone()),
+            false => (None, None),
+        }
+    }
 }
 
 /// What a person decided about a pair.
 #[derive(Debug, Clone, PartialEq)]
 struct Label {
+    /// The candidate's, so it covers the sections if the pair has any.
     cid: String,
     /// Lower id first: a person's direction would hint at the decision.
     src: String,
     dst: String,
+    src_section: Option<String>,
+    dst_section: Option<String>,
     accepted: bool,
     /// The relation accepted, under its forward name.
     rel: Option<String>,
@@ -122,8 +144,8 @@ struct Labels {
     undecided: usize,
 }
 
-fn read_labels(text: &str, ontology: &Ontology) -> Result<Labels, Box<dyn Error>> {
-    // A pair can have a row per relation, and the last word stands, even if
+fn read_labels(text: &str, ontology: &Ontology, anchors: bool) -> Result<Labels, Box<dyn Error>> {
+    // A pair of notes can have a row per relation, and the last word stands, even if
     // that's to put it off. On a tie an accept wins, as only that writes a link.
     let mut latest: BTreeMap<String, (Option<i64>, u8, Option<Label>)> = BTreeMap::new();
     for (index, line) in text.lines().enumerate() {
@@ -153,19 +175,28 @@ fn read_labels(text: &str, ontology: &Ontology) -> Result<Labels, Box<dyn Error>
             }
             None => None,
         };
+        let (first, second) = row.sections(anchors);
+        let judged = section_cid(&row.src, &row.dst, first.as_deref(), second.as_deref());
+        // Each section stays with its note.
+        let (src_section, dst_section) = match row.src <= row.dst {
+            true => (first, second),
+            false => (second, first),
+        };
         let (src, dst) = ordered(&row.src, &row.dst);
-        let cid = cid(&src, &dst);
+        let pair = cid(&src, &dst);
         let label = accepted.map(|accepted| Label {
-            cid: cid.clone(),
+            cid: judged,
             src,
             dst,
+            src_section,
+            dst_section,
             accepted,
             rel: rel.filter(|_| accepted),
         });
-        match latest.get(&cid) {
+        match latest.get(&pair) {
             Some(held) if (held.0, held.1) > (row.decided_at, rank) => {}
             _ => {
-                latest.insert(cid, (row.decided_at, rank, label));
+                latest.insert(pair, (row.decided_at, rank, label));
             }
         }
     }
@@ -458,6 +489,8 @@ fn proposal(label: &Label) -> Proposal {
         generators: Vec::new(),
         features: Default::default(),
         score: 0.0,
+        src_section: label.src_section.clone(),
+        dst_section: label.dst_section.clone(),
     }
 }
 
@@ -467,7 +500,8 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     let (yaml, ontology) = read_ontology(&project)?;
     let graph = open_index(&project, &yaml)?;
 
-    let labels = read_labels(&read_file(&options.labels)?, &ontology)?;
+    let anchors = project.config.write.section_anchors;
+    let labels = read_labels(&read_file(&options.labels)?, &ontology, anchors)?;
     if labels.pairs.is_empty() {
         return Err(format!("{} has no decisions", options.labels.display()).into());
     }
@@ -633,6 +667,8 @@ impl Choice {
             src: self.proposal.src,
             dst: self.proposal.dst,
             cid: self.proposal.cid,
+            src_section: self.proposal.src_section,
+            dst_section: self.proposal.dst_section,
             generators: found_by.filter(|name| name != RE_RANKER).collect(),
             score: Some(self.proposal.score),
             ..Pair::default()
@@ -703,7 +739,10 @@ pub fn prepare(options: Preparing) -> Result<ExitCode, Box<dyn Error>> {
         per_note: usize::MAX,
         per_run: usize::MAX,
     };
-    let run = suggest(&graph, &chosen, &scope, everything)?;
+    let mut run = suggest(&graph, &chosen, &scope, everything)?;
+    if project.config.write.section_anchors {
+        place_sections(&graph, &project.vault, &mut run)?;
+    }
     for (name, error) in &run.skipped {
         eprintln!("warning: {name} skipped: {error}");
     }
@@ -777,6 +816,7 @@ pub fn prepare(options: Preparing) -> Result<ExitCode, Box<dyn Error>> {
 pub fn enqueue(file: &Path) -> Result<ExitCode, Box<dyn Error>> {
     let project = Project::discover(&env::current_dir()?)?;
     let graph = Graph::open(&project.graph)?;
+    let anchors = project.config.write.section_anchors;
     let mut candidates = Vec::new();
     for (index, line) in read_file(file)?.lines().enumerate() {
         if line.trim().is_empty() {
@@ -784,8 +824,16 @@ pub fn enqueue(file: &Path) -> Result<ExitCode, Box<dyn Error>> {
         }
         let row: Pair =
             serde_json::from_str(line).map_err(|error| format!("line {}: {error}", index + 1))?;
+        let (src_section, dst_section) = row.sections(anchors);
         candidates.push(Proposal {
-            cid: cid(&row.src, &row.dst),
+            cid: section_cid(
+                &row.src,
+                &row.dst,
+                src_section.as_deref(),
+                dst_section.as_deref(),
+            ),
+            src_section,
+            dst_section,
             src: row.src,
             dst: row.dst,
             generators: row.generators,
@@ -828,7 +876,7 @@ mod tests {
 
     fn read(rows: &[&str]) -> Labels {
         let ontology = Ontology::parse(EXAMPLE_ONTOLOGY).unwrap();
-        read_labels(&rows.join("\n"), &ontology).unwrap()
+        read_labels(&rows.join("\n"), &ontology, true).unwrap()
     }
 
     #[test]
@@ -869,8 +917,30 @@ mod tests {
     fn a_relation_outside_the_ontology_is_refused_by_line() {
         let ontology = Ontology::parse(EXAMPLE_ONTOLOGY).unwrap();
         let row = r#"{"src":"a","dst":"b","rel":"likes","decision":"accept"}"#;
-        let error = read_labels(row, &ontology).unwrap_err().to_string();
+        let error = read_labels(row, &ontology, true).unwrap_err().to_string();
         assert!(error.contains("line 1"), "{error}");
+    }
+
+    #[test]
+    fn a_section_stays_with_its_note_when_a_pair_is_turned_round() {
+        let labels = read(&[
+            r#"{"src":"b","dst":"a","rel":"none","decision":"reject","src_section":"in-b"}"#,
+        ]);
+        let label = &labels.pairs[0];
+        assert_eq!((label.src.as_str(), label.dst.as_str()), ("a", "b"));
+        assert_eq!(label.src_section, None);
+        assert_eq!(label.dst_section.as_deref(), Some("in-b"));
+        assert_eq!(label.cid, section_cid("b", "a", Some("in-b"), None));
+    }
+
+    #[test]
+    fn rows_about_other_sections_of_a_pair_are_one_pair() {
+        let labels = read(&[
+            r#"{"src":"a","dst":"b","rel":"none","decision":"reject","src_section":"x","decided_at":1}"#,
+            r#"{"src":"a","dst":"b","rel":"part_of","decision":"accept","src_section":"y","decided_at":2}"#,
+        ]);
+        assert_eq!(labels.pairs.len(), 1);
+        assert_eq!(labels.pairs[0].src_section.as_deref(), Some("y"));
     }
 
     #[test]

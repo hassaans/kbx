@@ -134,6 +134,15 @@ exactly that model, which skips the switch to `qwen3:8b` on low memory.
 - `--doc` has to hold `<!-- bakeoff:begin -->` and `<!-- bakeoff:end -->`. It's
   left alone if no judge answers.
 
+With [`write.section_anchors`](sections.md) off, pairs are note-level, whatever a
+file says. With it on, `--prepare` places sections as `kbx suggest` does: a
+section-level row adds `src_section` and `dst_section`, its `cid` covers them, and
+its excerpts come from those sections. `--enqueue` and a filled-in file keep them,
+so the judges see what the person saw. `kbx export reviews` has no section columns,
+so pairs labelled through the queue are judged at note level: fill in the file
+instead if the sections matter. A person's decision still counts for the pair of
+notes, as strikes do.
+
 Judges are told less than `kbx suggest` tells them, so that nothing gives the
 labels away:
 

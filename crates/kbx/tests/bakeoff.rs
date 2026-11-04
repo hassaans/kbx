@@ -557,6 +557,136 @@ fn a_filled_in_pairs_file_is_a_labels_file() {
     );
 }
 
+mod sections {
+    use super::*;
+
+    const SECTION_TEXT: &str = "Careful load shedding keeps the queue short";
+
+    /// Two notes the alias generator pairs, by a term in one section of the
+    /// second, well past where its excerpt would otherwise start.
+    fn vault(anchors: bool) -> Fixture {
+        let vault = Fixture::new();
+        let a = id(40);
+        let b = id(41);
+        vault.write(
+            &format!("engineering/{a}-shedding.md"),
+            &format!(
+                "---\nid: {a}\ntype: Concept\ntitle: Shedding\n\
+                 aliases: [load shedding]\n---\n\nDropping work on purpose.\n"
+            ),
+        );
+        vault.write(
+            &format!("engineering/{b}-queues.md"),
+            &format!(
+                "---\nid: {b}\ntype: Concept\ntitle: Queues\n---\n\n\
+                 The note opens here.\n\n## Overload\n\n{SECTION_TEXT}.\n"
+            ),
+        );
+        if anchors {
+            let config = vault.root().join("kbx.toml");
+            let text = fs::read_to_string(&config).unwrap();
+            fs::write(config, format!("{text}\n[write]\nsection_anchors = true\n")).unwrap();
+        }
+        vault.ok(&["index"]);
+        vault
+    }
+
+    /// The `--prepare` row for the two notes above.
+    fn row(vault: &Fixture) -> Value {
+        let rows = prepare(vault, &["--generators", "alias_cooccur", "--pairs", "100"]);
+        let ends = [Value::from(id(40)), Value::from(id(41))];
+        let mine = rows
+            .into_iter()
+            .find(|row| ends.contains(&row["src"]) && ends.contains(&row["dst"]));
+        mine.expect("the alias generator pairs the two notes")
+    }
+
+    /// Runs the bake-off on `row`, decided, and returns what the judge was shown.
+    fn judged(vault: &Fixture, row: &Value) -> Value {
+        let mut row = row.clone();
+        row["decision"] = json!("accept");
+        row["rel"] = json!("see_also");
+        let labels = vault.root().join("labels.jsonl");
+        fs::write(&labels, row.to_string()).unwrap();
+        let model = fake_ollama(&["qwen3:14b"]);
+        let doc = doc(vault);
+        let output = vault.kbx_with(
+            &[
+                "bakeoff",
+                "--labels",
+                labels.to_str().unwrap(),
+                "--doc",
+                doc.to_str().unwrap(),
+                "--models",
+                "ollama:qwen3:14b",
+            ],
+            &[("OLLAMA_HOST", &model.url)],
+        );
+        assert!(output.status.success(), "{}", stderr(&output));
+        let text = fs::read_to_string(&doc).unwrap();
+        assert_eq!(cell(&text, "| ollama | qwen3:14b", "Answered"), "1/1");
+        let body: Value = serde_json::from_str(&model.bodies("/api/chat")[0]).unwrap();
+        let batch = body["messages"][1]["content"].as_str().unwrap();
+        let batch: Vec<Value> = serde_json::from_str(batch).unwrap();
+        batch[0].clone()
+    }
+
+    fn queue_of(vault: &Fixture, row: &Value) -> Vec<Value> {
+        let file = vault.root().join("pairs.jsonl");
+        fs::write(&file, row.to_string()).unwrap();
+        vault.ok(&["bakeoff", "--enqueue", file.to_str().unwrap()]);
+        serde_json::from_str(&vault.ok(&["review", "--json"])).unwrap()
+    }
+
+    #[test]
+    fn with_anchors_on_a_pair_keeps_its_section_all_the_way() {
+        let vault = vault(true);
+        let row = row(&vault);
+        let section = |side: &str| row[side].as_str();
+        let (src, dst) = (row["src"].as_str().unwrap(), row["dst"].as_str().unwrap());
+        assert!(section("src_section").is_some() || section("dst_section").is_some());
+        let expected =
+            kbx_core::section_cid(src, dst, section("src_section"), section("dst_section"));
+        assert_eq!(row["cid"], expected);
+        assert_ne!(row["cid"], kbx_core::cid(src, dst));
+        let excerpts = format!("{} {}", row["src_excerpt"], row["dst_excerpt"]);
+        assert!(excerpts.contains(SECTION_TEXT), "{excerpts}");
+
+        let shown = judged(&vault, &row);
+        assert_eq!(shown["cid"], row["cid"]);
+        let shown = format!("{} {}", shown["src"]["excerpt"], shown["dst"]["excerpt"]);
+        assert!(shown.contains(SECTION_TEXT), "{shown}");
+        assert!(!shown.contains("The note opens here"), "{shown}");
+
+        let queue = queue_of(&vault, &row);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0]["cid"], row["cid"]);
+        assert!(queue[0].get("src_anchor").is_some() || queue[0].get("dst_anchor").is_some());
+    }
+
+    #[test]
+    fn with_anchors_off_pairs_are_note_level_whatever_a_file_says() {
+        let vault = vault(false);
+        let mut row = row(&vault);
+        let object = row.as_object().unwrap();
+        assert!(!object.contains_key("src_section"), "{row}");
+        assert!(!object.contains_key("dst_section"), "{row}");
+        let note_level = row["cid"].clone();
+        let (src, dst) = (row["src"].as_str().unwrap(), row["dst"].as_str().unwrap());
+        assert_eq!(note_level, kbx_core::cid(src, dst));
+        let excerpts = format!("{} {}", row["src_excerpt"], row["dst_excerpt"]);
+        assert!(excerpts.contains("The note opens here"), "{excerpts}");
+
+        // A file from a vault that had them on.
+        row["src_section"] = json!("some-section");
+        let shown = judged(&vault, &row);
+        assert_eq!(shown["cid"], note_level);
+        let queue = queue_of(&vault, &row);
+        assert_eq!(queue[0]["cid"], note_level);
+        assert!(queue[0].get("src_anchor").is_none(), "{queue:?}");
+    }
+}
+
 /// The set the owner labels: the reviews format plus what helps a reader, and
 /// nothing that quotes a note.
 #[test]
