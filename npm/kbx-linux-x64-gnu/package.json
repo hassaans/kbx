@@ -1,6 +1,6 @@
 {
   "name": "kbx-linux-x64-gnu",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The kbx binary for Linux x64 with glibc",
   "license": "AGPL-3.0-only",
   "repository": {
