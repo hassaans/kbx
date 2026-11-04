@@ -195,15 +195,37 @@ impl Graph {
 
 /// `path` as a `file:` URI, which SQLite needs for its query parameters.
 fn file_uri(path: &Path) -> String {
-    let path = path.to_string_lossy().replace('\\', "/");
+    let path = path.to_string_lossy();
+    if cfg!(windows) {
+        uri_of(&forward_slashes(&path))
+    } else {
+        uri_of(&path)
+    }
+}
+
+/// A Windows path with `/` separators and without the `\\\\?\\` prefix that
+/// `canonicalize` adds, which means nothing in a URI.
+fn forward_slashes(path: &str) -> String {
+    let plain = match path.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => path.strip_prefix(r"\\?\").unwrap_or(path).to_string(),
+    };
+    plain.replace('\\', "/")
+}
+
+fn uri_of(path: &str) -> String {
     let path = path
         .replace('%', "%25")
         .replace('?', "%3f")
         .replace('#', "%23");
-    // A Windows path starts with its drive, not a slash.
-    match path.starts_with('/') {
-        true => format!("file:{path}"),
-        false => format!("file:/{path}"),
+    let bytes = path.as_bytes();
+    if path.starts_with("//") {
+        // A network share. What follows `file://` would be the authority.
+        format!("file://{path}")
+    } else if bytes.len() > 1 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        format!("file:/{path}")
+    } else {
+        format!("file:{path}")
     }
 }
 
@@ -214,4 +236,27 @@ fn node(row: &Row<'_>, first: usize) -> rusqlite::Result<Node> {
         class: row.get(first + 1)?,
         title: row.get(first + 2)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{forward_slashes, uri_of};
+
+    #[test]
+    fn windows_paths_lose_the_verbatim_prefix() {
+        let uri = |path| uri_of(&forward_slashes(path));
+        assert_eq!(uri(r"\\?\C:\a b\g.sqlite"), "file:/C:/a b/g.sqlite");
+        assert_eq!(uri(r"C:\a\g.sqlite"), "file:/C:/a/g.sqlite");
+        assert_eq!(
+            uri(r"\\?\UNC\host\share\g.sqlite"),
+            "file:////host/share/g.sqlite"
+        );
+    }
+
+    #[test]
+    fn unix_paths_keep_their_form_and_escape_uri_characters() {
+        assert_eq!(uri_of("/a/g.sqlite"), "file:/a/g.sqlite");
+        assert_eq!(uri_of(".kbx/g.sqlite"), "file:.kbx/g.sqlite");
+        assert_eq!(uri_of("/a#b?c%d"), "file:/a%23b%3fc%25d");
+    }
 }

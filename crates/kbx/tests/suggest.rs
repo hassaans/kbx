@@ -71,11 +71,20 @@ fn with_fake_qmd(vault: &Fixture) {
         .tool("qmd", &format!("{print} \"{}\"", answer.display()));
 }
 
+/// Runs kbx, requiring that no generator was skipped.
+fn ok_with_every_generator(vault: &Fixture, args: &[&str]) -> String {
+    let output = vault.kbx(args);
+    let log = stderr(&output);
+    assert!(output.status.success(), "{log}");
+    assert!(!log.contains("skipped"), "{log}");
+    stdout(&output)
+}
+
 #[test]
 fn suggest_stores_each_section_5_case_with_its_provenance() {
     let vault = indexed();
     with_fake_qmd(&vault);
-    let out = vault.ok(&["suggest", "--judge", "none"]);
+    let out = ok_with_every_generator(&vault, &["suggest", "--judge", "none"]);
     let rows = candidates(&vault);
     assert!(out.contains(&format!("{} candidates", rows.len())), "{out}");
 
@@ -185,7 +194,7 @@ fn an_unknown_generator_is_an_error() {
 fn note_limits_the_run_to_pairs_touching_it() {
     let vault = indexed();
     with_fake_qmd(&vault);
-    vault.ok(&["suggest", "--note", &id(12)]);
+    ok_with_every_generator(&vault, &["suggest", "--note", &id(12)]);
     let rows = candidates(&vault);
     let generators = find(&rows, 12, 13).generators.as_array().unwrap();
     assert!(generators.contains(&json!("qmd_knn")), "{generators:?}");

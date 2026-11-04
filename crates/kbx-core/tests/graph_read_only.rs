@@ -87,3 +87,10 @@ fn does_not_create_a_missing_database() {
     assert!(Graph::open_read_only(&path).is_err());
     assert!(!path.exists());
 }
+
+#[test]
+fn handles_a_canonical_path() {
+    let dir = TempDir::new().unwrap();
+    let path = seeded(dir.path()).canonicalize().unwrap();
+    assert_eq!(count(&Graph::open_read_only(&path).unwrap()), 1);
+}
