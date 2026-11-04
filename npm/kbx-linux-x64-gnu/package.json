@@ -1,0 +1,23 @@
+{
+  "name": "kbx-linux-x64-gnu",
+  "version": "0.1.0",
+  "description": "The kbx binary for Linux x64 with glibc",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hassaans/kbx.git",
+    "directory": "npm/kbx-linux-x64-gnu"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "files": [
+    "bin/kbx"
+  ]
+}

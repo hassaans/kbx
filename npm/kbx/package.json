@@ -1,0 +1,27 @@
+{
+  "name": "kbx",
+  "version": "0.1.0",
+  "description": "Turn a markdown vault into a typed knowledge graph",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hassaans/kbx.git",
+    "directory": "npm/kbx"
+  },
+  "bin": {
+    "kbx": "bin/kbx.js"
+  },
+  "files": [
+    "bin/kbx.js"
+  ],
+  "dependencies": {
+    "detect-libc": "2.1.2"
+  },
+  "optionalDependencies": {
+    "kbx-darwin-arm64": "0.1.0",
+    "kbx-darwin-x64": "0.1.0",
+    "kbx-linux-arm64-gnu": "0.1.0",
+    "kbx-linux-x64-gnu": "0.1.0",
+    "kbx-win32-x64-msvc": "0.1.0"
+  }
+}
