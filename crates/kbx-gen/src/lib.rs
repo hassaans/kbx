@@ -22,7 +22,8 @@ pub use alias::AliasCooccur;
 pub use kbx_core::cid;
 pub use knn::QmdKnn;
 pub use pipeline::{
-    Budget, Proposal, Run, UnknownGenerator, estimate_tokens, generators, store, suggest,
+    Budget, EXCERPT_TOKENS, Proposal, Run, UnknownGenerator, estimate_tokens, generators, store,
+    suggest,
 };
 pub use schema::SchemaGap;
 pub use search::{Hit, QmdSearch, Query, Search, SearchError};

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io;
@@ -37,6 +38,51 @@ pub struct Config {
     /// How to reach QMD.
     #[serde(default)]
     pub qmd: Qmd,
+    /// How to judge candidates.
+    #[serde(default)]
+    pub judge: JudgeConfig,
+}
+
+/// The `[judge]` table of `kbx.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct JudgeConfig {
+    /// Backends to try, best first.
+    #[serde(default = "default_judge_order")]
+    pub order: Vec<String>,
+    /// The `claude-cli` backend.
+    #[serde(default)]
+    pub claude: JudgeBackend,
+    /// The `codex-cli` backend.
+    #[serde(default)]
+    pub codex: JudgeBackend,
+    /// Folders pinned to one backend, by path from the vault root. Their notes
+    /// are never shown to another.
+    #[serde(default)]
+    pub overrides: BTreeMap<String, String>,
+}
+
+impl Default for JudgeConfig {
+    fn default() -> JudgeConfig {
+        JudgeConfig {
+            order: default_judge_order(),
+            claude: JudgeBackend::default(),
+            codex: JudgeBackend::default(),
+            overrides: BTreeMap::new(),
+        }
+    }
+}
+
+/// One backend's settings under `[judge]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct JudgeBackend {
+    /// The model to ask for. Unset means the backend's default.
+    pub model: Option<String>,
+}
+
+fn default_judge_order() -> Vec<String> {
+    ["claude-cli", "codex-cli", "ollama", "llama-server"]
+        .map(String::from)
+        .to_vec()
 }
 
 /// The `qmd` key of `kbx.toml`.
@@ -201,7 +247,7 @@ qmd = {{ bin = "qmd", collections = {scopes} }}
 order = ["claude-cli", "codex-cli", "ollama", "llama-server"]
 batch = 20
 claude = {{ model = "haiku" }}
-codex  = {{ model = "gpt-6-luna-fast" }}
+codex  = {{ model = "gpt-6-luna" }}
 ollama = {{ model = "qwen3:14b", host = "http://127.0.0.1:11434" }}
 
 [judge.overrides]

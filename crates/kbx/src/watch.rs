@@ -84,6 +84,8 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
             let options = suggest::Options {
                 note: None,
                 generators: None,
+                // Never on a timer: judging spends money on every save.
+                judge: suggest::Judge::None,
                 dry_run: false,
             };
             if let Err(error) = suggest::run(options) {

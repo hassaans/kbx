@@ -11,14 +11,17 @@ readme = "../../README.md"
 clap = { version = "4.6.7", features = ["derive"] }
 kbx-core = { version = "0.1.0", path = "../kbx-core" }
 kbx-gen = { version = "0.1.0", path = "../kbx-gen" }
+kbx-judge = { version = "0.1.0", path = "../kbx-judge" }
 notify = "8.2.1"
 notify-debouncer-full = "0.7.0"
 serde_json = "1"
 sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
+tokio = { version = "1", features = ["rt"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 
 [dev-dependencies]
 rusqlite = { version = "0.41.1", features = ["bundled"] }
+sha2 = "0.11.1"
 tempfile = "3.27.0"
 toml = "1.2.0"
