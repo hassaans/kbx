@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use kbx_core::Graph;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -167,8 +167,9 @@ pub fn suggest(
                 _ => Map::new(),
             };
             evidence.insert("score".to_string(), candidate.score.into());
-            merged.features.insert(name.to_string(), evidence.into());
             merged.miss *= 1.0 - squash(candidate.score);
+            let aligned = candidate.src == merged.src;
+            merged.add(name, evidence, aligned);
         }
     }
 
@@ -215,6 +216,21 @@ struct Merged {
 }
 
 impl Merged {
+    /// Records what `name` found. If it found the pair both ways, the way that
+    /// matches `src` comes first, with the other under `reverse`.
+    fn add(&mut self, name: &str, evidence: Map<String, Value>, aligned: bool) {
+        let (mut main, reverse) = match self.features.remove(name) {
+            None => (evidence, None),
+            Some(earlier) if aligned => (evidence, Some(earlier)),
+            Some(Value::Object(earlier)) => (earlier, Some(evidence.into())),
+            Some(_) => (evidence, None),
+        };
+        if let Some(reverse) = reverse {
+            main.insert("reverse".to_string(), reverse);
+        }
+        self.features.insert(name.to_string(), main.into());
+    }
+
     fn proposal(self) -> Proposal {
         Proposal {
             cid: cid(&self.src, &self.dst),
@@ -247,21 +263,27 @@ fn rejected(connection: &Connection) -> rusqlite::Result<HashSet<(String, String
 /// Writes a run to `candidates`, in one transaction.
 ///
 /// A run can be limited by note or generator, so rows it didn't find stay. A
-/// pair it did find is replaced, keeping its `created_at`. Rows that have since
-/// been linked or rejected, or whose notes are gone, are deleted.
+/// pair it did find is replaced, keeping its `created_at`. A pair since linked
+/// or rejected, or whose notes are gone, is neither kept nor written.
 pub fn store(g: &Graph, run: &Run) -> Result<(), GenError> {
-    let snapshot = Snapshot::load(g)?;
     let connection = g.connection();
+    // Immediate, so that what's checked here is still true at the commit.
+    let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+    let snapshot = Snapshot::load(g)?;
     let rejected = rejected(connection)?;
-    let tx = connection.unchecked_transaction()?;
+    let eligible = |src: &str, dst: &str| {
+        snapshot.notes.contains_key(src)
+            && snapshot.notes.contains_key(dst)
+            && !snapshot.linked(src, dst)
+            && !rejected.contains(&ordered(src, dst))
+    };
 
     let mut statement = tx.prepare("SELECT cid, src, dst FROM candidates")?;
     let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
     let stored = rows.collect::<rusqlite::Result<Vec<(String, String, String)>>>()?;
     drop(statement);
     for (cid, src, dst) in stored {
-        let gone = !snapshot.notes.contains_key(&src) || !snapshot.notes.contains_key(&dst);
-        if gone || snapshot.linked(&src, &dst) || rejected.contains(&ordered(&src, &dst)) {
+        if !eligible(&src, &dst) {
             tx.execute("DELETE FROM candidates WHERE cid = ?", [cid])?;
         }
     }
@@ -269,7 +291,8 @@ pub fn store(g: &Graph, run: &Run) -> Result<(), GenError> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs() as i64);
-    for candidate in &run.candidates {
+    let fresh = run.candidates.iter().filter(|c| eligible(&c.src, &c.dst));
+    for candidate in fresh {
         let generators = Value::from(candidate.generators.clone()).to_string();
         let features = Value::from(candidate.features.clone()).to_string();
         tx.execute(

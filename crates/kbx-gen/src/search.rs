@@ -132,15 +132,17 @@ impl QmdSearch {
     }
 
     /// A collection may be rooted at a scope, which is how `kbx init` names
-    /// them, so the collection is part of the vault path, or at the vault.
+    /// them, so that its name is part of the vault path. Or it may be rooted
+    /// at the vault, but only a configured one can be taken to be: the same
+    /// path in another collection is another file.
     fn note_at(&self, file: &str) -> Option<&String> {
         let path = file.strip_prefix("qmd://").unwrap_or(file);
         let path = path.split_once('?').map_or(path, |(path, _)| path);
-        let inside = path.split_once('/').map(|(_, inside)| inside);
-        let notes = &self.notes;
-        notes
-            .get(&handle(path))
-            .or_else(|| notes.get(&handle(inside?)))
+        self.notes.get(&handle(path)).or_else(|| {
+            let (collection, inside) = path.split_once('/')?;
+            let configured = self.collections.iter().any(|c| c == collection);
+            configured.then(|| self.notes.get(&handle(inside)))?
+        })
     }
 }
 

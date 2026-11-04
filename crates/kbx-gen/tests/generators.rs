@@ -215,6 +215,7 @@ fn schema_gap_offers_the_notes_in_range_and_in_scope() {
     assert_eq!(from_gap, want.iter().collect());
     let candidate = &pairs[&(id(10), id(8))];
     assert_eq!(candidate.features["relations"], json!(["depends_on"]));
+    assert_eq!(candidate.features["src"], json!(id(10)));
     // Only `…10` has the gap, and it already links the platform.
     assert!(pairs.keys().all(|(src, _)| *src == id(10)));
     assert_no_linked_pairs(&indexed, &pairs);
@@ -260,6 +261,7 @@ fn alias_cooccur_finds_an_alias_in_a_body_without_a_link() {
     let candidate = &pairs[&(id(11), id(6))];
     assert_eq!(candidate.score, 1.0);
     assert_eq!(candidate.features["terms"], json!(["token bucket"]));
+    assert_eq!(candidate.features["src"], json!(id(11)));
     assert_no_linked_pairs(&indexed, &pairs);
 }
 

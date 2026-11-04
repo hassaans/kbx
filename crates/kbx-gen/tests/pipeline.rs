@@ -144,6 +144,74 @@ fn union_merges_a_pair_found_both_ways_and_keeps_the_first_direction() {
     assert!((candidate.score - 0.875).abs() < 1e-9);
 }
 
+/// Proposes `…08` to `…09` and back, each with its own evidence.
+struct Reciprocal {
+    order: [(u32, u32); 2],
+}
+
+impl Generator for Reciprocal {
+    fn name(&self) -> &'static str {
+        "reciprocal"
+    }
+
+    fn run(&self, _: &Graph, _: &Scope<'_>) -> Result<Vec<Candidate>, GenError> {
+        let candidate = |(src, dst): &(u32, u32)| Candidate {
+            src: id(*src),
+            dst: id(*dst),
+            score: f64::from(*src),
+            features: json!({ "src": id(*src) }),
+        };
+        Ok(self.order.iter().map(candidate).collect())
+    }
+}
+
+#[test]
+fn reciprocal_evidence_is_kept_and_stays_with_its_direction() {
+    let setup = Setup::new();
+    for order in [[(8, 9), (9, 8)], [(9, 8), (8, 9)]] {
+        let first = order[0].0;
+        let generators: Vec<Box<dyn Generator>> = vec![Box::new(Reciprocal { order })];
+        let run = suggest(
+            &setup.graph,
+            &generators,
+            &setup.scope(None),
+            Budget::default(),
+        )
+        .unwrap();
+        assert_eq!(run.candidates.len(), 1);
+        let candidate = &run.candidates[0];
+        assert_eq!(candidate.src, id(first));
+        let evidence = &candidate.features["reciprocal"];
+        assert_eq!(evidence["src"], json!(candidate.src));
+        assert_eq!(evidence["reverse"]["src"], json!(candidate.dst));
+    }
+}
+
+#[test]
+fn a_direction_set_by_another_generator_leaves_evidence_saying_its_own() {
+    let setup = Setup::new();
+    let first = Fake {
+        name: "first",
+        pairs: vec![(8, 9, 1.0)],
+    };
+    let second = Reciprocal {
+        order: [(9, 8), (9, 8)],
+    };
+    let generators: Vec<Box<dyn Generator>> = vec![Box::new(first), Box::new(second)];
+    let run = suggest(
+        &setup.graph,
+        &generators,
+        &setup.scope(None),
+        Budget::default(),
+    )
+    .unwrap();
+    assert_eq!(run.candidates[0].src, id(8));
+    assert_eq!(
+        run.candidates[0].features["reciprocal"]["src"],
+        json!(id(9))
+    );
+}
+
 #[test]
 fn linked_and_rejected_pairs_are_dropped_from_either_direction() {
     let setup = Setup::new();
@@ -343,6 +411,50 @@ fn store_prunes_stored_pairs_that_are_now_rejected() {
         Budget::default(),
     )
     .unwrap();
+    store(&setup.graph, &run).unwrap();
+    let left: Vec<_> = rows(&setup.graph).into_iter().map(|row| row.1).collect();
+    assert_eq!(left, [id(12)]);
+}
+
+#[test]
+fn store_refuses_a_pair_rejected_since_the_run() {
+    let setup = Setup::new();
+    let generators = boxed(vec![Fake {
+        name: "fake",
+        pairs: vec![(8, 9, 1.0), (12, 13, 1.0)],
+    }]);
+    let run = suggest(
+        &setup.graph,
+        &generators,
+        &setup.scope(None),
+        Budget::default(),
+    )
+    .unwrap();
+    setup.reject(9, 8);
+    store(&setup.graph, &run).unwrap();
+    let left: Vec<_> = rows(&setup.graph).into_iter().map(|row| row.1).collect();
+    assert_eq!(left, [id(12)]);
+}
+
+#[test]
+fn store_refuses_a_pair_whose_note_has_gone_since_the_run() {
+    let setup = Setup::new();
+    let generators = boxed(vec![Fake {
+        name: "fake",
+        pairs: vec![(8, 9, 1.0), (12, 13, 1.0)],
+    }]);
+    let run = suggest(
+        &setup.graph,
+        &generators,
+        &setup.scope(None),
+        Budget::default(),
+    )
+    .unwrap();
+    setup
+        .graph
+        .connection()
+        .execute("DELETE FROM files WHERE id = ?", [id(9)])
+        .unwrap();
     store(&setup.graph, &run).unwrap();
     let left: Vec<_> = rows(&setup.graph).into_iter().map(|row| row.1).collect();
     assert_eq!(left, [id(12)]);

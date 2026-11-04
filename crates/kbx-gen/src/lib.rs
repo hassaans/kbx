@@ -34,7 +34,9 @@ pub use structure::{AdamicAdar, CommonNeighbors, TwoHopBridge};
 pub trait Generator {
     /// The name used in `--generators` and in the `generators` column.
     fn name(&self) -> &'static str;
-    /// Proposes each pair at most once, and no pair that is already linked.
+    /// Proposes each pair at most once in each direction, and no pair that is
+    /// already linked. A generator whose direction means something says so
+    /// with a `src` in `features`, because the union may keep the other one.
     fn run(&self, g: &Graph, scope: &Scope<'_>) -> Result<Vec<Candidate>, GenError>;
 }
 

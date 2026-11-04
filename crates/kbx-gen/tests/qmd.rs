@@ -82,10 +82,18 @@ fn make_executable(_path: &Path) {
 /// A stand-in that prints `json`, from a file because `echo` treats quotes
 /// differently on each platform.
 fn answering(vault: &Vault, json: &str) -> QmdSearch {
+    answering_in(vault, json, &[])
+}
+
+fn answering_in(vault: &Vault, json: &str, collections: &[&str]) -> QmdSearch {
     let file = vault.dir.path().join("answer.json");
     fs::write(&file, json).unwrap();
     let print = if cfg!(windows) { "type" } else { "cat" };
-    search(vault, &format!("{print} \"{}\"", file.display()), &[])
+    search(
+        vault,
+        &format!("{print} \"{}\"", file.display()),
+        collections,
+    )
 }
 
 fn search(vault: &Vault, script: &str, collections: &[&str]) -> QmdSearch {
@@ -116,11 +124,24 @@ fn a_collection_rooted_at_a_scope_maps_like_one_rooted_at_the_vault() {
     let vault = Vault::new();
     let rooted = format!("qmd://whole-vault/team-x/{}-other.md", ID_B.to_lowercase());
     let json = format!("[{{\"score\":0.5,\"file\":\"{rooted}\",\"line\":5}}]");
-    let hits = answering(&vault, &json)
+    let hits = answering_in(&vault, &json, &["whole-vault"])
         .search(&Query::Text("words"), 20)
         .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].note, ID_B);
+}
+
+#[test]
+fn a_collection_nobody_configured_is_not_taken_for_the_vault() {
+    let vault = Vault::new();
+    let other = format!("qmd://unrelated/team-x/{}-other.md", ID_B.to_lowercase());
+    let json = format!("[{{\"score\":0.5,\"file\":\"{other}\",\"line\":5}}]");
+    for collections in [&[][..], &["team-x"][..]] {
+        let hits = answering_in(&vault, &json, collections)
+            .search(&Query::Text("words"), 20)
+            .unwrap();
+        assert!(hits.is_empty(), "{hits:?}");
+    }
 }
 
 #[test]

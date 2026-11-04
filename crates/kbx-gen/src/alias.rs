@@ -85,7 +85,7 @@ impl Generator for AliasCooccur {
                         src: id.clone(),
                         dst: dst.to_string(),
                         score: f64::from(count),
-                        features: json!({ "terms": terms }),
+                        features: json!({ "src": id, "terms": terms }),
                     });
                 }
             }

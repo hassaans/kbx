@@ -59,7 +59,7 @@ impl Generator for SchemaGap {
             src: src.to_string(),
             dst: dst.to_string(),
             score: SCORE,
-            features: json!({ "relations": relations }),
+            features: json!({ "src": src, "relations": relations }),
         });
         Ok(candidates.collect())
     }
