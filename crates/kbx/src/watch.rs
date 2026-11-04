@@ -142,11 +142,13 @@ impl Timers {
     }
 
     fn next(&self) -> Option<Instant> {
+        // Saves still to be indexed come first: `suggest` reads the index.
+        let suggest_at = self.suggest_at.filter(|_| self.index_at.is_none());
         let timers = [
             self.index_at,
             self.reconcile_at,
             self.recover_at,
-            self.suggest_at,
+            suggest_at,
         ];
         timers.into_iter().flatten().min()
     }
@@ -206,7 +208,8 @@ impl Timers {
     }
 
     fn take_suggest(&mut self) -> bool {
-        let due = self.suggest_at.is_some_and(|at| at <= Instant::now());
+        let waiting = self.index_at.is_some();
+        let due = !waiting && self.suggest_at.is_some_and(|at| at <= Instant::now());
         if due {
             self.suggest_at = None;
         }
@@ -341,6 +344,24 @@ mod tests {
         timers.after_save(start + DEBOUNCE);
         assert!(!timers.take_index(start + DEBOUNCE));
         assert!(timers.take_index(start + DEBOUNCE * 2));
+    }
+
+    #[test]
+    fn suggest_waits_for_the_saves_still_to_be_indexed() {
+        let mut timers = Timers::new(&Options {
+            debounce: DEBOUNCE,
+            reconcile: None,
+            suggest: Some(Duration::ZERO),
+        });
+        timers.after_batch(true);
+
+        let now = Instant::now();
+        timers.after_save(now);
+        assert!(!timers.take_suggest());
+        assert_eq!(timers.next(), Some(now + DEBOUNCE));
+
+        assert!(timers.take_index(now + DEBOUNCE));
+        assert!(timers.take_suggest());
     }
 
     #[test]
