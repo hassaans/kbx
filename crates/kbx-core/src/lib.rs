@@ -23,6 +23,7 @@ pub use config::{
 pub use graph::{Graph, GraphStats, Neighbor, Node};
 pub use index::{
     IndexError, IndexOptions, IndexReport, IndexState, MENTIONS, index_state, index_vault,
+    is_note_path,
 };
 pub use link::Link;
 pub use lint::lint_vault;

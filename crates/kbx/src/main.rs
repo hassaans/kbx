@@ -1,6 +1,8 @@
 mod doctor;
+mod hook;
 mod qmd;
 mod suggest;
+mod watch;
 
 use std::env;
 use std::error::Error;
@@ -8,10 +10,12 @@ use std::fs;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use kbx_core::{
-    Finding, Graph, IndexOptions, Neighbor, Node, Project, Severity, index_vault, init, lint_vault,
+    Finding, Graph, IndexOptions, IndexReport, Neighbor, Node, Project, Severity, index_vault,
+    init, lint_vault,
 };
 use serde_json::json;
 use tracing_subscriber::EnvFilter;
@@ -111,8 +115,40 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Keep the index current: re-index saved notes and lint them.
+    Watch {
+        /// Also run `kbx suggest` once the saves stop.
+        #[arg(long)]
+        suggest: bool,
+        /// Wait this long after a file's last event before indexing it.
+        #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u64).range(1..))]
+        debounce_ms: u64,
+        /// Hash the whole vault this often, for filesystems that drop events.
+        /// 0 turns it off.
+        #[arg(long, default_value_t = 300)]
+        reconcile_secs: u64,
+        /// How long after the last save `--suggest` runs (§8).
+        #[arg(long, default_value_t = 45)]
+        suggest_debounce_secs: u64,
+    },
+    /// Set up checks that run outside kbx.
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
+    },
     /// Check the vault, the index, RAM and qmd, installing qmd if it's missing.
     Doctor,
+}
+
+#[derive(Subcommand)]
+enum HookAction {
+    /// Add a git pre-commit hook that lints staged notes, and print a recipe
+    /// for Obsidian's Shell commands plugin.
+    Install {
+        /// Replace an existing pre-commit hook instead of adding to it.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -146,7 +182,11 @@ fn main() -> ExitCode {
 
     let result = match cli.command {
         Command::Init { ontology } => run_init(ontology),
-        Command::Index { full, paths } => run_index(IndexOptions { full, paths }),
+        Command::Index { full, paths } => run_index(IndexOptions {
+            full,
+            paths,
+            ..IndexOptions::default()
+        }),
         Command::Lint {
             format,
             strict,
@@ -163,6 +203,19 @@ fn main() -> ExitCode {
             generators,
             dry_run,
         }),
+        Command::Watch {
+            suggest,
+            debounce_ms,
+            reconcile_secs,
+            suggest_debounce_secs,
+        } => watch::run(watch::Options {
+            debounce: Duration::from_millis(debounce_ms),
+            reconcile: (reconcile_secs > 0).then(|| Duration::from_secs(reconcile_secs)),
+            suggest: suggest.then(|| Duration::from_secs(suggest_debounce_secs)),
+        }),
+        Command::Hook {
+            action: HookAction::Install { force },
+        } => hook::install(force),
         Command::Doctor => doctor::run(),
     };
     match result {
@@ -197,6 +250,11 @@ fn run_index(options: IndexOptions) -> Result<ExitCode, Box<dyn Error>> {
     let ontology = read_ontology(&project)?;
     let mut graph = Graph::open(&project.graph)?;
     let report = index_vault(&mut graph, &project.vault, &ontology, &options)?;
+    print_index_report(&report);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_index_report(report: &IndexReport) {
     println!(
         "indexed {}, {} unchanged, removed {}, {} skipped, {} failed, {} hidden links",
         report.indexed,
@@ -206,7 +264,6 @@ fn run_index(options: IndexOptions) -> Result<ExitCode, Box<dyn Error>> {
         report.failed,
         report.hidden
     );
-    Ok(ExitCode::SUCCESS)
 }
 
 fn run_lint(
@@ -215,7 +272,16 @@ fn run_lint(
     paths: &[PathBuf],
 ) -> Result<ExitCode, Box<dyn Error>> {
     let project = Project::discover(&env::current_dir()?)?;
-    let ontology = read_ontology(&project)?;
+    lint_project(&project, format, strict, paths)
+}
+
+fn lint_project(
+    project: &Project,
+    format: LintFormat,
+    strict: bool,
+    paths: &[PathBuf],
+) -> Result<ExitCode, Box<dyn Error>> {
+    let ontology = read_ontology(project)?;
     let findings = lint_vault(&project.vault, &ontology, paths)?;
     let severity = |finding: &Finding| match finding.code.severity() {
         Severity::Warning if strict => Severity::Error,

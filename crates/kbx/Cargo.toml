@@ -11,6 +11,8 @@ readme = "../../README.md"
 clap = { version = "4.6.7", features = ["derive"] }
 kbx-core = { version = "0.1.0", path = "../kbx-core" }
 kbx-gen = { version = "0.1.0", path = "../kbx-gen" }
+notify = "8.2.1"
+notify-debouncer-full = "0.7.0"
 serde_json = "1"
 sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
 tracing = "0.1.44"

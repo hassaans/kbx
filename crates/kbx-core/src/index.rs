@@ -35,11 +35,14 @@ pub struct IndexOptions {
     /// Limit the run to these files and folders, relative to the working
     /// directory. Empty means the whole vault.
     pub paths: Vec<PathBuf>,
+    /// Pass over a path that's gone and was never indexed, as a file a watcher
+    /// saw come and go is, instead of failing the run.
+    pub missing_ok: bool,
 }
 
 /// What a run did. A file is counted once among `indexed`, `unchanged`,
 /// `skipped` and `failed`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IndexReport {
     /// Files compiled, because they are new or changed.
     pub indexed: usize,
@@ -53,6 +56,8 @@ pub struct IndexReport {
     pub failed: usize,
     /// Links in the whole index that resolve to nothing (§8).
     pub hidden: usize,
+    /// The paths behind `indexed` and `removed`, from the vault root.
+    pub changed: BTreeSet<String>,
 }
 
 /// Why a run stopped. One bad note never does this: it counts as `failed`.
@@ -145,7 +150,7 @@ pub fn index_vault(
                 on_disk.insert(selected.relative.clone());
             }
             Ok(_) => {}
-            Err(_) if run.knows_under(&selected.relative) => {}
+            Err(_) if options.missing_ok || run.knows_under(&selected.relative) => {}
             Err(_) => return Err(IndexError::NotFound(selected.absolute.clone())),
         }
     }
@@ -165,8 +170,9 @@ pub fn index_vault(
         run.index_file(vault, path)?;
     }
 
+    let dirty = run.dirty;
     let mut report = run.report;
-    if run.dirty || rebuild || meta(&tx, "ontology_hash")?.as_deref() != Some(&ontology_hash) {
+    if dirty || rebuild || meta(&tx, "ontology_hash")?.as_deref() != Some(&ontology_hash) {
         relink(&tx, &ontology)?;
     }
     set_meta(&tx, "ontology_hash", &ontology_hash)?;
@@ -276,7 +282,9 @@ pub(crate) fn walk(vault: &Path, folder: &str, found: &mut BTreeSet<String>) {
     }
 }
 
-fn is_note_path(path: &str) -> bool {
+/// Whether a path from the vault root, with `/` separators, is one the index
+/// reads: a markdown file outside hidden folders.
+pub fn is_note_path(path: &str) -> bool {
     let visible = path.split('/').all(|part| !part.starts_with('.'));
     let extension = path.rsplit_once('.').map(|(_, extension)| extension);
     visible && extension.is_some_and(|e| e.eq_ignore_ascii_case("md"))
@@ -389,6 +397,7 @@ impl<'a> Run<'a> {
         self.tx
             .execute("DELETE FROM links WHERE src = ?", [&file.id])?;
         self.report.removed += 1;
+        self.report.changed.insert(path.to_string());
         self.dirty = true;
         Ok(())
     }
@@ -453,6 +462,7 @@ impl<'a> Run<'a> {
         self.sync_links(&note.id, INLINE, &inline_links(note))?;
 
         self.by_id.insert(note.id.clone(), path.clone());
+        self.report.changed.insert(path.clone());
         self.by_path.insert(
             path,
             Indexed {
