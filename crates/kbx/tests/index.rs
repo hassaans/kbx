@@ -1133,6 +1133,28 @@ fn the_first_path_keeps_an_id_that_two_files_claim() {
 }
 
 #[test]
+fn indexing_only_the_new_path_of_a_renamed_note_moves_its_rows() {
+    let vault = Vault::initialised();
+    vault.write("a/note.md", &note(1, "One", "", "x"));
+    vault.ok(&["index"]);
+    fs::rename(vault.path("a/note.md"), vault.path("b.md")).unwrap();
+
+    let output = vault.kbx(&["index", "b.md"]);
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty(), "the old path is no conflict");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("indexed 1,"), "{stdout}");
+    assert!(stdout.contains("removed 1,"), "{stdout}");
+    let path: String = vault
+        .db()
+        .query_row("SELECT path FROM files", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(path, "b.md");
+    assert_eq!(vault.count("files"), 1);
+}
+
+#[test]
 fn a_changed_id_moves_the_rows_to_the_new_id() {
     let vault = Vault::initialised();
     vault.write(

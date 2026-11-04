@@ -331,7 +331,7 @@ impl<'a> Run<'a> {
             Ok(note) => {
                 let mtime = fs::metadata(&full).and_then(|metadata| metadata.modified());
                 let mtime = mtime.map_or(0, unix_seconds);
-                self.write_note(&note, src, &content_hash, mtime)
+                self.write_note(vault, &note, src, &content_hash, mtime)
             }
             Err(ParseError::NoFrontmatter) => {
                 debug!("{path}: no frontmatter, skipping");
@@ -370,6 +370,7 @@ impl<'a> Run<'a> {
 
     fn write_note(
         &mut self,
+        vault: &Path,
         note: &Note,
         src: &str,
         content_hash: &str,
@@ -380,9 +381,11 @@ impl<'a> Run<'a> {
             self.forget(&path)?;
         }
         // `files.id` is unique. The lowest path keeps an id, wherever a run
-        // starts from, so an incremental run agrees with a rebuild.
+        // starts from, so an incremental run agrees with a rebuild. A holder
+        // that's gone from disk, outside the paths of this run, has no claim.
         if let Some(holder) = self.by_id.get(&note.id).filter(|h| **h != path).cloned() {
-            if holder < path {
+            let on_disk = vault.join(&holder).is_file();
+            if on_disk && holder < path {
                 warn!(
                     "{path}: id {} is already used by {holder}, skipping",
                     note.id
@@ -390,7 +393,9 @@ impl<'a> Run<'a> {
                 self.report.skipped += 1;
                 return Ok(());
             }
-            warn!("{holder}: id {} is also used by {path}, skipping", note.id);
+            if on_disk {
+                warn!("{holder}: id {} is also used by {path}, skipping", note.id);
+            }
             self.forget(&holder)?;
         }
 
