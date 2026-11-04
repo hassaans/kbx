@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use tempfile::{NamedTempFile, TempDir};
+use tempfile::TempDir;
 
 pub const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/vault");
 
@@ -35,6 +35,7 @@ pub fn copy_dir(from: &Path, to: &Path) {
 #[cfg(unix)]
 pub fn write_executable(path: &Path, text: &str) {
     use std::os::unix::fs::PermissionsExt;
+    use tempfile::NamedTempFile;
 
     let staged = NamedTempFile::new().unwrap();
     fs::write(staged.path(), text).unwrap();

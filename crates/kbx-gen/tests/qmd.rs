@@ -4,11 +4,12 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 
 use kbx_core::{Graph, IndexOptions, index_vault};
 use kbx_gen::{Hit, QmdSearch, Query, Search, SearchError};
-use tempfile::{NamedTempFile, TempDir};
+use tempfile::TempDir;
 
 const ONTOLOGY: &str = include_str!("../../../schema/ontology.example.yaml");
 const ID_A: &str = "01KBX000000000000000000001";
@@ -81,6 +82,7 @@ impl Vault {
 #[cfg(unix)]
 fn write_executable(path: &Path, text: &str) {
     use std::os::unix::fs::PermissionsExt;
+    use tempfile::NamedTempFile;
 
     let staged = NamedTempFile::new().unwrap();
     fs::write(staged.path(), text).unwrap();
