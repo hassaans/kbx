@@ -247,10 +247,25 @@ pub fn sync_stage(g: &Graph, vault: &Path, ontology: &Ontology) -> rusqlite::Res
     };
     let names = Names { resolver, ids };
 
+    // First, while every row is there: a decision takes its row with it, and a
+    // note's last row is what says the candidates at that note can follow it.
+    follow_removals(g, vault)?;
+
     let mut synced = Synced::default();
     let mut decided: HashSet<String> = HashSet::new();
+    let mut ours = HashMap::new();
     for row in rows(g.connection())? {
-        match sync_row(g, vault, ontology, &names, &row) {
+        let outcome = sync_row(g, vault, ontology, &names, &ours, &row);
+        // The index doesn't follow until the run ends, so what this run wrote
+        // would look like someone else's edit to the next line on that note.
+        if outcome.as_ref().is_ok_and(Outcome::wrote) {
+            for id in [&row.note, &row.target] {
+                if let Some(file) = OnDisk::read(g.connection(), vault, id)? {
+                    ours.insert(id.clone(), file.hash);
+                }
+            }
+        }
+        match outcome {
             Ok(Outcome::Accepted(accepted)) => {
                 synced.written.extend(accepted.written.iter().cloned());
                 synced.accepted.push((row.cid, accepted));
@@ -269,7 +284,6 @@ pub fn sync_stage(g: &Graph, vault: &Path, ontology: &Ontology) -> rusqlite::Res
             Err(error) => synced.refused.push((row.cid, error)),
         }
     }
-    follow_removals(g, vault)?;
 
     let left = rows(g.connection())?;
     let left: HashSet<&str> = left.iter().map(|row| row.note.as_str()).collect();
@@ -312,11 +326,22 @@ enum Outcome {
     Pending,
 }
 
+impl Outcome {
+    fn wrote(&self) -> bool {
+        match self {
+            Outcome::Accepted(accepted) => !accepted.written.is_empty(),
+            Outcome::Rejected(_, written) | Outcome::Cleared(written) => written.is_some(),
+            Outcome::Pending => false,
+        }
+    }
+}
+
 fn sync_row(
     g: &Graph,
     vault: &Path,
     ontology: &Ontology,
     names: &Names,
+    ours: &HashMap<String, String>,
     row: &Row,
 ) -> Result<Outcome, ReviewError> {
     let connection = g.connection();
@@ -342,7 +367,8 @@ fn sync_row(
         .into_iter()
         .find_map(|(from, to)| Some((from, to, names.key(from, to, ontology)?)));
     if let Some((from, to, key)) = written {
-        return accept_as_written(g, vault, ontology, &row.cid, from, to, key);
+        let pair = (from, to);
+        return accept_as_written(g, vault, ontology, ours, &row.cid, pair, key);
     }
     match (held.contains(&row.cid), exists) {
         (true, true) => Ok(Outcome::Pending),
@@ -362,13 +388,16 @@ fn accept_as_written(
     g: &Graph,
     vault: &Path,
     ontology: &Ontology,
+    ours: &HashMap<String, String>,
     cid: &str,
-    from: &Checked,
-    to: &Checked,
+    (from, to): (&Checked, &Checked),
     key: &str,
 ) -> Result<Outcome, ReviewError> {
     let tx = Transaction::new_unchecked(&g.conn, TransactionBehavior::Immediate)?;
-    let indexed = |id: &str| -> rusqlite::Result<Option<String>> {
+    let trusted = |id: &str| -> rusqlite::Result<Option<String>> {
+        if let Some(hash) = ours.get(id) {
+            return Ok(Some(hash.clone()));
+        }
         tx.query_row("SELECT content_hash FROM files WHERE id = ?", [id], |row| {
             row.get(0)
         })
@@ -377,8 +406,8 @@ fn accept_as_written(
     let candidate = Candidate {
         src: from.note.id.clone(),
         dst: to.note.id.clone(),
-        src_hash: indexed(&from.note.id)?,
-        dst_hash: indexed(&to.note.id)?,
+        src_hash: trusted(&from.note.id)?,
+        dst_hash: trusted(&to.note.id)?,
     };
     let accepting = Accepting {
         rel: key,

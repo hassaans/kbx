@@ -648,6 +648,42 @@ fn a_target_edited_after_staging_does_not_strand_a_moved_line() {
 }
 
 #[test]
+fn lines_moved_towards_one_note_are_all_accepted_in_one_sync() {
+    let vault = staged();
+    let all = lines(&vault);
+    let (first, second) = all
+        .iter()
+        .enumerate()
+        .find_map(|(at, a)| {
+            let same = |b: &&Line| b.target == a.target && b.note != a.note;
+            all[at + 1..].iter().find(same).map(|b| (a, b))
+        })
+        .expect("two notes with a line to one target");
+    move_line(&vault, first, "contradicts");
+    move_line(&vault, second, "contradicts");
+
+    let printed = vault.ok(&["sync-stage"]);
+    assert!(printed.contains("2 accepted"), "{printed}");
+    let target = read(&vault, &first.target);
+    assert!(target.contains(&first.note) && target.contains(&second.note));
+}
+
+#[test]
+fn removing_every_line_on_a_note_keeps_lines_elsewhere_pointing_at_it_acceptable() {
+    let vault = staged();
+    let all = lines(&vault);
+    let other = all
+        .iter()
+        .find(|b| all.iter().any(|a| a.note == b.target))
+        .expect("a line pointing at a note that holds lines");
+    for line in all.iter().filter(|a| a.note == other.target) {
+        remove_line(&vault, line);
+    }
+    vault.ok(&["sync-stage"]);
+    vault.ok(&["accept", &other.cid, "--rel", "see_also"]);
+}
+
+#[test]
 fn a_line_moved_under_an_unknown_key_is_refused_and_is_no_rejection() {
     let vault = staged();
     let line = &lines(&vault)[0];
