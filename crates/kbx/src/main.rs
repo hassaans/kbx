@@ -1,4 +1,5 @@
 mod doctor;
+mod export;
 mod hook;
 mod qmd;
 mod review;
@@ -14,7 +15,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use kbx_core::{
     Finding, Graph, IndexOptions, IndexReport, Neighbor, Node, Project, Severity, index_vault,
     init, lint_vault,
@@ -119,6 +120,10 @@ enum Command {
         /// Print counts and token estimates; leave the database alone.
         #[arg(long)]
         dry_run: bool,
+        /// Score each generator's precision and recall against the reviews
+        /// table, and change nothing.
+        #[arg(long, conflicts_with_all = ["note", "judge", "budget", "dry_run"])]
+        eval: bool,
     },
     /// Keep the index current: re-index saved notes and lint them.
     Watch {
@@ -195,6 +200,16 @@ enum Command {
         #[arg(long, conflicts_with = "cids")]
         list: bool,
     },
+    /// Print the graph or the review decisions, for other tools.
+    Export {
+        #[command(subcommand)]
+        what: ExportWhat,
+    },
+    /// Load what `kbx export` printed.
+    Import {
+        #[command(subcommand)]
+        what: ImportWhat,
+    },
     /// Check the vault, the index, RAM, the judges and qmd, installing qmd if
     /// it's missing.
     Doctor {
@@ -213,6 +228,36 @@ enum HookAction {
         #[arg(long)]
         force: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum ExportWhat {
+    /// The edges table.
+    Edges(Jsonl),
+    /// The reviews table, which `kbx import reviews` reads back.
+    Reviews(Jsonl),
+    /// The graph as Turtle, with predicates from the ontology's `iri` keys.
+    Rdf,
+}
+
+#[derive(Subcommand)]
+enum ImportWhat {
+    /// Add to the reviews table. A row that's already there keeps a newer
+    /// decision, and notes aren't touched.
+    Reviews {
+        #[command(flatten)]
+        format: Jsonl,
+        /// What `kbx export reviews` printed. Without one, stdin.
+        file: Option<PathBuf>,
+    },
+}
+
+#[derive(Args)]
+struct Jsonl {
+    /// One JSON object per line: the default, and so far the only format.
+    #[arg(long)]
+    #[allow(dead_code)]
+    jsonl: bool,
 }
 
 #[derive(Subcommand)]
@@ -263,12 +308,14 @@ fn main() -> ExitCode {
             judge,
             budget,
             dry_run,
+            eval,
         } => suggest::run(suggest::Options {
             note,
             generators,
             judge,
             budget,
             dry_run,
+            eval,
         }),
         Command::Watch {
             suggest,
@@ -289,6 +336,14 @@ fn main() -> ExitCode {
         Command::Defer { cids, rel, reason } => review::defer(&cids, &rel, &reason),
         Command::Unreject { cids, list: false } => review::unreject(&cids),
         Command::Unreject { list: true, .. } => review::list_suppressed(),
+        Command::Export { what } => match what {
+            ExportWhat::Edges(_) => export::edges(),
+            ExportWhat::Reviews(_) => export::reviews(),
+            ExportWhat::Rdf => export::rdf(),
+        },
+        Command::Import {
+            what: ImportWhat::Reviews { file, .. },
+        } => export::import_reviews(file.as_deref()),
         Command::Doctor { fix } => doctor::run(fix),
     };
     match result {

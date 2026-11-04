@@ -7,9 +7,11 @@
 //! [`lint_vault`] checks one against the ontology. [`accept`], [`reject`],
 //! [`defer`] and [`unreject`] record review decisions, a [`Queue`] takes them
 //! one candidate at a time, and [`add_relation`] writes accepted relations to
-//! frontmatter. This crate never touches a model and never prints.
+//! frontmatter. [`Graph::edges`], [`Graph::reviews`] and [`turtle`] export what
+//! the database holds. This crate never touches a model and never prints.
 
 mod config;
+mod export;
 mod graph;
 mod index;
 mod link;
@@ -25,6 +27,9 @@ mod writer;
 pub use config::{
     CONFIG_FILE, Config, ConfigError, EXAMPLE_ONTOLOGY, InitReport, JudgeBackend, JudgeConfig,
     Project, Qmd, Search, init,
+};
+pub use export::{
+    DEFAULT_NAMESPACE, EdgeRow, ImportError, NOTE_NAMESPACE, Review, parse_reviews, turtle,
 };
 pub use graph::{Graph, GraphStats, Neighbor, Node};
 pub use index::{

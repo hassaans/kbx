@@ -19,3 +19,7 @@ toml = "1.2.0"
 toml_edit = "0.25.18"
 tracing = "0.1.44"
 uuid = { version = "1.29.0", features = ["v5"] }
+
+[dev-dependencies]
+oxrdf = "0.3"
+oxttl = "0.2.5"

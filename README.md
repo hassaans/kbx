@@ -25,6 +25,7 @@ kbx suggest --dry-run      # counts and token estimates; the database is left al
 kbx suggest --note <id> --generators schema_gap,alias_cooccur
 kbx suggest --budget 50    # keep at most 50 candidates
 kbx suggest --judge auto   # also judge them with the logged-in claude or codex CLI
+kbx suggest --eval         # each generator's precision and recall against your reviews
 kbx watch                  # re-index saved notes and lint them, until stopped
 kbx watch --suggest        # also run `kbx suggest` 45 s after the last save
 kbx hook install           # lint staged notes on commit; prints an Obsidian recipe
@@ -34,6 +35,9 @@ kbx accept <cid>… --rel see_also   # write relations and inverses to frontmatt
 kbx reject <cid>… --reason "…"     # three rejections of a pair suppress it
 kbx defer <cid>…           # put a decision off
 kbx unreject --list        # the suppressed pairs; `kbx unreject <cid>` lifts one
+kbx export edges --jsonl   # the edges table, one JSON object per line
+kbx export reviews --jsonl # the reviews table; `kbx import reviews --jsonl` reads it back
+kbx export rdf             # the graph as Turtle; see docs/export.md
 kbx doctor                 # check the vault, the index, RAM, the judges, qmd and its collections
 kbx doctor --fix           # create the qmd collections that are missing
 ```
