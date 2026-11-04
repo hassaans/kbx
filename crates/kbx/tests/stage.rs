@@ -615,13 +615,19 @@ fn a_link_written_on_the_target_is_an_acceptance_too() {
     };
     let path = path_of(&vault, &swapped.note);
     let text = fs::read_to_string(&path).unwrap();
-    assert!(!text.contains("contradicts:"), "a key the note doesn't have");
+    assert!(
+        !text.contains("contradicts:"),
+        "a key the note doesn't have"
+    );
     let new = format!("---\ncontradicts: [\"[[{}]]\"]\n", swapped.target);
     fs::write(path, text.replacen("---\n", &new, 1)).unwrap();
 
     let printed = vault.ok(&["sync-stage"]);
     assert!(printed.contains("1 accepted"), "{printed}");
-    assert_eq!(reviews(&vault), [("contradicts".into(), "accept".into(), 0)]);
+    assert_eq!(
+        reviews(&vault),
+        [("contradicts".into(), "accept".into(), 0)]
+    );
     assert!(
         !read(&vault, &line.note).contains(&line.cid),
         "the line goes"
