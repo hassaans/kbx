@@ -12,7 +12,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use common::{FakePath, Fixture, id, stderr, stdout};
+use common::{CLOSED_PORT, FakeModel, FakePath, Fixture, id, stderr, stdout};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -855,6 +855,339 @@ mod selection {
         assert_eq!(calls(&vault.path, "claude"), ["probe"], "no batch may run");
         assert!(!vault.path.dir().join("claude.stdin").exists());
         assert_eq!(id(10), NOTE);
+    }
+}
+
+/// The verdicts for the pairs in a chat request, as the text a model writes.
+fn reply_to(body: &str) -> String {
+    let body: Value = serde_json::from_str(body).unwrap();
+    let batch = body["messages"][1]["content"].as_str().unwrap();
+    let batch: Vec<Value> = serde_json::from_str(batch).unwrap();
+    let rows = batch.iter().map(|pair| {
+        json!({"cid": pair["cid"], "rationale": "Unrelated.", "verdict": "reject",
+               "rel": "none", "confidence": 0.5})
+    });
+    json!({"verdicts": rows.collect::<Vec<_>>()}).to_string()
+}
+
+/// An Ollama with `models` pulled, that judges whatever it's sent.
+fn fake_ollama(models: &'static [&'static str]) -> FakeModel {
+    FakeModel::start(move |path, body| match path {
+        "/api/tags" => {
+            let rows: Vec<Value> = models.iter().map(|name| json!({"name": name})).collect();
+            (200, json!({"models": rows}).to_string())
+        }
+        "/api/chat" => {
+            let message = json!({"role": "assistant", "content": reply_to(body)});
+            let chat = json!({"message": message, "done": true, "done_reason": "stop"});
+            (200, chat.to_string())
+        }
+        _ => (404, String::new()),
+    })
+}
+
+/// A llama-server that judges whatever it's sent.
+fn fake_llama_server() -> FakeModel {
+    FakeModel::start(|path, body| match path {
+        "/v1/models" => (
+            200,
+            r#"{"object":"list","data":[{"id":"m.gguf"}]}"#.to_string(),
+        ),
+        "/v1/chat/completions" => {
+            let message = json!({"role": "assistant", "content": reply_to(body)});
+            let choice = json!({"index": 0, "finish_reason": "stop", "message": message});
+            (200, json!({"choices": [choice]}).to_string())
+        }
+        _ => (404, String::new()),
+    })
+}
+
+/// `kbx suggest` with `env`, on the pairs of `NOTE`.
+fn suggest_with(vault: &Fixture, judge: &str, env: &[(&str, &str)]) -> std::process::Output {
+    let mut args = vec!["suggest", "--judge", judge];
+    args.extend(NARROW);
+    vault.kbx_with(&args, env)
+}
+
+fn pin(vault: &Fixture, folder: &str, backend: &str) {
+    let config = vault.root().join("kbx.toml");
+    let mut text = fs::read_to_string(&config).unwrap();
+    text.push_str(&format!("\"{folder}\" = \"{backend}\"\n"));
+    fs::write(&config, text).unwrap();
+}
+
+mod local {
+    use super::*;
+
+    const MODEL: (&str, &str) = ("KBX_OLLAMA_MODEL", "qwen3:8b");
+    /// From the note in `NARROW`, which is in `operations`.
+    const PINNED_TEXT: &str = "Restart";
+
+    fn stored(vault: &Fixture) -> Vec<(String, String, f64)> {
+        let db = database(vault);
+        let mut statement = db
+            .prepare("SELECT DISTINCT backend, model, cost_usd FROM verdicts")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap();
+        rows.map(Result::unwrap).collect()
+    }
+
+    #[test]
+    fn doctor_lists_all_four_backends_with_each_kind_of_answer() {
+        let vault = indexed();
+        logged_out_claude(&vault.path);
+        let ollama = fake_ollama(&["qwen3:8b"]);
+        let env = [("OLLAMA_HOST", ollama.url.as_str()), MODEL];
+        let text = stdout(&vault.kbx_with(&["doctor"], &env));
+        assert_eq!(
+            status_of(&text, "claude-cli"),
+            ["warn", "NotLoggedIn"],
+            "{text}"
+        );
+        assert_eq!(
+            status_of(&text, "codex-cli"),
+            ["warn", "NotInstalled"],
+            "{text}"
+        );
+        assert_eq!(
+            status_of(&text, "ollama"),
+            ["ok", "Ready", "(qwen3:8b)"],
+            "{text}"
+        );
+        assert_eq!(
+            status_of(&text, "llama-server"),
+            ["warn", "NotInstalled"],
+            "{text}"
+        );
+        assert_eq!(status_of(&text, "judge")[..2], ["ok", "ollama"], "{text}");
+    }
+
+    #[test]
+    fn doctor_tells_a_stopped_server_from_a_missing_one() {
+        let vault = indexed();
+        vault.path.tool("ollama", "");
+        vault.path.tool("llama-server", "");
+        let text = stdout(&vault.kbx(&["doctor"]));
+        assert_eq!(
+            status_of(&text, "ollama")[..2],
+            ["warn", "Unreachable"],
+            "{text}"
+        );
+        assert_eq!(
+            status_of(&text, "llama-server"),
+            ["warn", "Unreachable"],
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn doctor_says_not_installed_of_a_model_not_pulled() {
+        let vault = indexed();
+        let ollama = fake_ollama(&["llama3:8b"]);
+        let env = [("OLLAMA_HOST", ollama.url.as_str()), MODEL];
+        let text = stdout(&vault.kbx_with(&["doctor"], &env));
+        assert_eq!(
+            status_of(&text, "ollama")[..2],
+            ["warn", "NotInstalled"],
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn doctor_lists_a_backend_left_out_of_the_order_but_never_chooses_it() {
+        let vault = indexed();
+        let config = vault.root().join("kbx.toml");
+        let text = fs::read_to_string(&config).unwrap();
+        let cut = r#"order = ["codex-cli"]"#;
+        let text = text.replace(
+            r#"order = ["claude-cli", "codex-cli", "ollama", "llama-server"]"#,
+            cut,
+        );
+        assert!(text.contains(cut));
+        fs::write(&config, text).unwrap();
+        let llama = fake_llama_server();
+        let env = [("KBX_LLAMA_SERVER_HOST", llama.url.as_str())];
+        let text = stdout(&vault.kbx_with(&["doctor"], &env));
+        assert_eq!(status_of(&text, "llama-server"), ["ok", "Ready"], "{text}");
+        assert_eq!(
+            status_of(&text, "claude-cli"),
+            ["warn", "NotInstalled"],
+            "{text}"
+        );
+        assert_eq!(status_of(&text, "judge")[..2], ["warn", "none"], "{text}");
+    }
+
+    #[test]
+    fn ollama_verdicts_are_stored_at_no_cost() {
+        let vault = indexed();
+        let verdicts = answers(&vault);
+        let ollama = fake_ollama(&["qwen3:8b"]);
+        let env = [("OLLAMA_HOST", ollama.url.as_str()), MODEL];
+        let output = suggest_with(&vault, "ollama", &env);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let out = stdout(&output);
+        assert!(out.contains("judged by ollama (qwen3:8b)"), "{out}");
+        assert!(out.contains("$0.0000"), "{out}");
+        assert_eq!(verdict_count(&vault) as usize, verdicts.len());
+        assert_eq!(
+            stored(&vault),
+            [("ollama".to_string(), "qwen3:8b".to_string(), 0.0)]
+        );
+    }
+
+    #[test]
+    fn llama_server_verdicts_are_stored_at_no_cost() {
+        let vault = indexed();
+        let verdicts = answers(&vault);
+        let llama = fake_llama_server();
+        let env = [("KBX_LLAMA_SERVER_HOST", llama.url.as_str())];
+        let output = suggest_with(&vault, "llama-server", &env);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(verdict_count(&vault) as usize, verdicts.len());
+        assert_eq!(
+            stored(&vault),
+            [("llama-server".to_string(), "default".to_string(), 0.0)]
+        );
+    }
+
+    #[test]
+    fn the_address_and_model_can_come_from_kbx_toml() {
+        let vault = indexed();
+        answers(&vault);
+        let ollama = fake_ollama(&["gemma3:4b"]);
+        let config = vault.root().join("kbx.toml");
+        let text = fs::read_to_string(&config).unwrap();
+        let line = "ollama = { model = \"qwen3:14b\", host = \"http://127.0.0.1:11434\" }";
+        assert!(text.contains(line));
+        let ours = format!(
+            "ollama = {{ model = \"gemma3:4b\", host = \"{}\" }}",
+            ollama.url
+        );
+        fs::write(&config, text.replace(line, &ours)).unwrap();
+
+        let output = suggest_with(&vault, "ollama", &[("OLLAMA_HOST", "")]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert!(stdout(&output).contains("judged by ollama (gemma3:4b)"));
+    }
+
+    #[test]
+    fn a_stopped_server_asked_for_by_name_fails_loudly_but_keeps_the_candidates() {
+        let vault = indexed();
+        let output = suggest(&vault, "ollama");
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("ollama can't judge"),
+            "{}",
+            stderr(&output)
+        );
+        assert!(!cids(&vault).is_empty());
+    }
+
+    #[test]
+    fn auto_falls_through_the_clis_to_ollama_then_llama_server() {
+        let vault = indexed();
+        logged_out_claude(&vault.path);
+        logged_out_codex(&vault.path);
+        answers(&vault);
+        let ollama = fake_ollama(&["qwen3:8b"]);
+        let llama = fake_llama_server();
+        let env = [
+            ("OLLAMA_HOST", ollama.url.as_str()),
+            ("KBX_LLAMA_SERVER_HOST", llama.url.as_str()),
+            MODEL,
+        ];
+        let out = stdout(&suggest_with(&vault, "auto", &env));
+        assert!(out.contains("judged by ollama"), "{out}");
+        assert!(llama.bodies("/v1/chat/completions").is_empty());
+
+        let env = [
+            ("OLLAMA_HOST", CLOSED_PORT),
+            ("KBX_LLAMA_SERVER_HOST", llama.url.as_str()),
+        ];
+        let out = stdout(&suggest_with(&vault, "auto", &env));
+        assert!(out.contains("judged by llama-server"), "{out}");
+    }
+
+    #[test]
+    fn a_proxy_in_the_environment_is_not_used() {
+        let vault = indexed();
+        answers(&vault);
+        let ollama = fake_ollama(&["qwen3:8b"]);
+        let proxy = fake_llama_server();
+        let env = [
+            ("OLLAMA_HOST", ollama.url.as_str()),
+            MODEL,
+            ("HTTP_PROXY", proxy.url.as_str()),
+            ("http_proxy", proxy.url.as_str()),
+            ("ALL_PROXY", proxy.url.as_str()),
+            ("all_proxy", proxy.url.as_str()),
+        ];
+        let output = suggest_with(&vault, "ollama", &env);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(ollama.bodies("/api/chat").len(), 1);
+    }
+
+    #[test]
+    fn a_pinned_scope_goes_to_ollama_and_shows_claude_nothing_not_even_in_its_probe() {
+        let vault = indexed();
+        logged_in_claude(&vault.path);
+        answers(&vault);
+        answer(&vault.path, "claude-batch", 0, &claude_result(&[], 0.0, 0));
+        // The fake's probe branch records its arguments too, for this test.
+        let probe_log = vault.path.dir().join("claude.everything");
+        let script = fs::read_to_string(vault.path.program("claude")).unwrap();
+        let line = format!(
+            "printf '%s\\n' \"$@\" >> {path}\n/bin/cat >> {path}\n",
+            path = probe_log.display()
+        );
+        let script = script.replacen("d=\"${0%/*}\"\n", &format!("d=\"${{0%/*}}\"\n{line}"), 1);
+        fs::write(vault.path.program("claude"), script).unwrap();
+        pin(&vault, "operations", "ollama");
+
+        let ollama = fake_ollama(&["qwen3:8b"]);
+        let env = [("OLLAMA_HOST", ollama.url.as_str()), MODEL];
+        let output = suggest_with(&vault, "auto", &env);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert!(
+            stdout(&output).contains("judged by ollama"),
+            "{}",
+            stdout(&output)
+        );
+
+        let sent = ollama.bodies("/api/chat").concat();
+        assert!(
+            sent.contains(PINNED_TEXT),
+            "ollama should get the pinned notes"
+        );
+        let everything = fs::read_to_string(&probe_log).unwrap();
+        assert!(
+            everything.contains("reply with"),
+            "the probe should have run"
+        );
+        assert!(!everything.contains(PINNED_TEXT), "{everything}");
+        assert!(!vault.path.dir().join("claude.stdin").exists());
+        assert_eq!(calls(&vault.path, "claude"), ["probe"]);
+    }
+
+    #[test]
+    fn a_pinned_scope_with_ollama_down_is_left_unjudged() {
+        let vault = indexed();
+        logged_in_claude(&vault.path);
+        answers(&vault);
+        answer(&vault.path, "claude-batch", 0, &claude_result(&[], 0.0, 0));
+        pin(&vault, "operations", "ollama");
+
+        let output = suggest(&vault, "auto");
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert!(
+            stderr(&output).contains("ollama skipped"),
+            "{}",
+            stderr(&output)
+        );
+        assert!(!vault.path.dir().join("claude.stdin").exists());
+        assert_eq!(verdict_count(&vault), 0);
     }
 }
 

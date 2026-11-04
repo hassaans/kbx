@@ -1,21 +1,28 @@
 //! LLM judge backends for kbx.
 //!
 //! A [`Judge`] answers a batch of [`CandidateView`]s with [`Verdict`]s.
-//! [`ClaudeCli`] and [`CodexCli`] shell out to the logged-in cloud CLIs, with
-//! the system prompt and schema from [`JudgeContext`]. [`views`] builds the
-//! batch items, [`first_ready`] picks a backend, and [`judge_all`] runs the
-//! batches and stores what comes back in the `verdicts` table. This crate never
-//! prints.
+//! [`ClaudeCli`] and [`CodexCli`] shell out to the logged-in cloud CLIs, and
+//! [`Ollama`] and [`LlamaServer`] talk to a local model over HTTP, all with the
+//! system prompt and schema from [`JudgeContext`]. [`views`] builds the batch
+//! items, [`first_ready`] picks a backend, [`route`] shares the pairs out
+//! between it and the backends `[judge.overrides]` pins folders to, and
+//! [`judge_all`] runs the batches and stores what comes back in the `verdicts`
+//! table. This crate never prints.
 //!
-//! What's in a note goes to a backend on stdin and nowhere else: not to a file,
-//! not to a log, and not into an error.
+//! What's in a note goes to a backend, on stdin or in a request body, and
+//! nowhere else: not to a file, not to a log, not into an error, and not
+//! through a proxy.
 
 mod batch;
 mod cache;
 mod claude;
 mod codex;
+mod http;
+mod llama_server;
+mod ollama;
 mod process;
 mod prompt;
+mod route;
 mod run;
 mod verdict;
 
@@ -28,8 +35,11 @@ pub use batch::{CandidateView, NoteView, Views, views, why_proposed};
 pub use cache::{CACHE_FILE, ProbeCache};
 pub use claude::ClaudeCli;
 pub use codex::CodexCli;
+pub use llama_server::LlamaServer;
+pub use ollama::Ollama;
 pub use prompt::{JudgeContext, SCHEMA, SYSTEM_PROMPT, prompt_hash};
-pub use run::{Tally, backend, backends, first_ready, judge_all};
+pub use route::{Assignment, Routes, route};
+pub use run::{Tally, backend, backends, first_ready, judge_all, pinned_backends};
 pub use verdict::{Decision, Verdict};
 
 /// A judge of link candidates.
@@ -57,22 +67,34 @@ pub enum JudgeId {
     ClaudeCli,
     /// The Codex CLI.
     CodexCli,
+    /// A local Ollama server.
+    Ollama,
+    /// A local llama.cpp server.
+    LlamaServer,
 }
 
 impl JudgeId {
+    /// Every backend, in the §6.1 order.
+    pub const ALL: [JudgeId; 4] = [
+        JudgeId::ClaudeCli,
+        JudgeId::CodexCli,
+        JudgeId::Ollama,
+        JudgeId::LlamaServer,
+    ];
+
     /// The name.
     pub fn as_str(self) -> &'static str {
         match self {
             JudgeId::ClaudeCli => "claude-cli",
             JudgeId::CodexCli => "codex-cli",
+            JudgeId::Ollama => "ollama",
+            JudgeId::LlamaServer => "llama-server",
         }
     }
 
     /// The backend called `name`, if this build has it.
     pub fn parse(name: &str) -> Option<JudgeId> {
-        [JudgeId::ClaudeCli, JudgeId::CodexCli]
-            .into_iter()
-            .find(|id| id.as_str() == name)
+        JudgeId::ALL.into_iter().find(|id| id.as_str() == name)
     }
 }
 
@@ -90,7 +112,7 @@ pub enum Availability {
     Ready,
     /// It's installed, but has no working login.
     NotLoggedIn,
-    /// It isn't on `PATH`.
+    /// It isn't on `PATH`, or the model it was asked for isn't pulled.
     NotInstalled,
     /// It didn't answer in time.
     Unreachable,

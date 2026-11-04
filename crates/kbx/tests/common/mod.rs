@@ -5,10 +5,16 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use tempfile::TempDir;
+use tiny_http::{Response, Server};
 
 pub const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/vault");
+
+/// An address nothing listens on.
+pub const CLOSED_PORT: &str = "http://127.0.0.1:9";
 
 pub fn id(n: u32) -> String {
     format!("01KBX{n:021}")
@@ -61,6 +67,43 @@ pub fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// An HTTP server on a free port standing in for a local model. `reply` gets
+/// each request's path and body and returns a status and a body.
+pub struct FakeModel {
+    pub url: String,
+    seen: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+impl FakeModel {
+    pub fn start(reply: impl Fn(&str, &str) -> (u16, String) + Send + 'static) -> FakeModel {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        thread::spawn(move || {
+            for mut request in server.incoming_requests() {
+                let mut body = String::new();
+                request.as_reader().read_to_string(&mut body).unwrap();
+                let path = request.url().to_string();
+                let (status, text) = reply(&path, &body);
+                log.lock().unwrap().push((path, body));
+                let _ = request.respond(Response::from_string(text).with_status_code(status));
+            }
+        });
+        FakeModel {
+            url: format!("http://127.0.0.1:{port}"),
+            seen,
+        }
+    }
+
+    /// The bodies of the requests to `path`, in order.
+    pub fn bodies(&self, path: &str) -> Vec<String> {
+        let seen = self.seen.lock().unwrap();
+        let matching = seen.iter().filter(|(to, _)| to == path);
+        matching.map(|(_, body)| body.clone()).collect()
+    }
+}
+
 /// A folder that stands in for `PATH`, so that no test can reach a real `npm`.
 pub struct FakePath {
     dir: TempDir,
@@ -109,6 +152,12 @@ impl FakePath {
 
     /// Runs kbx in `dir` with this as its whole `PATH`.
     pub fn kbx(&self, dir: &Path, args: &[&str]) -> Output {
+        self.kbx_with(dir, args, &[])
+    }
+
+    /// Likewise, with `env` set. Unless it says otherwise the local backends
+    /// point at a closed port, so that no test can reach a real model.
+    pub fn kbx_with(&self, dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_kbx"))
             .args(args)
             .current_dir(dir)
@@ -116,6 +165,11 @@ impl FakePath {
             .env_remove("KBX_LOG")
             .env_remove("KBX_CLAUDE_MODEL")
             .env_remove("KBX_CODEX_MODEL")
+            .env_remove("KBX_OLLAMA_MODEL")
+            .env_remove("KBX_LLAMA_SERVER_MODEL")
+            .env("OLLAMA_HOST", CLOSED_PORT)
+            .env("KBX_LLAMA_SERVER_HOST", CLOSED_PORT)
+            .envs(env.iter().copied())
             .output()
             .expect("kbx should run")
     }
@@ -152,6 +206,10 @@ impl Fixture {
 
     pub fn kbx(&self, args: &[&str]) -> Output {
         self.path.kbx(self.root(), args)
+    }
+
+    pub fn kbx_with(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+        self.path.kbx_with(self.root(), args, env)
     }
 
     /// Runs kbx, requires success, and returns stdout.
