@@ -69,18 +69,35 @@ impl Vault {
             ("qmd", format!("#!/bin/sh\n{script}\n"))
         };
         let program = self.dir.path().join(name);
-        fs::write(&program, text).unwrap();
-        make_executable(&program);
+        write_executable(&program, &text);
         program
     }
 }
 
-fn make_executable(_path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(_path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+/// Writes a script that is run straight away. On Linux, exec fails with
+/// ETXTBSY while anything holds the file open for writing, and a child that
+/// another test thread has just forked holds a copy of this process's
+/// descriptors until it execs. So this process never opens the file for
+/// writing: `cp` does, and has exited by the time this returns.
+#[cfg(unix)]
+fn write_executable(path: &Path, text: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::NamedTempFile;
+
+    let staged = NamedTempFile::new().unwrap();
+    fs::write(staged.path(), text).unwrap();
+    let copied = Command::new("/bin/cp")
+        .arg(staged.path())
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(copied.success(), "cp to {}: {copied}", path.display());
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(not(unix))]
+fn write_executable(path: &Path, text: &str) {
+    fs::write(path, text).unwrap();
 }
 
 /// A stand-in that prints `json`, from a file because `echo` treats quotes
@@ -323,17 +340,15 @@ fn real_qmd_finds_a_note_by_its_collection() {
     let state = vault.dir.path().join("qmd-state");
     fs::create_dir_all(&state).unwrap();
     let wrapper = vault.dir.path().join("isolated-qmd");
-    fs::write(
+    write_executable(
         &wrapper,
-        format!(
+        &format!(
             "#!/bin/sh\nexport INDEX_PATH='{state}/index.sqlite' QMD_CONFIG_DIR='{state}' \
              XDG_CACHE_HOME='{state}/cache'\nexec '{qmd}' \"$@\"\n",
             state = state.display(),
             qmd = qmd.display()
         ),
-    )
-    .unwrap();
-    make_executable(&wrapper);
+    );
 
     let scope = vault.dir.path().join("vault/Team X");
     let added = Command::new(&wrapper)

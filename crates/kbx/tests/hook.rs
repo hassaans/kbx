@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use common::{FIXTURE, FakePath, copy_dir, id, stderr, stdout};
+use common::{FIXTURE, FakePath, copy_dir, id, stderr, stdout, write_executable};
 use tempfile::TempDir;
 
 const CLEAN: u32 = 100;
@@ -301,12 +301,7 @@ fn an_existing_shell_hook_keeps_running_and_the_lint_still_applies() {
     fs::create_dir_all(repo.hook().parent().unwrap()).unwrap();
     // The `exit 0` would make anything added after it dead code.
     let theirs = "#!/bin/sh\necho ran > theirs.txt\nexit 0\n";
-    fs::write(repo.hook(), theirs).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(repo.hook(), fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    write_executable(&repo.hook(), theirs);
 
     repo.installed();
 
@@ -330,13 +325,8 @@ fn a_zsh_hook_can_still_find_kbx() {
         return;
     }
     fs::create_dir_all(repo.hook().parent().unwrap()).unwrap();
-    fs::write(repo.hook(), "#!/usr/bin/env zsh\n").unwrap();
+    write_executable(&repo.hook(), "#!/usr/bin/env zsh\n");
     repo.installed();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(repo.hook(), fs::Permissions::from_mode(0o755)).unwrap();
-    }
 
     repo.stage("notes/good.md", &clean());
 
@@ -347,7 +337,7 @@ fn a_zsh_hook_can_still_find_kbx() {
 fn reinstalling_over_a_merged_hook_keeps_one_block() {
     let repo = Repo::new();
     fs::create_dir_all(repo.hook().parent().unwrap()).unwrap();
-    fs::write(repo.hook(), "#!/bin/bash\necho theirs\n").unwrap();
+    write_executable(&repo.hook(), "#!/bin/bash\necho theirs\n");
 
     repo.installed();
     let first = fs::read_to_string(repo.hook()).unwrap();
@@ -362,7 +352,7 @@ fn a_hook_that_is_not_a_shell_script_is_refused() {
     let repo = Repo::new();
     fs::create_dir_all(repo.hook().parent().unwrap()).unwrap();
     let theirs = "#!/usr/bin/env python3\nprint('theirs')\n";
-    fs::write(repo.hook(), theirs).unwrap();
+    write_executable(&repo.hook(), theirs);
 
     let output = repo.install(&[]);
 
@@ -375,7 +365,7 @@ fn a_hook_that_is_not_a_shell_script_is_refused() {
 fn force_replaces_an_existing_hook() {
     let repo = Repo::new();
     fs::create_dir_all(repo.hook().parent().unwrap()).unwrap();
-    fs::write(repo.hook(), "#!/usr/bin/env python3\nprint('theirs')\n").unwrap();
+    write_executable(&repo.hook(), "#!/usr/bin/env python3\nprint('theirs')\n");
 
     let output = repo.install(&["--force"]);
 
