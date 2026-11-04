@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, Row};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row};
 
 /// The §4 schema, plus two tables it has no room for:
 ///
@@ -92,6 +93,25 @@ impl Graph {
         Ok(Graph { conn })
     }
 
+    /// Opens an existing database for reading, changing nothing on disk.
+    ///
+    /// A plain read-only connection to a WAL database leaves `-wal` and `-shm`
+    /// files behind, so without a WAL to read the file is opened as immutable,
+    /// which creates neither. With one, a writer may have rows there that the
+    /// main file lacks, and both sidecars are already in place.
+    pub fn open_read_only(path: &Path) -> rusqlite::Result<Graph> {
+        let mut wal = path.as_os_str().to_os_string();
+        wal.push("-wal");
+        let live = fs::metadata(PathBuf::from(wal)).is_ok_and(|file| file.len() > 0);
+        let query = if live { "mode=ro" } else { "immutable=1" };
+        let uri = format!("{}?{query}", file_uri(path));
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
+        let conn = Connection::open_with_flags(uri, flags)?;
+        // Opening is lazy: fail here, not at the first query, if it's no database.
+        conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |_| Ok(()))?;
+        Ok(Graph { conn })
+    }
+
     /// The connection, for queries this crate has no method for yet.
     pub fn connection(&self) -> &Connection {
         &self.conn
@@ -170,6 +190,20 @@ impl Graph {
             sections: count("SELECT COUNT(*) FROM sections")?,
             hidden: count("SELECT COUNT(*) FROM links WHERE dst IS NULL")?,
         })
+    }
+}
+
+/// `path` as a `file:` URI, which SQLite needs for its query parameters.
+fn file_uri(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    let path = path
+        .replace('%', "%25")
+        .replace('?', "%3f")
+        .replace('#', "%23");
+    // A Windows path starts with its drive, not a slash.
+    match path.starts_with('/') {
+        true => format!("file:{path}"),
+        false => format!("file:/{path}"),
     }
 }
 

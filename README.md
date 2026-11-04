@@ -20,6 +20,9 @@ kbx lint --format json     # findings as JSON; `kbx lint --help` lists the codes
 kbx graph neighbors <id>   # the typed edges at a note
 kbx graph path <a> <b>     # a shortest typed path between two notes
 kbx graph stats            # node, edge and section counts
+kbx suggest                # store link candidates from every generator
+kbx suggest --dry-run      # counts and token estimates; the database is left alone
+kbx suggest --note <id> --generators schema_gap,alias_cooccur
 kbx doctor                 # check the vault, the index, RAM and qmd
 ```
 
