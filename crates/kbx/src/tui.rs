@@ -4,7 +4,7 @@
 use std::error::Error;
 use std::io;
 
-use kbx_core::{Item, Queue, ReviewError, STRIKES, excerpt};
+use kbx_core::{Item, Queue, ReviewError, STRIKES, excerpt_of};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -287,15 +287,19 @@ impl App {
         {
             return;
         }
-        let read = |id: &str| {
-            let text = excerpt(&self.session.graph, self.session.vault(), id);
+        let read = |id: &str, section: &Option<String>| {
+            let section = section.as_deref();
+            let text = excerpt_of(&self.session.graph, self.session.vault(), id, section);
             match text {
                 Ok(Some(text)) => plain(&text),
                 Ok(None) => "(not on disk)".to_string(),
                 Err(error) => format!("(can't be read: {error})"),
             }
         };
-        let both = [read(&item.src), read(&item.dst)];
+        let both = [
+            read(&item.src, &item.src_section),
+            read(&item.dst, &item.dst_section),
+        ];
         self.excerpts = Some((item.cid.clone(), both));
     }
 
@@ -372,13 +376,18 @@ impl App {
             None => ("", ""),
         };
         let sides = [
-            (left, &item.src_title, &item.src, src),
-            (right, &item.dst_title, &item.dst, dst),
+            (left, &item.src_title, &item.src, &item.src_anchor, src),
+            (right, &item.dst_title, &item.dst, &item.dst_anchor, dst),
         ];
-        for (area, name, id, text) in sides {
+        for (area, name, id, anchor, text) in sides {
+            let anchor = anchor.as_deref().and_then(|a| a.split_once('#'));
+            let heading = match anchor {
+                Some((_, anchor)) => format!("{} #{anchor}", title(name, id)),
+                None => title(name, id).to_string(),
+            };
             let block = Block::default()
                 .borders(Borders::ALL)
-                .title(plain(title(name, id)));
+                .title(plain(&heading));
             let paragraph = Paragraph::new(Text::raw(text))
                 .block(block)
                 .wrap(Wrap { trim: false });

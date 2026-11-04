@@ -124,7 +124,7 @@ fn queue_json(queue: &Queue) -> Value {
 }
 
 fn item_json(item: &Item) -> Value {
-    json!({
+    let mut json = json!({
         "cid": item.cid,
         "src": item.src,
         "dst": item.dst,
@@ -135,7 +135,17 @@ fn item_json(item: &Item) -> Value {
         "generators": item.generators,
         "verdict": item.verdict,
         "rationale": item.rationale,
-    })
+    });
+    // Only where there are any, so a note-level item reads as it always has.
+    for (key, anchor) in [
+        ("src_anchor", &item.src_anchor),
+        ("dst_anchor", &item.dst_anchor),
+    ] {
+        if let Some(anchor) = anchor {
+            json[key] = json!(anchor);
+        }
+    }
+    json
 }
 
 /// Runs `decide` on each cid. One refusal doesn't stop the rest, and fails the

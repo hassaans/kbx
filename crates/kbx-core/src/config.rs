@@ -43,6 +43,19 @@ pub struct Config {
     /// How to judge candidates.
     #[serde(default)]
     pub judge: JudgeConfig,
+    /// What accepting writes.
+    #[serde(default)]
+    pub write: WriteConfig,
+}
+
+/// The `[write]` table of `kbx.toml`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub struct WriteConfig {
+    /// Propose section-level pairs and write their anchors into relation
+    /// targets. Off by default: an anchored link breaks some tools, see
+    /// `docs/sections.md`.
+    #[serde(default)]
+    pub section_anchors: bool,
 }
 
 /// The `[judge]` table of `kbx.toml`.

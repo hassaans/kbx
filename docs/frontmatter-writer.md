@@ -92,6 +92,13 @@ relations:
 Accepting then writes the source note alone, and `kbx index` derives the
 `required_by` edge.
 
+## Section anchors
+
+With `write.section_anchors = true` a section-level candidate writes its anchor
+in the target, as in `rel: ["[[dst-id-slug#^block-id]]"]`. The body still isn't
+touched: kbx never adds a block id. It's off by default, because some tools break
+on an anchored link. See [Section-level relations](sections.md).
+
 ## Which relation
 
 `kbx accept` uses `--rel`, or else the latest verdict that names a relation. If

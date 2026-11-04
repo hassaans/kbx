@@ -91,9 +91,9 @@ pub fn stage(
         if !wanted.contains(cid) || held.contains(cid) || item.src_class.is_none() {
             continue;
         }
-        let (note, target) = match item.swapped(ontology) {
-            true => (&item.dst, &item.src),
-            false => (&item.src, &item.dst),
+        let (note, target, section) = match item.swapped(ontology) {
+            true => (&item.dst, &item.src, &item.src_section),
+            false => (&item.src, &item.dst, &item.dst_section),
         };
         let rel = item.rel.as_deref().unwrap_or(NONE);
         let rel = ontology.lookup(rel).map_or(rel, |key| key.name);
@@ -103,6 +103,7 @@ pub fn stage(
         }
         by_note.entry(note.clone()).or_default().push(Line {
             target: target.clone(),
+            section: section.clone(),
             entry: StagedEntry {
                 rel: rel.to_string(),
                 to: format!("[[{target}]]"),
@@ -129,7 +130,26 @@ pub fn stage(
 /// An entry on its way into a note.
 struct Line {
     target: String,
+    /// The section of the target it's about, if any.
+    section: Option<String>,
     entry: StagedEntry,
+}
+
+impl Line {
+    /// The entry as it goes in the note. `to` is the link a relation would hold,
+    /// so that moving the line under a relation key keeps the anchor.
+    fn anchored(&self, connection: &Connection, vault: &Path) -> Result<StagedEntry, ReviewError> {
+        let mut entry = self.entry.clone();
+        let Some(section) = &self.section else {
+            return Ok(entry);
+        };
+        if let Some(file) = OnDisk::read(connection, vault, &self.target)? {
+            let hash = file.hash.clone();
+            let link = file.checked(Some(&hash))?.link_target(Some(section));
+            entry.to = format!("[[{link}]]");
+        }
+        Ok(entry)
+    }
 }
 
 fn stage_note(
@@ -154,7 +174,10 @@ fn stage_note(
     let hash = file.hash.clone();
     let file = file.checked(Some(&hash))?;
 
-    let entries: Vec<StagedEntry> = lines.iter().map(|line| line.entry.clone()).collect();
+    let entries = lines
+        .iter()
+        .map(|line| line.anchored(&tx, vault))
+        .collect::<Result<Vec<StagedEntry>, ReviewError>>()?;
     let new = stage_entries(&file.text, &entries)
         .map_err(|error| ReviewError::Write(file.path.clone(), error))?;
     let text = new.as_deref().unwrap_or(&file.text);
@@ -403,11 +426,26 @@ fn accept_as_written(
         })
         .optional()
     };
+    // The candidate may be gone, and it may read the other way round.
+    let stored = match Candidate::load(&tx, cid) {
+        Ok(stored) => Some(stored),
+        Err(ReviewError::UnknownCandidate(_)) => None,
+        Err(error) => return Err(error),
+    };
+    let section = |id: &str| {
+        stored.as_ref().and_then(|stored| match stored.src == id {
+            true => stored.src_section.clone(),
+            false => stored.dst_section.clone(),
+        })
+    };
     let candidate = Candidate {
+        cid: cid.to_string(),
         src: from.note.id.clone(),
         dst: to.note.id.clone(),
         src_hash: trusted(&from.note.id)?,
         dst_hash: trusted(&to.note.id)?,
+        src_section: section(&from.note.id),
+        dst_section: section(&to.note.id),
     };
     let accepting = Accepting {
         rel: key,

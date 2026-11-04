@@ -74,4 +74,8 @@ are the candidate's own order: the schema decides the direction on accepting.
 ]
 ```
 
+A section-level candidate also has `src_anchor` and `dst_anchor`, where it has an
+anchor at that end, such as `01KBX…06#^burst`. See
+[Section-level relations](sections.md). A note-level one has neither key.
+
 Act on it with `kbx accept`, `kbx reject` and `kbx defer`.

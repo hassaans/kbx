@@ -11,9 +11,9 @@ use serde_json::{Map, Value};
 
 use super::{
     Accepted, Decision, Deferred, OnDisk, Rejected, ReviewError, accept, defer, judged_rel,
-    ordered, reject, runs_forward,
+    ordered, reject, runs_forward, section_anchor,
 };
-use crate::graph::Graph;
+use crate::graph::{Graph, has_candidate_sections};
 use crate::note::split_frontmatter;
 use crate::ontology::{NONE, Ontology};
 
@@ -50,6 +50,14 @@ pub struct Item {
     pub src_title: Option<String>,
     /// `dst`'s title. `None` if the note has left the index.
     pub dst_title: Option<String>,
+    /// The section key at the `src` end of a section-level pair.
+    pub src_section: Option<String>,
+    /// The section key at the `dst` end of a section-level pair.
+    pub dst_section: Option<String>,
+    /// `src_section`'s address, `{id}#^{block-id}` or `{id}#{slug-path}`.
+    pub src_anchor: Option<String>,
+    /// `dst_section`'s address, likewise.
+    pub dst_anchor: Option<String>,
     /// The relation a decision would be about: the one [`accept`] would take
     /// from the verdicts, until [`Queue::edit`] changes it.
     pub rel: Option<String>,
@@ -124,13 +132,17 @@ impl Queue {
     pub fn load(g: &Graph, ontology: &Ontology) -> rusqlite::Result<Queue> {
         let connection = g.connection();
         let rejected = rejected_relations(connection)?;
-        let mut statement = connection.prepare(
+        let sections = match has_candidate_sections(connection)? {
+            true => "c.src_section, c.dst_section",
+            false => "NULL, NULL",
+        };
+        let mut statement = connection.prepare(&format!(
             "SELECT c.cid, c.src, c.dst, s.title, d.title, c.score, c.generators, c.features,
-                 s.type, d.type
+                 s.type, d.type, {sections}
              FROM candidates c
              LEFT JOIN files s ON s.id = c.src
              LEFT JOIN files d ON d.id = c.dst",
-        )?;
+        ))?;
         let mut items = Vec::new();
         let mut hidden = 0;
         let mut rows = statement.query([])?;
@@ -238,10 +250,25 @@ impl Queue {
 /// The start of a note's body, as it is on disk now. `None` if the note can't
 /// be read, which a reviewer should see rather than an error.
 pub fn excerpt(g: &Graph, vault: &Path, id: &str) -> rusqlite::Result<Option<String>> {
+    excerpt_of(g, vault, id, None)
+}
+
+/// [`excerpt`], or the section `section` of the note if it has one.
+pub fn excerpt_of(
+    g: &Graph,
+    vault: &Path,
+    id: &str,
+    section: Option<&str>,
+) -> rusqlite::Result<Option<String>> {
     let Some(file) = OnDisk::read(g.connection(), vault, id)? else {
         return Ok(None);
     };
     let text = String::from_utf8_lossy(&file.bytes);
+    if let Some(key) = section
+        && let Some(cut) = section_excerpt(g.connection(), &text, key)?
+    {
+        return Ok(Some(cut));
+    }
     let body = match split_frontmatter(&text) {
         Ok(Some(frontmatter)) => &text[frontmatter.body_start..],
         _ => &text,
@@ -249,15 +276,54 @@ pub fn excerpt(g: &Graph, vault: &Path, id: &str) -> rusqlite::Result<Option<Str
     Ok(Some(body.trim().chars().take(EXCERPT_CHARS).collect()))
 }
 
+/// The section with this key, cut from `text`, the file it's in. `None` if the
+/// index no longer has it, and the caller falls back on the note.
+pub fn section_excerpt(
+    connection: &Connection,
+    text: &str,
+    key: &str,
+) -> rusqlite::Result<Option<String>> {
+    let lines: Option<(i64, i64)> = connection
+        .query_row(
+            "SELECT start_line, end_line FROM sections WHERE key = ?",
+            [key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(lines.map(|(start, end)| {
+        let count = (end - start + 1).max(0) as usize;
+        let section = text.lines().skip(start.max(1) as usize - 1).take(count);
+        let section = section.collect::<Vec<_>>().join("\n");
+        section.trim().chars().take(EXCERPT_CHARS).collect()
+    }))
+}
+
+/// `key`'s address in the note `id`, if a link can reach it.
+fn address(
+    connection: &Connection,
+    id: &str,
+    key: Option<&str>,
+) -> rusqlite::Result<Option<String>> {
+    let Some(key) = key else { return Ok(None) };
+    let anchor = section_anchor(connection, key)?;
+    Ok(anchor.map(|anchor| format!("{id}#{anchor}")))
+}
+
 fn item(connection: &Connection, row: &Row<'_>) -> rusqlite::Result<Item> {
     let cid: String = row.get(0)?;
+    let (src, dst): (String, String) = (row.get(1)?, row.get(2)?);
+    let (src_section, dst_section): (Option<String>, Option<String>) = (row.get(10)?, row.get(11)?);
     let generators: Option<String> = row.get(6)?;
     let features: Option<String> = row.get(7)?;
     let (verdict, rationale) = latest_verdict(connection, &cid)?.unwrap_or_default();
     Ok(Item {
         rel: judged_rel(connection, &cid)?,
-        src: row.get(1)?,
-        dst: row.get(2)?,
+        src_anchor: address(connection, &src, src_section.as_deref())?,
+        dst_anchor: address(connection, &dst, dst_section.as_deref())?,
+        src_section,
+        dst_section,
+        src,
+        dst,
         src_title: row.get(3)?,
         dst_title: row.get(4)?,
         src_class: row.get(8)?,

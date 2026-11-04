@@ -65,6 +65,12 @@ pub struct Proposal {
     pub features: Map<String, Value>,
     /// The signals combined, from 0 to 1.
     pub score: f64,
+    /// The section key at the `src` end, once [`place_sections`] has found one.
+    ///
+    /// [`place_sections`]: crate::place_sections
+    pub src_section: Option<String>,
+    /// The section key at the `dst` end, likewise.
+    pub dst_section: Option<String>,
 }
 
 /// What [`suggest`] came to.
@@ -241,6 +247,8 @@ impl Merged {
             dst: self.dst,
             features: self.features,
             score: 1.0 - self.miss,
+            src_section: None,
+            dst_section: None,
         }
     }
 }
@@ -257,7 +265,8 @@ fn squash(raw: f64) -> f64 {
 /// A run can be limited by note or generator, so rows it didn't find stay. A
 /// pair it did find is replaced, keeping its `created_at`. A pair since linked
 /// or suppressed, or whose notes are gone, is neither kept nor written. Each
-/// row records the `content_hash` of both notes, for `kbx accept` to check.
+/// row records the `content_hash` of both notes, for `kbx accept` to check. A
+/// pair has one row, so one with other sections, and another cid, gives way.
 pub fn store(g: &Graph, run: &Run) -> Result<(), GenError> {
     let connection = g.connection();
     // Immediate, so that what's checked here is still true at the commit.
@@ -289,15 +298,21 @@ pub fn store(g: &Graph, run: &Run) -> Result<(), GenError> {
         let generators = Value::from(candidate.generators.clone()).to_string();
         let features = Value::from(candidate.features.clone()).to_string();
         tx.execute(
+            "DELETE FROM candidates WHERE cid <> ?1
+                 AND ((src = ?2 AND dst = ?3) OR (src = ?3 AND dst = ?2))",
+            params![candidate.cid, candidate.src, candidate.dst],
+        )?;
+        tx.execute(
             "INSERT INTO candidates (cid, src, dst, generators, features, score, created_at,
-                 src_hash, dst_hash)
+                 src_hash, dst_hash, src_section, dst_section)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
                  (SELECT content_hash FROM files WHERE id = ?2),
-                 (SELECT content_hash FROM files WHERE id = ?3))
+                 (SELECT content_hash FROM files WHERE id = ?3), ?8, ?9)
              ON CONFLICT(cid) DO UPDATE SET src = excluded.src, dst = excluded.dst,
                  generators = excluded.generators, features = excluded.features,
                  score = excluded.score, src_hash = excluded.src_hash,
-                 dst_hash = excluded.dst_hash",
+                 dst_hash = excluded.dst_hash, src_section = excluded.src_section,
+                 dst_section = excluded.dst_section",
             params![
                 candidate.cid,
                 candidate.src,
@@ -305,7 +320,9 @@ pub fn store(g: &Graph, run: &Run) -> Result<(), GenError> {
                 generators,
                 features,
                 candidate.score,
-                now
+                now,
+                candidate.src_section,
+                candidate.dst_section
             ],
         )?;
     }

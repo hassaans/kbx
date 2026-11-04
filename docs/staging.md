@@ -22,7 +22,7 @@ kbx:
 | Key | What it says |
 |---|---|
 | `rel` | The relation proposed, or `none` if there's no judge to name one. |
-| `to` | The note it would point at. |
+| `to` | The note it would point at, with its anchor if [section anchors](sections.md) are on. |
 | `by` | The generators that found the pair, and `judge` if a judge accepted it. |
 | `score` | The signals combined, from 0 to 1, to two places. |
 | `id` | The candidate's cid, which `kbx accept` and `kbx reject` take. |

@@ -12,8 +12,8 @@ use kbx_core::{
     Graph, IndexOptions, IndexState, JudgeConfig, Ontology, Project, index_state, index_vault,
 };
 use kbx_gen::{
-    Budget, Evaluation, QmdSearch, Run, Scope, estimate_tokens, evaluate, generators, store,
-    suggest,
+    Budget, Evaluation, QmdSearch, Run, Scope, estimate_tokens, evaluate, forget_sections,
+    generators, place_sections, store, suggest,
 };
 use kbx_judge::{
     Availability, Judge as Backend, JudgeContext, JudgeId, Plan, Tally, backend, backends,
@@ -107,7 +107,11 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     }
     let mut budget = Budget::default();
     budget.per_run = options.budget.unwrap_or(budget.per_run);
-    let run = suggest(&graph, &chosen, &scope, budget)?;
+    let mut run = suggest(&graph, &chosen, &scope, budget)?;
+    let anchors = project.config.write.section_anchors;
+    if anchors {
+        place_sections(&graph, &project.vault, &mut run)?;
+    }
 
     for (name, error) in &run.skipped {
         eprintln!("warning: {name} skipped: {error}");
@@ -125,6 +129,9 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
             println!("would stage up to {} proposals", run.candidates.len());
         }
     } else {
+        if !anchors {
+            forget_sections(&graph)?;
+        }
         store(&graph, &run)?;
         println!("{} candidates", run.candidates.len());
         print_counts(&run);

@@ -14,7 +14,9 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Row};
 ///
 /// `candidates` also has `src_hash` and `dst_hash`: each note's `content_hash`
 /// when the pair was generated, which `kbx accept` compares with the file. A
-/// later `kbx index` moves `files.content_hash`, so that can't serve.
+/// later `kbx index` moves `files.content_hash`, so that can't serve. Its
+/// `src_section` and `dst_section` hold the stable section key at each end of a
+/// section-level pair, and are NULL on a note-level one (`docs/sections.md`).
 ///
 /// `staged` is the ledger of `kbx.proposed`: what kbx put in which note, which
 /// is how `kbx sync-stage` can tell a line a person removed from one never
@@ -42,7 +44,8 @@ CREATE INDEX IF NOT EXISTS aliases_id ON aliases(id);
 CREATE INDEX IF NOT EXISTS sections_id ON sections(id);
 CREATE INDEX IF NOT EXISTS links_src ON links(src);
 CREATE TABLE IF NOT EXISTS candidates (cid TEXT PRIMARY KEY, src TEXT, dst TEXT, generators TEXT,
-    features TEXT, score REAL, created_at INTEGER, src_hash TEXT, dst_hash TEXT);
+    features TEXT, score REAL, created_at INTEGER, src_hash TEXT, dst_hash TEXT,
+    src_section TEXT, dst_section TEXT);
 CREATE TABLE IF NOT EXISTS verdicts (cid TEXT, backend TEXT, model TEXT, prompt_hash TEXT, verdict TEXT,
     rel TEXT, confidence REAL, rationale TEXT, cost_usd REAL, cached_tokens INTEGER,
     created_at INTEGER, PRIMARY KEY(cid, backend, model, prompt_hash));
@@ -106,7 +109,7 @@ impl Graph {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
-        add_candidate_hashes(&conn)?;
+        add_candidate_columns(&conn)?;
         Ok(Graph { conn })
     }
 
@@ -218,18 +221,29 @@ impl Graph {
     }
 }
 
-/// Upgrades a database from before `src_hash` and `dst_hash`. Its candidates
-/// keep NULL there, so accepting one asks for a new `kbx suggest`.
-fn add_candidate_hashes(conn: &Connection) -> rusqlite::Result<()> {
-    let mut statement = conn.prepare("SELECT name FROM pragma_table_info('candidates')")?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-    let columns = rows.collect::<rusqlite::Result<HashSet<_>>>()?;
-    for column in ["src_hash", "dst_hash"] {
+/// Upgrades a database from before these columns. Its candidates keep NULL
+/// there: without hashes accepting one asks for a new `kbx suggest`, and without
+/// sections it's a note-level pair.
+fn add_candidate_columns(conn: &Connection) -> rusqlite::Result<()> {
+    let columns = candidate_columns(conn)?;
+    for column in ["src_hash", "dst_hash", "src_section", "dst_section"] {
         if !columns.contains(column) {
             conn.execute_batch(&format!("ALTER TABLE candidates ADD COLUMN {column} TEXT"))?;
         }
     }
     Ok(())
+}
+
+fn candidate_columns(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let mut statement = conn.prepare("SELECT name FROM pragma_table_info('candidates')")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// Whether `candidates` has the section columns. A database opened read-only
+/// can't be upgraded, so one from an older kbx may not.
+pub(crate) fn has_candidate_sections(conn: &Connection) -> rusqlite::Result<bool> {
+    Ok(candidate_columns(conn)?.contains("src_section"))
 }
 
 /// `path` as a `file:` URI, which SQLite needs for its query parameters.
