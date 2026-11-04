@@ -20,8 +20,8 @@ No results yet: the pairs are waiting for labels.
 - **Relation**: pairs a person accepted with a relation, where the judge accepted
   and named that relation. An inverse counts as its relation.
 - **Unsure**: `unsure` verdicts over all labelled pairs.
-- **Cost**: the stored cost of its calls, failed ones included. Login probes are
-  left out. It's an estimate for `codex-cli`, and 0 for local backends.
+- **Cost**: what its calls cost over every run, retries and failed ones included.
+  Login probes are left out. It's an estimate for `codex-cli`, and 0 for local backends.
 - **Wall time**: the time spent in its calls, added up over runs. Local figures
   depend on the machine.
 
@@ -120,13 +120,13 @@ them. No judge has seen them.
 **Without either**, each entry of `--models` judges the labelled pairs, with the
 usual batching, retry and cache. `--models` takes `backend` for the model it would
 normally use, `KBX_CLAUDE_MODEL` and the like included, or `backend:model` for
-exactly that model, which skips the switch to `qwen3:8b` on low memory. The
-default is `claude-cli`, `claude-cli:sonnet`, `codex-cli`, `ollama:qwen3:14b` and
+exactly that model, which skips the switch to `qwen3:8b` on low memory.
+`llama-server` takes no model, as it runs what it was started with. The default is `claude-cli`, `claude-cli:sonnet`, `codex-cli`, `ollama:qwen3:14b` and
 `ollama:qwen3:8b`.
 
 - Labels come from `kbx export reviews --jsonl` or a filled-in `--prepare` file.
-  A deferred or undecided pair isn't scored. A pair with several rows goes by the
-  latest, and on a tie by the accept.
+  A pair with several rows goes by the latest, and on a tie by the accept. If
+  that's a deferral, or there's no decision, the pair isn't scored.
 - Verdicts are kept in `.kbx/bakeoff.sqlite`, not the graph, so `kbx review` never
   shows them. The cache key is the usual one, so changing the prompt or the
   ontology asks every pair again.

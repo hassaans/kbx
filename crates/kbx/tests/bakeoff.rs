@@ -328,6 +328,24 @@ fn an_unknown_backend_is_refused() {
 }
 
 #[test]
+fn llama_server_cant_be_given_a_model_it_wouldnt_load() {
+    let vault = indexed();
+    let doc = doc(&vault);
+    let output = run(
+        &vault,
+        &doc,
+        "llama-server:a,llama-server:b",
+        common::CLOSED_PORT,
+    );
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("llama-server"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn a_label_with_an_unknown_decision_is_refused_by_line() {
     let vault = indexed();
     let doc = doc(&vault);
@@ -636,7 +654,7 @@ echo "{{\"is_error\":false,\"structured_output\":{{\"verdicts\":[$items]}},\"tot
     }
 
     #[test]
-    fn cost_is_what_the_verdicts_recorded_and_stays_after_a_free_rerun() {
+    fn cost_is_what_the_calls_came_to_and_stays_after_a_free_rerun() {
         let vault = indexed();
         answering_claude(&vault, 0.06);
         let doc = doc(&vault);
@@ -658,6 +676,32 @@ echo "{{\"is_error\":false,\"structured_output\":{{\"verdicts\":[$items]}},\"tot
         assert!(output.status.success(), "{}", stderr(&output));
         assert_eq!(models(&vault).len(), 2);
         assert_eq!(fs::read_to_string(&doc).unwrap(), text);
+    }
+
+    /// The first batch is charged for and unusable, so it's retried in halves.
+    #[test]
+    fn a_failed_call_counts_towards_the_cost_though_no_verdict_keeps_it() {
+        let vault = indexed();
+        answering_claude(&vault, 0.06);
+        let program = vault.path.program("claude");
+        let script = fs::read_to_string(&program).unwrap();
+        let script = script.replacen(
+            "items=$(",
+            r#"if [ ! -e "$d/failed" ]; then
+  : > "$d/failed"
+  echo '{"is_error":false,"total_cost_usd":0.05,"usage":{}}'
+  exit 0
+fi
+items=$("#,
+            1,
+        );
+        common::write_executable(&program, &script);
+        let doc = doc(&vault);
+        let output = claude(&vault, &doc, "claude-cli", &[]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let text = fs::read_to_string(&doc).unwrap();
+        assert_eq!(cell(&text, "| claude-cli | haiku", "Answered"), "6/6");
+        assert_eq!(cell(&text, "| claude-cli | haiku", "Cost"), "$0.1700");
     }
 
     #[test]

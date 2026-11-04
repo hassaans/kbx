@@ -111,7 +111,6 @@ struct Label {
     accepted: bool,
     /// The relation accepted, under its forward name.
     rel: Option<String>,
-    decided_at: Option<i64>,
 }
 
 /// What a labels file comes to.
@@ -119,13 +118,14 @@ struct Label {
 struct Labels {
     /// In cid order, which says nothing about the decisions.
     pairs: Vec<Label>,
-    /// Rows with no decision, as in a half-filled `--prepare` file.
+    /// Pairs with no decision, as in a half-filled `--prepare` file, or put off.
     undecided: usize,
 }
 
 fn read_labels(text: &str, ontology: &Ontology) -> Result<Labels, Box<dyn Error>> {
-    let mut latest: BTreeMap<String, Label> = BTreeMap::new();
-    let mut undecided = 0;
+    // A pair can have a row per relation, and the last word stands, even if
+    // that's to put it off. On a tie an accept wins, as only that writes a link.
+    let mut latest: BTreeMap<String, (Option<i64>, u8, Option<Label>)> = BTreeMap::new();
     for (index, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
@@ -133,14 +133,10 @@ fn read_labels(text: &str, ontology: &Ontology) -> Result<Labels, Box<dyn Error>
         let number = index + 1;
         let row: Pair =
             serde_json::from_str(line).map_err(|error| format!("line {number}: {error}"))?;
-        let accepted = match row.decision.as_deref() {
-            Some("accept") => true,
-            Some("reject") => false,
-            // Deferring is putting off a decision.
-            Some("defer") | None => {
-                undecided += 1;
-                continue;
-            }
+        let (rank, accepted) = match row.decision.as_deref() {
+            Some("accept") => (2, Some(true)),
+            Some("reject") => (1, Some(false)),
+            Some("defer") | None => (0, None),
             Some(other) => {
                 return Err(format!(
                     "line {number}: `{other}` is not a decision; expected accept, reject or defer"
@@ -158,27 +154,26 @@ fn read_labels(text: &str, ontology: &Ontology) -> Result<Labels, Box<dyn Error>
             None => None,
         };
         let (src, dst) = ordered(&row.src, &row.dst);
-        let label = Label {
-            cid: cid(&src, &dst),
+        let cid = cid(&src, &dst);
+        let label = accepted.map(|accepted| Label {
+            cid: cid.clone(),
             src,
             dst,
             accepted,
             rel: rel.filter(|_| accepted),
-            decided_at: row.decided_at,
-        };
-        // A pair can have a row per relation. The last word stands, and on a
-        // tie the accept: only that writes a link.
-        match latest.get(&label.cid) {
-            Some(held) if (held.decided_at, held.accepted) > (label.decided_at, label.accepted) => {
-            }
+        });
+        match latest.get(&cid) {
+            Some(held) if (held.0, held.1) > (row.decided_at, rank) => {}
             _ => {
-                latest.insert(label.cid.clone(), label);
+                latest.insert(cid, (row.decided_at, rank, label));
             }
         }
     }
+    let total = latest.len();
+    let pairs: Vec<Label> = latest.into_values().filter_map(|row| row.2).collect();
     Ok(Labels {
-        pairs: latest.into_values().collect(),
-        undecided,
+        undecided: total - pairs.len(),
+        pairs,
     })
 }
 
@@ -187,7 +182,6 @@ fn read_labels(text: &str, ontology: &Ontology) -> Result<Labels, Box<dyn Error>
 struct Answer {
     verdict: String,
     rel: Option<String>,
-    cost_usd: Option<f64>,
 }
 
 /// One judge against the labels.
@@ -205,8 +199,6 @@ struct Score {
     by_relation: BTreeMap<String, usize>,
     unsure: usize,
     errors: usize,
-    /// What its calls cost, failed ones included, if any was priced.
-    cost_usd: Option<f64>,
 }
 
 fn score(labels: &[Label], answers: &HashMap<String, Answer>) -> Score {
@@ -215,9 +207,6 @@ fn score(labels: &[Label], answers: &HashMap<String, Answer>) -> Score {
         let Some(answer) = answers.get(&label.cid) else {
             continue;
         };
-        if let Some(cost) = answer.cost_usd {
-            *score.cost_usd.get_or_insert(0.0) += cost;
-        }
         match answer.verdict.as_str() {
             JUDGE_ERROR => {
                 score.errors += 1;
@@ -248,8 +237,8 @@ struct Entry {
     backend: JudgeId,
     model: String,
     score: Score,
-    /// How long its calls took, over every run.
-    wall_ms: u64,
+    /// What its calls took, over every run.
+    effort: Effort,
     /// Why it didn't run, if it didn't.
     note: String,
 }
@@ -287,7 +276,8 @@ fn render(labels: &[Label], entries: &[Entry]) -> String {
     for entry in entries {
         let score = &entry.score;
         let rejects_agreed = score.agreed - score.accepts_agreed;
-        let cost = score
+        let cost = entry
+            .effort
             .cost_usd
             .map_or("-".to_string(), |cost| format!("${cost:.4}"));
         let _ = writeln!(
@@ -302,7 +292,7 @@ fn render(labels: &[Label], entries: &[Entry]) -> String {
             percent(score.relations_agreed, named),
             percent(score.unsure, total),
             score.errors,
-            duration(entry.wall_ms),
+            duration(entry.effort.ms),
             entry.note,
         );
     }
@@ -350,6 +340,14 @@ fn contestant(entry: &str, project: &Project) -> Result<Box<dyn Judge>, Box<dyn 
         let names = JudgeId::ALL.map(JudgeId::as_str).join(", ");
         format!("`{name}` is not a backend; the backends are {names}")
     })?;
+    // It runs what it was started with, whatever a request names, so two names
+    // would be one model scored twice.
+    if id == JudgeId::LlamaServer && model.is_some() {
+        return Err(format!(
+            "`{entry}`: llama-server can't choose a model; name it alone, once per server"
+        )
+        .into());
+    }
     let (config, vault) = (&project.config.judge, Some(project.vault.as_path()));
     Ok(match model {
         Some(model) => backend_with_model(id, model, config, vault),
@@ -357,39 +355,54 @@ fn contestant(entry: &str, project: &Project) -> Result<Box<dyn Judge>, Box<dyn 
     })
 }
 
-/// The bake-off's own database: verdicts, and how long they took.
+/// What a judge's calls have come to, retries and failed calls included. A
+/// verdict row can't say: it keeps only the call that last wrote it, and a
+/// later run replaces an `error` row.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct Effort {
+    ms: u64,
+    /// `None` if no call was priced.
+    cost_usd: Option<f64>,
+}
+
+/// The bake-off's own database: verdicts, and what they took.
 fn open_cache(project: &Project) -> Result<Graph, Box<dyn Error>> {
     let cache = Graph::open(&project.graph.with_file_name("bakeoff.sqlite"))?;
     cache.connection().execute_batch(
-        "CREATE TABLE IF NOT EXISTS wall_time (backend TEXT, model TEXT, prompt_hash TEXT,
-             ms INTEGER, PRIMARY KEY(backend, model, prompt_hash));",
+        "CREATE TABLE IF NOT EXISTS effort (backend TEXT, model TEXT, prompt_hash TEXT,
+             ms INTEGER, cost_usd REAL, PRIMARY KEY(backend, model, prompt_hash));",
     )?;
     Ok(cache)
 }
 
-fn add_wall_time(
+fn add_effort(
     cache: &Graph,
     id: JudgeId,
     model: &str,
     hash: &str,
-    ms: u64,
+    effort: Effort,
 ) -> rusqlite::Result<()> {
     cache.connection().execute(
-        "INSERT INTO wall_time VALUES (?, ?, ?, ?)
-         ON CONFLICT DO UPDATE SET ms = ms + excluded.ms",
-        params![id.as_str(), model, hash, ms as i64],
+        "INSERT INTO effort VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT DO UPDATE SET ms = ms + excluded.ms,
+             cost_usd = CASE WHEN cost_usd IS NULL THEN excluded.cost_usd
+                 ELSE cost_usd + COALESCE(excluded.cost_usd, 0) END",
+        params![id.as_str(), model, hash, effort.ms as i64, effort.cost_usd],
     )?;
     Ok(())
 }
 
-fn wall_time(cache: &Graph, id: JudgeId, model: &str, hash: &str) -> rusqlite::Result<u64> {
-    let mut statement = cache
-        .connection()
-        .prepare("SELECT ms FROM wall_time WHERE backend = ? AND model = ? AND prompt_hash = ?")?;
+fn effort(cache: &Graph, id: JudgeId, model: &str, hash: &str) -> rusqlite::Result<Effort> {
+    let mut statement = cache.connection().prepare(
+        "SELECT ms, cost_usd FROM effort WHERE backend = ? AND model = ? AND prompt_hash = ?",
+    )?;
     let mut rows = statement.query(params![id.as_str(), model, hash])?;
     Ok(match rows.next()? {
-        Some(row) => row.get::<_, i64>(0)? as u64,
-        None => 0,
+        Some(row) => Effort {
+            ms: row.get::<_, i64>(0)? as u64,
+            cost_usd: row.get(1)?,
+        },
+        None => Effort::default(),
     })
 }
 
@@ -400,14 +413,13 @@ fn answers(
     hash: &str,
 ) -> rusqlite::Result<HashMap<String, Answer>> {
     let mut statement = cache.connection().prepare(
-        "SELECT cid, verdict, rel, cost_usd FROM verdicts
+        "SELECT cid, verdict, rel FROM verdicts
          WHERE backend = ? AND model = ? AND prompt_hash = ?",
     )?;
     let rows = statement.query_map(params![id.as_str(), model, hash], |row| {
         let answer = Answer {
             verdict: row.get(1)?,
             rel: row.get(2)?,
-            cost_usd: row.get(3)?,
         };
         Ok((row.get(0)?, answer))
     })?;
@@ -515,7 +527,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         entries.push(Entry {
             backend: id,
             score: score(&labels.pairs, &answers(&cache, id, &model, hash)?),
-            wall_ms: wall_time(&cache, id, &model, hash)?,
+            effort: effort(&cache, id, &model, hash)?,
             model,
             note,
         });
@@ -569,8 +581,12 @@ async fn take_turn(
     };
     let started = Instant::now();
     let tally = judge_all(judge.as_ref(), cache, views, context, plan).await?;
-    let ms = started.elapsed().as_millis() as u64;
-    add_wall_time(cache, id, &model, &context.prompt_hash, ms)?;
+    let effort = Effort {
+        ms: started.elapsed().as_millis() as u64,
+        // The tally starts from the plan's spend, which isn't this judge's calls.
+        cost_usd: tally.cost_usd.map(|cost| cost - plan.spent_usd),
+    };
+    add_effort(cache, id, &model, &context.prompt_hash, effort)?;
     *budgeted.spent = tally.cost_usd.unwrap_or(*budgeted.spent);
     eprintln!(
         "{id} ({model}): {} accept, {} reject, {} unsure, {} unjudged, {} error, {} already judged",
@@ -858,6 +874,26 @@ mod tests {
     }
 
     #[test]
+    fn a_later_deferral_takes_a_pair_out() {
+        let labels = read(&[
+            r#"{"src":"a","dst":"b","rel":"part_of","decision":"accept","decided_at":1}"#,
+            r#"{"src":"a","dst":"b","rel":"see_also","decision":"defer","decided_at":2}"#,
+        ]);
+        assert!(labels.pairs.is_empty());
+        assert_eq!(labels.undecided, 1);
+    }
+
+    #[test]
+    fn an_earlier_deferral_gives_way_to_the_decision() {
+        let labels = read(&[
+            r#"{"src":"a","dst":"b","rel":"none","decision":"defer","decided_at":1}"#,
+            r#"{"src":"a","dst":"b","rel":"none","decision":"reject","decided_at":2}"#,
+        ]);
+        assert_eq!(labels.pairs.len(), 1);
+        assert_eq!(labels.undecided, 0);
+    }
+
+    #[test]
     fn an_unanswered_pair_agrees_with_nothing_and_an_error_is_no_answer() {
         let labels = read(&[
             r#"{"src":"a","dst":"b","rel":"part_of","decision":"accept"}"#,
@@ -866,11 +902,9 @@ mod tests {
         let error = Answer {
             verdict: JUDGE_ERROR.to_string(),
             rel: None,
-            cost_usd: Some(0.5),
         };
         let answers = HashMap::from([(labels.pairs[0].cid.clone(), error)]);
         let score = score(&labels.pairs, &answers);
         assert_eq!((score.answered, score.agreed, score.errors), (0, 0, 1));
-        assert_eq!(score.cost_usd, Some(0.5));
     }
 }
