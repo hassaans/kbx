@@ -192,8 +192,9 @@ pub fn section_cid(
 }
 
 /// A section's anchor as the index knows it: `^block-id`, or the slug path if it
-/// has no block id. `None` if no link can reach it (`docs/sections.md`), which
-/// takes the same rule as [`Note::section_fragment`].
+/// has no block id, for the address shown in review. `None` if it has neither.
+/// Whether a link can reach it is for [`Note::section_fragment`] to say: the
+/// index keeps slugs, and different headings can share one.
 pub fn section_anchor(connection: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
     let block: Option<String> = connection
         .query_row(
@@ -208,10 +209,7 @@ pub fn section_anchor(connection: &Connection, key: &str) -> rusqlite::Result<Op
     }
     connection
         .query_row(
-            "SELECT s.heading_path FROM sections s
-             WHERE s.key = ? AND s.heading_path <> '' AND NOT EXISTS (
-                 SELECT 1 FROM sections e WHERE e.id = s.id
-                     AND e.heading_path = s.heading_path AND e.start_line < s.start_line)",
+            "SELECT heading_path FROM sections WHERE key = ? AND heading_path <> ''",
             [key],
             |row| row.get(0),
         )

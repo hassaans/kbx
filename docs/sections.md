@@ -38,8 +38,10 @@ Which anchor a section gets, in order:
 1. The first `^block-id` in the section. An id on the heading itself comes first,
    because it's on the section's first line. If a note repeats an id, only the
    first block holds it.
-2. The heading path, unless an earlier section has the same path. A link can
-   only reach the first of them.
+2. The heading path, unless the link would read the same as an earlier section's.
+   A link can only reach the first of them. Headings that differ only in their
+   slug, like `Rate-limits` and `Rate limits`, have different links, so both can
+   be anchored, though both show the same address in review.
 3. Nothing, as for text before the first heading with no block id. That end of
    the pair stays note-level.
 

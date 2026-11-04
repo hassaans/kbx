@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use kbx_core::{Graph, section_anchor, section_cid};
+use kbx_core::{Graph, parse_note, section_cid};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value};
 use tracing::warn;
@@ -14,8 +14,16 @@ use crate::GenError;
 use crate::alias::words;
 use crate::pipeline::{Proposal, Run};
 
-/// A note's sections as `(key, words)`, in file order.
-type Sections = Vec<(String, Vec<String>)>;
+/// A section of a note, as placing a pair needs it.
+struct Read {
+    key: String,
+    words: Vec<String>,
+    /// A link can reach it.
+    linkable: bool,
+}
+
+/// A note's sections, in file order.
+type Sections = Vec<Read>;
 
 /// Gives each pair `qmd_knn` or `alias_cooccur` found the section at each end
 /// that a link can reach, and the [`section_cid`] that goes with them. A pair
@@ -54,14 +62,14 @@ fn place(
     id: &str,
     terms: &[Vec<String>],
 ) -> rusqlite::Result<Option<String>> {
-    let found = most_terms(g, vault, read, id, terms)?;
-    let searched = search_section(&proposal.features, id);
-    for key in [found, searched].into_iter().flatten() {
-        if section_anchor(g.connection(), &key)?.is_some() {
-            return Ok(Some(key));
-        }
+    if !read.contains_key(id) {
+        read.insert(id.to_string(), read_sections(g, vault, id)?);
     }
-    Ok(None)
+    let sections = &read[id];
+    let found = most_terms(sections, terms);
+    let searched = search_section(&proposal.features, id);
+    let linkable = |key: &String| sections.iter().any(|s| s.key == *key && s.linkable);
+    Ok([found, searched].into_iter().flatten().find(linkable))
 }
 
 /// What `alias_cooccur` matched, either way round, each term as its words.
@@ -84,32 +92,21 @@ fn search_section(features: &Map<String, Value>, id: &str) -> Option<String> {
 
 /// The key of the section of `id` that says `terms` most often, the first of
 /// any that tie. `None` if the note says none of them.
-fn most_terms(
-    g: &Graph,
-    vault: &Path,
-    read: &mut HashMap<String, Sections>,
-    id: &str,
-    terms: &[Vec<String>],
-) -> rusqlite::Result<Option<String>> {
-    if terms.is_empty() {
-        return Ok(None);
-    }
-    if !read.contains_key(id) {
-        read.insert(id.to_string(), section_words(g, vault, id)?);
-    }
+fn most_terms(sections: &Sections, terms: &[Vec<String>]) -> Option<String> {
     let mut best: Option<(&String, usize)> = None;
-    for (key, words) in &read[id] {
+    for section in sections {
+        let words = &section.words;
         let hits = (0..words.len())
             .filter(|at| terms.iter().any(|term| words[*at..].starts_with(term)))
             .count();
         if hits > best.map_or(0, |(_, most)| most) {
-            best = Some((key, hits));
+            best = Some((&section.key, hits));
         }
     }
-    Ok(best.map(|(key, _)| key.clone()))
+    best.map(|(key, _)| key.clone())
 }
 
-fn section_words(g: &Graph, vault: &Path, id: &str) -> rusqlite::Result<Sections> {
+fn read_sections(g: &Graph, vault: &Path, id: &str) -> rusqlite::Result<Sections> {
     let connection = g.connection();
     let path: Option<String> = connection
         .query_row("SELECT path FROM files WHERE id = ?", [id], |row| {
@@ -121,6 +118,13 @@ fn section_words(g: &Graph, vault: &Path, id: &str) -> rusqlite::Result<Sections
     };
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
+        Err(error) => {
+            warn!("{}: {error}", path.display());
+            return Ok(Vec::new());
+        }
+    };
+    let note = match parse_note(&path, &text) {
+        Ok(note) => note,
         Err(error) => {
             warn!("{}: {error}", path.display());
             return Ok(Vec::new());
@@ -139,7 +143,11 @@ fn section_words(g: &Graph, vault: &Path, id: &str) -> rusqlite::Result<Sections
         let (key, start, end) = row?;
         let end = end.min(lines.len());
         let section = lines.get(start.saturating_sub(1)..end).unwrap_or_default();
-        sections.push((key, words(&section.join("\n"))));
+        sections.push(Read {
+            linkable: note.section_fragment(&key).is_some(),
+            words: words(&section.join("\n")),
+            key,
+        });
     }
     Ok(sections)
 }

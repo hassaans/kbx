@@ -1,5 +1,5 @@
 //! `place_sections` over small written vaults: which section each end of a pair
-//! gets, and that the index agrees with the note about what a link can reach.
+//! gets, and that whatever a link can reach has an address to show in review.
 
 use std::fs;
 use std::path::Path;
@@ -13,7 +13,9 @@ const ONTOLOGY: &str = include_str!("../../../schema/ontology.example.yaml");
 
 const A: &str = "# Intro\n\nNothing here.\n\n# Limits\n\nThe token bucket refills. ^limits\n\n\
                  # Other\n\nThe token bucket again, and token bucket once more. ^other\n";
-const B: &str = "Text before any heading.\n\n# Steps\n\nFirst.\n\n# Steps\n\nSecond.\n";
+const B: &str = "Text before any heading.\n\n# Steps\n\nFirst.\n\n# Steps\n\nSecond.\n\n\
+                 # Rate-limits\n\nOne.\n\n# Rate limits\n\nTwo.\n\n\
+                 # Q: A\n\nThree.\n\n# Q A\n\nFour.\n";
 
 struct Written {
     graph: Graph,
@@ -105,6 +107,28 @@ fn a_section_no_link_can_reach_leaves_its_end_note_level() {
 }
 
 #[test]
+fn headings_that_share_a_slug_but_not_a_link_can_both_be_placed() {
+    let vault = written();
+    for heading in ["Rate-limits", "Rate limits"] {
+        let key = vault.key("b", heading, 0);
+        let placed = vault.place(json!({"qmd_knn": {"sections": {"b": key}}}));
+        assert_eq!(placed.dst_section, Some(key), "{heading}");
+    }
+}
+
+#[test]
+fn a_heading_whose_link_reads_like_an_earlier_one_stays_note_level() {
+    let vault = written();
+    let first = vault.key("b", "Q: A", 0);
+    let placed = vault.place(json!({"qmd_knn": {"sections": {"b": first}}}));
+    assert_eq!(placed.dst_section, Some(first));
+
+    let second = vault.key("b", "Q A", 0);
+    let placed = vault.place(json!({"qmd_knn": {"sections": {"b": second}}}));
+    assert_eq!(placed.dst_section, None);
+}
+
+#[test]
 fn other_generators_leave_a_pair_at_note_level() {
     let vault = written();
     let placed = vault.place(json!({"adamic_adar": {"score": 0.4}}));
@@ -113,7 +137,7 @@ fn other_generators_leave_a_pair_at_note_level() {
 }
 
 #[test]
-fn the_index_and_the_note_agree_on_what_a_link_can_reach() {
+fn whatever_a_link_can_reach_has_an_address() {
     let vault = written();
     for (name, id) in [("a-note.md", "a"), ("b-note.md", "b")] {
         let text = fs::read_to_string(vault.dir.path().join(name)).unwrap();
@@ -123,7 +147,7 @@ fn the_index_and_the_note_agree_on_what_a_link_can_reach() {
             let key = section.key.to_string();
             let indexed = section_anchor(vault.graph.connection(), &key).unwrap();
             let fragment = note.section_fragment(&key);
-            assert_eq!(indexed.is_some(), fragment.is_some(), "{key}");
+            assert!(indexed.is_some() || fragment.is_none(), "{key}");
             if let Some(block) = fragment.filter(|f| f.starts_with('^')) {
                 assert_eq!(indexed, Some(block));
             }

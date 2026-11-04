@@ -66,11 +66,11 @@ impl Note {
         if let Some(block) = blocks.into_iter().find(|block| !taken(&block.id)) {
             return Some(format!("^{}", block.id));
         }
-        // A heading link only reaches the first of several with the same path.
-        match section.ordinal {
-            0 => link_heading_path(&section.heading_path),
-            _ => None,
-        }
+        // A heading link only reaches the first section it could mean.
+        let link = link_heading_path(&section.heading_path)?;
+        let reads_the_same =
+            |s: &Section| link_heading_path(&s.heading_path).is_some_and(|earlier| earlier == link);
+        (!earlier.iter().any(reads_the_same)).then_some(link)
     }
 }
 

@@ -265,6 +265,16 @@ fn text_before_the_first_heading_has_no_anchor_without_a_block_id() {
 }
 
 #[test]
+fn a_heading_link_goes_to_the_first_section_it_could_mean() {
+    let note = note("# Rate-limits\n\n# Rate limits\n\n# Q: A\n\n# Q A\n\n# Q A\n");
+    assert_eq!(fragment(&note, 0).as_deref(), Some("Rate-limits"));
+    assert_eq!(fragment(&note, 1).as_deref(), Some("Rate limits"));
+    assert_eq!(fragment(&note, 2).as_deref(), Some("Q A"));
+    assert_eq!(fragment(&note, 3), None);
+    assert_eq!(fragment(&note, 4), None);
+}
+
+#[test]
 fn an_unknown_key_has_no_anchor() {
     assert_eq!(note(BODY).section_fragment("nothing"), None);
 }
