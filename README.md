@@ -5,7 +5,16 @@ graph. It suggests links between notes, judges them with LLMs, and writes the
 relations you accept back to frontmatter. It's built for Obsidian and other
 personal knowledge management users.
 
-kbx is in early development: `kbx --version` is the only command so far.
+kbx is in early development. So far it compiles a vault into a graph:
+
+```sh
+kbx init                # create .kbx/, kbx.toml and the example ontology
+kbx index               # compile changed notes into .kbx/graph.sqlite
+kbx index --full        # rebuild, ignoring the stored hashes
+kbx index notes/a.md    # limit the run to some files and folders
+```
+
+Set `KBX_LOG=debug` to see each file that's skipped.
 
 ## Install
 

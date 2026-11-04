@@ -12,6 +12,13 @@ use crate::ontology::{Ontology, RelationKey, admits};
 #[derive(Debug, Clone)]
 pub struct Vault {
     notes: Vec<Note>,
+    resolver: Resolver,
+}
+
+/// Finds what a link target names, from ids, paths and aliases alone. The
+/// index resolves stored links with this, without parsing the notes again.
+#[derive(Debug, Clone, Default)]
+pub struct Resolver {
     by_id: HashMap<String, BTreeSet<usize>>,
     by_filename: HashMap<String, BTreeSet<usize>>,
     by_alias: HashMap<String, BTreeSet<usize>>,
@@ -94,46 +101,31 @@ impl fmt::Display for FindingCode {
     }
 }
 
-impl Vault {
-    /// Indexes `notes` by id, filename and alias. Sets of notes that share an
-    /// id or name are kept: links to them just don't resolve.
-    pub fn new(notes: Vec<Note>) -> Vault {
-        let mut vault = Vault {
-            notes,
-            by_id: HashMap::new(),
-            by_filename: HashMap::new(),
-            by_alias: HashMap::new(),
-        };
-        for (index, note) in vault.notes.iter().enumerate() {
-            vault
-                .by_id
-                .entry(note.id.clone())
+impl Resolver {
+    /// Registers a note under `index`, the caller's handle for it.
+    pub fn add<S: AsRef<str>>(
+        &mut self,
+        index: usize,
+        id: &str,
+        path: &Path,
+        aliases: impl IntoIterator<Item = S>,
+    ) {
+        self.by_id.entry(id.to_string()).or_default().insert(index);
+        for name in filename_keys(path) {
+            self.by_filename.entry(name).or_default().insert(index);
+        }
+        for alias in aliases {
+            self.by_alias
+                .entry(alias.as_ref().to_lowercase())
                 .or_default()
                 .insert(index);
-            for name in filename_keys(&note.path) {
-                vault.by_filename.entry(name).or_default().insert(index);
-            }
-            for alias in &note.aliases {
-                vault
-                    .by_alias
-                    .entry(alias.to_lowercase())
-                    .or_default()
-                    .insert(index);
-            }
         }
-        vault
-    }
-
-    /// The notes, in the order given to [`Vault::new`].
-    pub fn notes(&self) -> &[Note] {
-        &self.notes
     }
 
     /// Resolves by id first, then by filename, then by alias; filename and
     /// alias ignore case, as Obsidian does. The first step that matches
-    /// decides, so a link is `None` if that step matches several notes.
-    pub fn resolve(&self, link: &Link) -> Option<Resolved<'_>> {
-        let target = link.target.as_str();
+    /// decides, so a target is `None` if that step matches several notes.
+    pub fn resolve(&self, target: &str) -> Option<(usize, ResolvedVia)> {
         let id_prefix = target.split_once('-').map_or(target, |(id, _)| id);
         let name = normalize_name(target);
         let steps = [
@@ -148,12 +140,35 @@ impl Vault {
         let (matches, via) = steps.into_iter().find_map(|(hit, via)| Some((hit?, via)))?;
         let mut matches = matches.iter();
         match (matches.next(), matches.next()) {
-            (Some(&index), None) => Some(Resolved {
-                note: &self.notes[index],
-                via,
-            }),
+            (Some(&index), None) => Some((index, via)),
             _ => None,
         }
+    }
+}
+
+impl Vault {
+    /// Indexes `notes` by id, filename and alias. Sets of notes that share an
+    /// id or name are kept: links to them just don't resolve.
+    pub fn new(notes: Vec<Note>) -> Vault {
+        let mut resolver = Resolver::default();
+        for (index, note) in notes.iter().enumerate() {
+            resolver.add(index, &note.id, &note.path, &note.aliases);
+        }
+        Vault { notes, resolver }
+    }
+
+    /// The notes, in the order given to [`Vault::new`].
+    pub fn notes(&self) -> &[Note] {
+        &self.notes
+    }
+
+    /// Resolves a link as [`Resolver::resolve`] does.
+    pub fn resolve(&self, link: &Link) -> Option<Resolved<'_>> {
+        let (index, via) = self.resolver.resolve(&link.target)?;
+        Some(Resolved {
+            note: &self.notes[index],
+            via,
+        })
     }
 
     /// Validates every note, ordered by path and then line.
