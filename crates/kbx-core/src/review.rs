@@ -16,6 +16,10 @@ use crate::note::{Note, parse_note};
 use crate::ontology::{NONE, Ontology, admits};
 use crate::writer::{Staged, WriteError, add_relation, holds_link, write_atomic};
 
+mod queue;
+
+pub use queue::{Item, Queue, excerpt};
+
 /// Rejections of a pair, across all relations, that suppress it from every
 /// generator.
 pub const STRIKES: i64 = 3;
@@ -87,6 +91,9 @@ pub struct Unrejected {
 /// Why a decision was refused. Nothing is written in any of these cases.
 #[derive(Debug, thiserror::Error)]
 pub enum ReviewError {
+    /// The [`Queue`] has no current item to decide on.
+    #[error("the queue is empty")]
+    EmptyQueue,
     /// The cid isn't in `candidates`.
     #[error("no candidate {0}; run `kbx suggest`")]
     UnknownCandidate(String),
@@ -378,7 +385,7 @@ fn judged_rel(connection: &Connection, cid: &str) -> rusqlite::Result<Option<Str
     connection
         .query_row(
             "SELECT rel FROM verdicts WHERE cid = ?1 AND rel IS NOT NULL AND rel <> ?2
-             ORDER BY created_at DESC LIMIT 1",
+             ORDER BY created_at DESC, rowid DESC LIMIT 1",
             params![cid, NONE],
             |row| row.get(0),
         )

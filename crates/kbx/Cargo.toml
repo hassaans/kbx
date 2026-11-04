@@ -13,6 +13,7 @@ kbx-core = { version = "0.1.0", path = "../kbx-core" }
 kbx-gen = { version = "0.1.0", path = "../kbx-gen" }
 notify = "8.2.1"
 notify-debouncer-full = "0.7.0"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 serde_json = "1"
 sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
 tracing = "0.1.44"

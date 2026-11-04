@@ -1,30 +1,55 @@
-//! `kbx accept`, `reject`, `defer` and `unreject`.
+//! `kbx review`, `accept`, `reject`, `defer` and `unreject`.
 
 use std::env;
 use std::error::Error;
+use std::io::{IsTerminal, stdin, stdout};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use kbx_core::{
-    Decision, Graph, IndexOptions, IndexState, Ontology, Project, ReviewError, STRIKES, cid,
-    index_state, index_vault, suppressed_pairs,
+    Decision, Graph, IndexError, IndexOptions, IndexState, Item, Ontology, Project, Queue,
+    ReviewError, STRIKES, cid, index_state, index_vault, suppressed_pairs,
 };
+use serde_json::{Value, json};
+use tracing::warn;
+
+use crate::tui;
+
+const NO_INDEX: &str = "the vault has no index yet; run `kbx index`";
 
 /// What every decision starts from.
-struct Session {
-    project: Project,
+pub(crate) struct Session {
+    pub(crate) project: Project,
     yaml: String,
-    ontology: Ontology,
-    graph: Graph,
+    pub(crate) ontology: Ontology,
+    pub(crate) graph: Graph,
 }
 
 impl Session {
     fn open() -> Result<Session, Box<dyn Error>> {
+        Session::of(Project::discover(&env::current_dir()?)?)
+    }
+
+    pub(crate) fn of(project: Project) -> Result<Session, Box<dyn Error>> {
+        let graph = Graph::open(&project.graph)?;
+        Session::with(project, graph)
+    }
+
+    /// For looking only: the database stays as it is.
+    fn read_only() -> Result<Session, Box<dyn Error>> {
         let project = Project::discover(&env::current_dir()?)?;
+        if !project.graph.is_file() {
+            return Err(NO_INDEX.into());
+        }
+        let graph = Graph::open_read_only(&project.graph)?;
+        Session::with(project, graph)
+    }
+
+    fn with(project: Project, graph: Graph) -> Result<Session, Box<dyn Error>> {
         let yaml = crate::read_ontology(&project)?;
         let ontology = Ontology::parse(&yaml)?;
-        let graph = Graph::open(&project.graph)?;
         if index_state(&graph, &yaml)? == IndexState::Unbuilt {
-            return Err("the vault has no index yet; run `kbx index`".into());
+            return Err(NO_INDEX.into());
         }
         Ok(Session {
             project,
@@ -33,6 +58,75 @@ impl Session {
             graph,
         })
     }
+
+    pub(crate) fn vault(&self) -> &Path {
+        &self.project.vault
+    }
+
+    /// Brings the index up to date with what accepting wrote, given as paths
+    /// from the vault. The links are on disk by now, so a failure here is for
+    /// `kbx index` to repair.
+    pub(crate) fn reindex(&mut self, written: &[PathBuf]) -> Result<(), IndexError> {
+        if written.is_empty() {
+            return Ok(());
+        }
+        let options = IndexOptions {
+            paths: written.iter().map(|p| self.vault().join(p)).collect(),
+            ..IndexOptions::default()
+        };
+        let vault = &self.project.vault;
+        index_vault(&mut self.graph, vault, &self.yaml, &options)?;
+        Ok(())
+    }
+}
+
+pub fn run(json: bool) -> Result<ExitCode, Box<dyn Error>> {
+    let session = if json {
+        Session::read_only()?
+    } else {
+        Session::open()?
+    };
+    let queue = Queue::load(&session.graph, &session.ontology)?;
+    if json {
+        println!("{}", queue_json(&queue));
+        return Ok(ExitCode::SUCCESS);
+    }
+    if queue.current().is_none() {
+        match queue.hidden() {
+            0 => println!("nothing to review"),
+            hidden => println!("nothing to review; {hidden} hidden, already rejected"),
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    if !stdin().is_terminal() || !stdout().is_terminal() {
+        return Err("`kbx review` needs a terminal; `kbx review --json` prints the queue".into());
+    }
+    let yaml = &session.yaml;
+    if index_state(&session.graph, yaml)? == IndexState::Stale {
+        warn!("the index is out of date; run `kbx index`");
+    }
+    tui::run(session, queue)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The queue for editors and agents, in the order `kbx review` shows it.
+fn queue_json(queue: &Queue) -> Value {
+    queue.items().iter().map(item_json).collect()
+}
+
+fn item_json(item: &Item) -> Value {
+    json!({
+        "cid": item.cid,
+        "src": item.src,
+        "dst": item.dst,
+        "src_title": item.src_title,
+        "dst_title": item.dst_title,
+        "rel": item.rel,
+        "score": item.score,
+        "generators": item.generators,
+        "verdict": item.verdict,
+        "rationale": item.rationale,
+    })
 }
 
 /// Runs `decide` on each cid. One refusal doesn't stop the rest, and fails the
@@ -76,19 +170,11 @@ pub fn accept(
         );
         for path in accepted.written {
             println!("  wrote {}", path.display());
-            written.push(session.project.vault.join(path));
+            written.push(path);
         }
         Ok(())
     });
-    // The links are on disk, so a failure here is for `kbx index` to repair.
-    if !written.is_empty() {
-        let options = IndexOptions {
-            paths: written,
-            ..IndexOptions::default()
-        };
-        let vault = &session.project.vault;
-        index_vault(&mut session.graph, vault, &session.yaml, &options)?;
-    }
+    session.reindex(&written)?;
     Ok(code)
 }
 

@@ -103,3 +103,6 @@ suppressed pairs. Unrejecting clears the strikes and keeps the rows and their
 reasons, because `reviews` is the evaluation set for the generators.
 
 `kbx defer` records the decision and leaves the candidate in the queue.
+
+`kbx review` takes the same decisions one candidate at a time: see
+[Reviewing candidates](review.md).
