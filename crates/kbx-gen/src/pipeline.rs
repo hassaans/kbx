@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 
 use crate::alias::AliasCooccur;
 use crate::knn::QmdKnn;
+use crate::prior::TypePairPrior;
 use crate::schema::SchemaGap;
 use crate::search::Search;
 use crate::snapshot::{Snapshot, ordered};
@@ -15,13 +16,14 @@ use crate::{GenError, Generator, Scope};
 
 /// Every generator. The union keeps the direction of the first to find a pair,
 /// so the ones whose direction means something come first.
-const NAMES: [&str; 6] = [
+const NAMES: [&str; 7] = [
     "schema_gap",
     "alias_cooccur",
     "common_neighbors",
     "adamic_adar",
     "two_hop_bridge",
     "qmd_knn",
+    "type_pair_prior",
 ];
 
 /// The most of a note the judge sees (§6.3).
@@ -106,6 +108,7 @@ pub fn generators(
             "common_neighbors" => list.push(Box::new(CommonNeighbors)),
             "adamic_adar" => list.push(Box::new(AdamicAdar)),
             "two_hop_bridge" => list.push(Box::new(TwoHopBridge)),
+            "type_pair_prior" => list.push(Box::new(TypePairPrior)),
             _ => {
                 if let Some(search) = search.take() {
                     list.push(Box::new(QmdKnn::new(search)));
@@ -168,6 +171,11 @@ pub fn suggest(
         .collect();
     let dropped = found - proposals.len();
 
+    for generator in generators {
+        if let Err(error) = generator.rerank(g, scope, &mut proposals) {
+            skipped.push((generator.name().to_string(), error));
+        }
+    }
     proposals.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.cid.cmp(&b.cid)));
     let total = proposals.len();
     let mut per_note: HashMap<String, usize> = HashMap::new();

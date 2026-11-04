@@ -555,7 +555,8 @@ fn generators_selects_by_name_and_refuses_unknown_names() {
             "common_neighbors",
             "adamic_adar",
             "two_hop_bridge",
-            "qmd_knn"
+            "qmd_knn",
+            "type_pair_prior"
         ]
     );
     assert!(!names(generators(None, None).unwrap()).contains(&"qmd_knn"));

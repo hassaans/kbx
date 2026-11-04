@@ -15,7 +15,7 @@ use tracing::warn;
 
 use crate::tui;
 
-const NO_INDEX: &str = "the vault has no index yet; run `kbx index`";
+pub(crate) const NO_INDEX: &str = "the vault has no index yet; run `kbx index`";
 
 /// What every decision starts from.
 pub(crate) struct Session {
@@ -36,7 +36,7 @@ impl Session {
     }
 
     /// For looking only: the database stays as it is.
-    fn read_only() -> Result<Session, Box<dyn Error>> {
+    pub(crate) fn read_only() -> Result<Session, Box<dyn Error>> {
         let project = Project::discover(&env::current_dir()?)?;
         if !project.graph.is_file() {
             return Err(NO_INDEX.into());

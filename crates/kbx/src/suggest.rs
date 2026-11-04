@@ -8,7 +8,10 @@ use std::process::ExitCode;
 
 use clap::ValueEnum;
 use kbx_core::{Graph, IndexState, Ontology, Project, index_state};
-use kbx_gen::{Budget, QmdSearch, Run, Scope, estimate_tokens, generators, store, suggest};
+use kbx_gen::{
+    Budget, Evaluation, QmdSearch, Run, Scope, estimate_tokens, evaluate, generators, store,
+    suggest,
+};
 use kbx_judge::{
     Availability, JudgeContext, JudgeId, Tally, backend, backends, first_ready, judge_all, views,
 };
@@ -39,6 +42,7 @@ pub struct Options {
     pub judge: Judge,
     pub budget: Option<usize>,
     pub dry_run: bool,
+    pub eval: bool,
 }
 
 pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
@@ -46,7 +50,8 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     let yaml = fs::read_to_string(&project.ontology)
         .map_err(|error| format!("{}: {error}", project.ontology.display()))?;
     let ontology = Ontology::parse(&yaml)?;
-    let graph = if options.dry_run {
+    let read_only = options.dry_run || options.eval;
+    let graph = if read_only {
         Graph::open_read_only(&project.graph)?
     } else {
         Graph::open(&project.graph)?
@@ -67,7 +72,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     if searching
         && installed
         && !roots.is_empty()
-        && !options.dry_run
+        && !read_only
         && let Err(error) = qmd::refresh(&project)
     {
         eprintln!("warning: the qmd index may be out of date: {error}");
@@ -79,6 +84,10 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         ontology: &ontology,
         note: options.note.as_deref(),
     };
+    if options.eval {
+        let named = options.generators.is_some();
+        return print_evaluation(evaluate(&graph, chosen, &scope)?, named);
+    }
     let mut budget = Budget::default();
     budget.per_run = options.budget.unwrap_or(budget.per_run);
     let run = suggest(&graph, &chosen, &scope, budget)?;
@@ -171,6 +180,37 @@ fn judge(
             print_tally(chosen.id(), chosen.model(), &tally);
             Ok(())
         })
+}
+
+fn print_evaluation(evaluation: Evaluation, named: bool) -> Result<ExitCode, Box<dyn Error>> {
+    for (name, error) in &evaluation.skipped {
+        eprintln!("warning: {name} skipped: {error}");
+    }
+    if named && !evaluation.skipped.is_empty() {
+        return Err("a generator failed, so it has no score".into());
+    }
+    let rate = |rate: Option<f64>| rate.map_or("-".to_string(), |rate| format!("{rate:.2}"));
+    println!(
+        "{:<18}{:>9}{:>9}{:>6}{:>11}{:>8}",
+        "generator", "proposed", "reviewed", "hits", "precision", "recall"
+    );
+    for score in &evaluation.scores {
+        println!(
+            "{:<18}{:>9}{:>9}{:>6}{:>11}{:>8}",
+            score.name,
+            score.proposed,
+            score.reviewed,
+            score.hits,
+            rate(score.precision),
+            rate(score.recall)
+        );
+    }
+    println!(
+        "against {} and {}",
+        crate::plural(evaluation.accepted, "accepted pair"),
+        crate::plural(evaluation.rejected, "rejected pair")
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 fn print_tally(id: JudgeId, model: &str, tally: &Tally) {

@@ -122,6 +122,14 @@ impl Graph {
         &self.conn
     }
 
+    /// Copies the database to a new file and opens the copy, leaving this one
+    /// as it is, read-only or not.
+    pub fn copy_to(&self, path: &Path) -> rusqlite::Result<Graph> {
+        self.conn
+            .execute("VACUUM INTO ?", [path.to_string_lossy()])?;
+        Graph::open(path)
+    }
+
     /// The note with this id.
     pub fn node(&self, id: &str) -> rusqlite::Result<Option<Node>> {
         self.conn

@@ -2,29 +2,35 @@
 //!
 //! Each [`Generator`] proposes pairs of unlinked notes from one signal.
 //! [`suggest`] runs them, unions their proposals on the pair, drops linked and
-//! suppressed pairs and applies the [`Budget`]; [`store`] writes the result to
-//! the `candidates` table. This crate never prints.
+//! suppressed pairs, re-ranks and applies the [`Budget`]; [`store`] writes the
+//! result to the `candidates` table. [`evaluate`] scores generators against
+//! `reviews`. This crate never prints.
 
 mod alias;
+mod eval;
 mod knn;
 mod pipeline;
+mod prior;
 mod schema;
 mod search;
 mod snapshot;
 mod structure;
 
+use std::io;
 use std::path::Path;
 
 use kbx_core::{Graph, Ontology};
 use serde_json::Value;
 
 pub use alias::AliasCooccur;
+pub use eval::{Evaluation, Score, evaluate, score};
 pub use kbx_core::cid;
 pub use knn::{MAX_SEARCHES, QmdKnn};
 pub use pipeline::{
     Budget, EXCERPT_TOKENS, Proposal, Run, UnknownGenerator, estimate_tokens, generators, store,
     suggest,
 };
+pub use prior::TypePairPrior;
 pub use schema::SchemaGap;
 pub use search::{Hit, QmdSearch, Query, Search, SearchError};
 pub use structure::{AdamicAdar, CommonNeighbors, TwoHopBridge};
@@ -49,6 +55,16 @@ pub trait Generator {
         _budget: Budget,
     ) -> Result<Vec<Candidate>, GenError> {
         self.run(g, scope)
+    }
+    /// Adjusts the run's scores once the union and filters are done, before the
+    /// budget. A generator that does records it in `features` and `generators`.
+    fn rerank(
+        &self,
+        _g: &Graph,
+        _scope: &Scope<'_>,
+        _proposals: &mut [Proposal],
+    ) -> Result<(), GenError> {
+        Ok(())
     }
 }
 
@@ -85,4 +101,7 @@ pub enum GenError {
     /// The search backend failed.
     #[error(transparent)]
     Search(#[from] SearchError),
+    /// A temporary file failed.
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }

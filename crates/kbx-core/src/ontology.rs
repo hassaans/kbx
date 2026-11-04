@@ -64,6 +64,11 @@ pub struct Relation {
     /// nothing to the target note, and `kbx index` derives the mirror edge.
     #[serde(default)]
     pub derived_only: bool,
+    /// The predicate `kbx export rdf` states this relation with, instead of one
+    /// under [`DEFAULT_NAMESPACE`](crate::DEFAULT_NAMESPACE). May be spelled
+    /// `uri`.
+    #[serde(default, alias = "uri")]
+    pub iri: Option<String>,
 }
 
 /// How the judge is constrained.
@@ -221,6 +226,9 @@ impl Ontology {
         if relation.symmetric && relation.inverse != name {
             return Err(format!("symmetric relation {name} must be its own inverse"));
         }
+        if let Some(iri) = relation.iri.as_deref().filter(|iri| !is_iri(iri)) {
+            return Err(format!("relation {name} has `{iri}`, not an absolute IRI"));
+        }
         let inverse = &relation.inverse;
         if inverse != name && self.relations.contains_key(inverse) {
             return Err(format!(
@@ -239,6 +247,16 @@ impl Ontology {
         }
         Ok(())
     }
+}
+
+/// Whether `text` has a scheme and nothing that can't stand in a Turtle `<…>`.
+fn is_iri(text: &str) -> bool {
+    let banned = |c: char| c <= ' ' || "<>\"{}|\\^`".contains(c);
+    let scheme = text.split_once(':').map(|(scheme, _)| scheme);
+    let scheme_char = |c: char| c.is_ascii_alphanumeric() || "+-.".contains(c);
+    scheme.is_some_and(|scheme| {
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic()) && scheme.chars().all(scheme_char)
+    }) && !text.contains(banned)
 }
 
 /// Whether `class` is in a `domain` or `range` list.

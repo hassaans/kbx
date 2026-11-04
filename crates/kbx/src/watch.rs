@@ -88,6 +88,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
                 judge: suggest::Judge::None,
                 budget: None,
                 dry_run: false,
+                eval: false,
             };
             if let Err(error) = suggest::run(options) {
                 eprintln!("error: {error}");
