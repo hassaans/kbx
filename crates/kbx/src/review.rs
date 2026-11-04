@@ -5,6 +5,7 @@ use std::error::Error;
 use std::io::{IsTerminal, stdin, stdout};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use kbx_core::{
     Decision, Graph, IndexError, IndexOptions, IndexState, Item, Ontology, Project, Queue,
@@ -76,6 +77,14 @@ impl Session {
         };
         let vault = &self.project.vault;
         index_vault(&mut self.graph, vault, &self.yaml, &options)?;
+        Ok(())
+    }
+
+    /// Takes a decided candidate's line out of its note, if it has one. The
+    /// decision stands either way, and `kbx sync-stage` clears the line later.
+    pub(crate) fn unstage(&mut self, cid: &str) -> Result<(), Box<dyn Error>> {
+        let written = kbx_core::unstage(&self.graph, self.vault(), cid)?;
+        self.reindex(&written.into_iter().collect::<Vec<_>>())?;
         Ok(())
     }
 }
@@ -183,7 +192,7 @@ pub fn reject(
     rel: &Option<String>,
     reason: &Option<String>,
 ) -> Result<ExitCode, Box<dyn Error>> {
-    let session = Session::open()?;
+    let mut session = Session::open()?;
     Ok(each(cids, |cid| {
         let rejected = kbx_core::reject(
             &session.graph,
@@ -200,6 +209,9 @@ pub fn reject(
             "rejected {cid}: strike {} of {STRIKES}{outcome}",
             rejected.strikes
         );
+        if let Err(error) = session.unstage(cid) {
+            eprintln!("warning: {cid}: its staged line stays: {error}");
+        }
         Ok(())
     }))
 }
@@ -220,6 +232,80 @@ pub fn defer(
         println!("deferred {cid}");
         Ok(())
     }))
+}
+
+/// `kbx sync-stage`. The notes were edited, so the index comes first: a link
+/// someone just added has to resolve, and a file has to match its hash.
+pub fn sync_stage(mark_reviewed: bool) -> Result<ExitCode, Box<dyn Error>> {
+    let mut session = Session::open()?;
+    let vault = session.project.vault.clone();
+    let options = IndexOptions::default();
+    index_vault(&mut session.graph, &vault, &session.yaml, &options)?;
+
+    let synced = kbx_core::sync_stage(&session.graph, &vault, &session.ontology)?;
+    for (cid, accepted) in &synced.accepted {
+        println!(
+            "accepted {cid}: {} -{}-> {}",
+            accepted.src, accepted.rel, accepted.dst
+        );
+    }
+    for (cid, rejected) in &synced.rejected {
+        let outcome = match rejected.suppressed() {
+            true => ", suppressed; `kbx unreject` lifts it",
+            false => "",
+        };
+        println!(
+            "rejected {cid}: strike {} of {STRIKES}{outcome}",
+            rejected.strikes
+        );
+    }
+    let mut written = synced.written.clone();
+    let mut code = ExitCode::SUCCESS;
+    for (cid, error) in &synced.refused {
+        eprintln!("error: {cid}: {error}");
+        code = ExitCode::FAILURE;
+    }
+    if mark_reviewed {
+        let date = today();
+        for note in &synced.finished {
+            match kbx_core::mark_reviewed(&session.graph, &vault, note, &date) {
+                Ok(path) => written.extend(path),
+                Err(error) => {
+                    eprintln!("error: {note}: {error}");
+                    code = ExitCode::FAILURE;
+                }
+            }
+        }
+    }
+    session.reindex(&written)?;
+    println!(
+        "{} accepted, {} rejected, {} cleared, {} still staged, {} refused",
+        synced.accepted.len(),
+        synced.rejected.len(),
+        synced.cleared,
+        synced.pending,
+        synced.refused.len()
+    );
+    Ok(code)
+}
+
+/// Today in UTC as `YYYY-MM-DD`, by the civil-from-days algorithm: a date in a
+/// note isn't worth a calendar dependency.
+fn today() -> String {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH);
+    let days = now.map_or(0, |elapsed| elapsed.as_secs() / 86_400) as i64 + 719_468;
+    let (era, day) = (days / 146_097, days % 146_097);
+    let year = (day - day / 1460 + day / 36_524 - day / 146_096) / 365;
+    let of_year = day - (365 * year + year / 4 - year / 100);
+    let shifted = (5 * of_year + 2) / 153;
+    let date = of_year - (153 * shifted + 2) / 5 + 1;
+    let month = if shifted < 10 {
+        shifted + 3
+    } else {
+        shifted - 9
+    };
+    let year = year + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{date:02}")
 }
 
 pub fn unreject(cids: &[String]) -> Result<ExitCode, Box<dyn Error>> {

@@ -46,6 +46,12 @@ A rejection that named no relation, as after `--judge none`, hides nothing:
 there is no relation to tell apart, so the pair is asked about again and its
 strikes can reach three.
 
+## Staged candidates
+
+The queue is the same whether or not candidates are
+[staged](staging.md) in your notes. Accepting or rejecting one here takes its
+line out of the note.
+
 ## `kbx review --json`
 
 An array, in queue order. A field with nothing to say is `null`. `src` and `dst`

@@ -216,6 +216,33 @@ fn an_accepted_pair_is_found_again_though_the_vault_now_links_it() {
 }
 
 #[test]
+fn a_lock_does_not_hide_a_pair_from_the_score() {
+    let setup = Setup::new();
+    let (src, dst, rel) = setup.an_edge();
+    let connection = setup.graph.connection();
+    connection
+        .execute(
+            "INSERT INTO reviews (src, dst, rel, decision, strikes) VALUES (?, ?, ?, 'accept', 0)",
+            params![src, dst, rel],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO locks (id, reviewed, baseline, current)
+             VALUES (?, '2026-01-01', 'same', 'same')",
+            params![dst],
+        )
+        .unwrap();
+    let locks = setup.count("SELECT COUNT(*) FROM locks");
+
+    let generators: Vec<Box<dyn Generator>> = vec![Box::new(Linkable(src, dst))];
+    let evaluation = evaluate(&setup.graph, generators, &setup.scope()).unwrap();
+
+    assert_eq!(evaluation.scores[0].hits, 1);
+    assert_eq!(setup.count("SELECT COUNT(*) FROM locks"), locks);
+}
+
+#[test]
 fn a_suppressed_pair_still_counts_as_a_miss() {
     let setup = Setup::new();
     let (src, dst) = (format!("01KBX{:021}", 8), format!("01KBX{:021}", 12));

@@ -2,7 +2,10 @@
 
 use std::fs;
 
-use kbx_core::{WriteError, add_relation, parse_note, split_frontmatter, write_atomic};
+use kbx_core::{
+    StagedEntry, WriteError, add_relation, parse_note, proposed_ids, set_reviewed,
+    split_frontmatter, stage_entries, unstage_entries, write_atomic,
+};
 use tempfile::TempDir;
 
 const HEAD: &str = "id: A\ntype: Concept\ntitle: A note\n";
@@ -342,4 +345,149 @@ fn write_atomic_follows_a_symlink() {
             .is_symlink()
     );
     assert_eq!(fs::read(&real).unwrap(), b"new");
+}
+
+fn entry(id: &str) -> StagedEntry {
+    StagedEntry {
+        rel: "see_also".to_string(),
+        to: "[[B]]".to_string(),
+        by: vec!["adamic_adar".to_string(), "judge".to_string()],
+        score: 0.81,
+        id: id.to_string(),
+    }
+}
+
+/// Stages entries, requires the bytes outside the fences to stay, and returns
+/// the new frontmatter.
+fn staged(src: &str, ids: &[&str]) -> String {
+    let entries: Vec<_> = ids.iter().map(|id| entry(id)).collect();
+    let new = stage_entries(src, &entries).unwrap().expect("a change");
+    assert_eq!(outside(src), outside(&new));
+    parse_note("n.md", &new).unwrap();
+    split_frontmatter(&new).unwrap().unwrap().yaml.to_string()
+}
+
+#[test]
+fn a_first_entry_makes_the_block_before_qmd_as_section_3_shows_it() {
+    let src = note(&format!("{HEAD}rel: [\"[[C]]\"]  # why\n{MIRROR}"));
+    assert_eq!(
+        staged(&src, &["7f3a"]),
+        format!(
+            "{HEAD}rel: [\"[[C]]\"]  # why\nkbx:\n  proposed:\n    - {{rel: see_also, \
+             to: \"[[B]]\", by: [adamic_adar, judge], score: 0.81, id: 7f3a}}\n{MIRROR}"
+        )
+    );
+}
+
+#[test]
+fn entries_join_the_list_and_the_rest_of_the_block_stays() {
+    let src = note(&format!(
+        "{HEAD}kbx:\n  proposed:\n    - {{to: \"[[Z]]\", id: old, extra: 1}}\n  reviewed: 2026-11-03\n{MIRROR}"
+    ));
+    let yaml = staged(&src, &["new"]);
+    let kbx = "kbx:\n  proposed:\n    - {to: \"[[Z]]\", id: old, extra: 1}\n    - {rel: see_also, \
+         to: \"[[B]]\", by: [adamic_adar, judge], score: 0.81, id: new}\n  \
+         reviewed: 2026-11-03\n";
+    assert_eq!(yaml, format!("{HEAD}{kbx}{MIRROR}"));
+}
+
+#[test]
+fn an_entry_already_there_is_not_added_twice() {
+    let src = note(&format!("{HEAD}{MIRROR}"));
+    let once = stage_entries(&src, &[entry("a")]).unwrap().unwrap();
+    assert_eq!(stage_entries(&once, &[entry("a")]).unwrap(), None);
+}
+
+#[test]
+fn an_id_that_reads_as_a_number_stays_a_string() {
+    let src = note(&format!("{HEAD}{MIRROR}"));
+    let new = stage_entries(&src, &[entry("1234")]).unwrap().unwrap();
+    let parsed = parse_note("n.md", &new).unwrap();
+    assert_eq!(proposed_ids(&parsed).unwrap(), ["1234".to_string()].into());
+}
+
+#[test]
+fn staging_mirrors_like_every_other_write() {
+    let src = note(HEAD);
+    assert_eq!(
+        staged(&src, &["a"]),
+        format!(
+            "{HEAD}kbx:\n  proposed:\n    - {{rel: see_also, to: \"[[B]]\", \
+             by: [adamic_adar, judge], score: 0.81, id: a}}\n{MIRROR}"
+        )
+    );
+}
+
+#[test]
+fn a_crlf_note_stays_crlf_when_staged_and_unstaged() {
+    let src = note(&format!("{HEAD}{MIRROR}")).replace('\n', "\r\n");
+    let new = stage_entries(&src, &[entry("a")]).unwrap().unwrap();
+    assert_eq!(new.matches('\n').count(), new.matches("\r\n").count());
+    assert_eq!(unstage_entries(&new, &["a"]).unwrap().unwrap(), src);
+}
+
+#[test]
+fn removing_the_last_entry_removes_the_block_and_gives_the_old_bytes_back() {
+    let src = note(&format!("{HEAD}# about kbx\n{MIRROR}"));
+    let new = stage_entries(&src, &[entry("a")]).unwrap().unwrap();
+    assert_eq!(unstage_entries(&new, &["a"]).unwrap().unwrap(), src);
+}
+
+#[test]
+fn removing_an_entry_keeps_reviewed_and_the_other_entries() {
+    let src = note(&format!("{HEAD}kbx:\n  reviewed: 2026-11-03\n{MIRROR}"));
+    let new = stage_entries(&src, &[entry("a"), entry("b")])
+        .unwrap()
+        .unwrap();
+    let new = unstage_entries(&new, &["a"]).unwrap().unwrap();
+    let parsed = parse_note("n.md", &new).unwrap();
+    assert_eq!(proposed_ids(&parsed).unwrap(), ["b".to_string()].into());
+    assert!(new.contains("reviewed: 2026-11-03"));
+}
+
+#[test]
+fn removing_an_id_that_is_not_there_changes_nothing() {
+    let src = note(&format!("{HEAD}{MIRROR}"));
+    assert_eq!(unstage_entries(&src, &["a"]).unwrap(), None);
+}
+
+#[test]
+fn a_block_style_list_is_read_and_can_lose_an_entry() {
+    let src = note(&format!(
+        "{HEAD}kbx:\n  proposed:\n    - rel: see_also\n      to: \"[[B]]\"\n      id: a\n    \
+         - rel: see_also\n      to: \"[[C]]\"\n      id: b\n{MIRROR}"
+    ));
+    let parsed = parse_note("n.md", &src).unwrap();
+    let both = ["a".to_string(), "b".to_string()].into();
+    assert_eq!(proposed_ids(&parsed).unwrap(), both);
+    let new = unstage_entries(&src, &["a"]).unwrap().unwrap();
+    let parsed = parse_note("n.md", &new).unwrap();
+    assert_eq!(proposed_ids(&parsed).unwrap(), ["b".to_string()].into());
+}
+
+#[test]
+fn a_list_that_is_not_proposals_is_unreadable() {
+    let bad = note(&format!("{HEAD}kbx:\n  proposed:\n    - to: x\n{MIRROR}"));
+    assert_eq!(proposed_ids(&parse_note("n.md", &bad).unwrap()), None);
+    let bad = note(&format!("{HEAD}kbx:\n  proposed: nope\n{MIRROR}"));
+    assert_eq!(proposed_ids(&parse_note("n.md", &bad).unwrap()), None);
+    let empty = note(&format!("{HEAD}kbx:\n  proposed:\n{MIRROR}"));
+    let none = parse_note("n.md", &empty).unwrap();
+    assert_eq!(proposed_ids(&none), Some(Default::default()));
+}
+
+#[test]
+fn a_kbx_key_that_is_not_a_map_is_refused() {
+    let src = note(&format!("{HEAD}kbx: nope\n{MIRROR}"));
+    let error = stage_entries(&src, &[entry("a")]).unwrap_err();
+    assert!(matches!(error, WriteError::KbxNotAMap), "{error}");
+}
+
+#[test]
+fn reviewed_is_set_in_place_and_only_changes_what_it_should() {
+    let src = note(&format!("{HEAD}rel: [\"[[C]]\"]  # why\n{MIRROR}"));
+    let new = set_reviewed(&src, "2026-11-04").unwrap().unwrap();
+    assert_eq!(outside(&src), outside(&new));
+    assert!(new.contains("rel: [\"[[C]]\"]  # why\nkbx:\n  reviewed: 2026-11-04\nqmd:"));
+    assert_eq!(set_reviewed(&new, "2026-11-04").unwrap(), None);
 }

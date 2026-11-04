@@ -7,7 +7,7 @@ use std::fs;
 use std::process::ExitCode;
 
 use clap::ValueEnum;
-use kbx_core::{Graph, IndexState, Ontology, Project, index_state};
+use kbx_core::{Graph, IndexOptions, IndexState, Ontology, Project, index_state, index_vault};
 use kbx_gen::{
     Budget, Evaluation, QmdSearch, Run, Scope, estimate_tokens, evaluate, generators, store,
     suggest,
@@ -46,6 +46,7 @@ pub struct Options {
     pub generators: Option<Vec<String>>,
     pub judge: Judge,
     pub budget: Option<usize>,
+    pub stage: bool,
     pub dry_run: bool,
     pub eval: bool,
 }
@@ -56,7 +57,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         .map_err(|error| format!("{}: {error}", project.ontology.display()))?;
     let ontology = Ontology::parse(&yaml)?;
     let read_only = options.dry_run || options.eval;
-    let graph = if read_only {
+    let mut graph = if read_only {
         Graph::open_read_only(&project.graph)?
     } else {
         Graph::open(&project.graph)?
@@ -108,14 +109,56 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         println!("would store {} candidates", run.candidates.len());
         print_counts(&run);
         print_batches(&graph, &run)?;
+        if options.stage {
+            println!("would stage up to {} proposals", run.candidates.len());
+        }
     } else {
         store(&graph, &run)?;
         println!("{} candidates", run.candidates.len());
         print_counts(&run);
         let context = JudgeContext::new(ontology, &yaml);
         judge(options.judge, &project, &graph, &run, &context)?;
+        if options.stage {
+            return stage(&project, &mut graph, &yaml, &run);
+        }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Writes the run's candidates to `kbx.proposed`, after the judge so that they
+/// carry its relation. The index follows, as it does after `kbx accept`.
+fn stage(
+    project: &Project,
+    graph: &mut Graph,
+    yaml: &str,
+    run: &Run,
+) -> Result<ExitCode, Box<dyn Error>> {
+    let ontology = Ontology::parse(yaml)?;
+    let cids: Vec<String> = run.candidates.iter().map(|c| c.cid.clone()).collect();
+    let report = kbx_core::stage(graph, &project.vault, &ontology, &cids)?;
+    println!(
+        "staged {} proposals in {} notes",
+        report.staged,
+        report.written.len()
+    );
+    for (note, error) in &report.refused {
+        eprintln!("error: {note}: {error}");
+    }
+    if !report.written.is_empty() {
+        let options = IndexOptions {
+            paths: report
+                .written
+                .iter()
+                .map(|p| project.vault.join(p))
+                .collect(),
+            ..IndexOptions::default()
+        };
+        index_vault(graph, &project.vault, yaml, &options)?;
+    }
+    Ok(match report.refused.is_empty() {
+        true => ExitCode::SUCCESS,
+        false => ExitCode::FAILURE,
+    })
 }
 
 /// Judges what's already stored, so that a backend that can't be used leaves
@@ -249,6 +292,9 @@ fn print_counts(run: &Run) {
         "dropped {} linked or rejected, {} over budget",
         run.dropped, run.over_budget
     );
+    if run.locked > 0 {
+        println!("left out {} pairs at reviewed notes", run.locked);
+    }
 }
 
 fn print_batches(graph: &Graph, run: &Run) -> Result<(), Box<dyn Error>> {

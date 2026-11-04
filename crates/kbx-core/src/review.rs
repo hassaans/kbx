@@ -14,11 +14,13 @@ use crate::graph::Graph;
 use crate::index::{load_resolver, sha256};
 use crate::note::{Note, parse_note};
 use crate::ontology::{NONE, Ontology, RelationKey, admits};
-use crate::writer::{Staged, WriteError, add_relation, holds_link, write_atomic};
+use crate::writer::{Staged, WriteError, add_relation, holds_link, unstage_entries, write_atomic};
 
 mod queue;
+mod stage;
 
 pub use queue::{Item, Queue, excerpt};
+pub use stage::{StageReport, Synced, locked_notes, mark_reviewed, stage, sync_stage, unstage};
 
 /// Rejections of a pair, across all relations, that suppress it from every
 /// generator.
@@ -106,6 +108,15 @@ pub enum ReviewError {
     /// The relation isn't in the ontology.
     #[error("rel.unknown: `{0}` is not a relation in the ontology")]
     UnknownRelation(String),
+    /// A person wrote the relation on a note the schema says it can't start
+    /// from, so accepting it would write something else.
+    #[error("rel.range: {path} holds `{rel}`, which the schema reads the other way round")]
+    Reversed {
+        /// The note, relative to the vault.
+        path: PathBuf,
+        /// The key as written.
+        rel: String,
+    },
     /// The notes' classes fit the relation in neither direction.
     #[error("rel.range: {rel} can't join a {src} and a {dst} in either direction")]
     OutOfSchema {
@@ -209,18 +220,61 @@ pub fn accept(
         Some(rel) => rel.to_string(),
         None => judged_rel(&tx, cid)?.ok_or_else(|| ReviewError::NoRelation(cid.to_string()))?,
     };
-    let key = ontology
-        .lookup(&rel)
-        .ok_or_else(|| ReviewError::UnknownRelation(rel.clone()))?;
+    let accepted = write_accepted(
+        &tx,
+        vault,
+        ontology,
+        cid,
+        &candidate,
+        Accepting {
+            rel: &rel,
+            reason: decision.reason,
+            as_written: false,
+        },
+    )?;
+    tx.commit()?;
+    Ok(accepted)
+}
 
-    let first = OnDisk::read(&tx, vault, &candidate.src)?
+/// What [`write_accepted`] is asked to write.
+struct Accepting<'a> {
+    rel: &'a str,
+    reason: Option<&'a str>,
+    /// The relation already reads from the candidate's `src`, because a person
+    /// put it there, so the schema can refuse that but not turn it around.
+    as_written: bool,
+}
+
+/// The writes and rows of an acceptance, up to the commit. The rename comes
+/// last, so that a failure before it leaves the notes as they were.
+fn write_accepted(
+    tx: &Transaction<'_>,
+    vault: &Path,
+    ontology: &Ontology,
+    cid: &str,
+    candidate: &Candidate,
+    accepting: Accepting<'_>,
+) -> Result<Accepted, ReviewError> {
+    let rel = accepting.rel;
+    let key = ontology
+        .lookup(rel)
+        .ok_or_else(|| ReviewError::UnknownRelation(rel.to_string()))?;
+
+    let first = OnDisk::read(tx, vault, &candidate.src)?
         .ok_or_else(|| ReviewError::SourceUnavailable(candidate.src.clone()))?;
-    let second = OnDisk::read(&tx, vault, &candidate.dst)?
+    let second = OnDisk::read(tx, vault, &candidate.dst)?
         .ok_or_else(|| ReviewError::TargetUnavailable(candidate.dst.clone()))?;
     let first = first.checked(candidate.src_hash.as_deref())?;
     let second = second.checked(candidate.dst_hash.as_deref())?;
 
-    let (from, to) = match runs_forward(&key, &first.note.class, &second.note.class) {
+    let fit = runs_forward(&key, &first.note.class, &second.note.class);
+    if accepting.as_written && fit == Some(key.inverted) {
+        return Err(ReviewError::Reversed {
+            path: first.path.clone(),
+            rel: rel.to_string(),
+        });
+    }
+    let (from, to) = match fit {
         Some(true) => (&first, &second),
         Some(false) => (&second, &first),
         None => {
@@ -236,7 +290,7 @@ pub fn accept(
         }
     };
 
-    let (resolver, ids) = load_resolver(&tx)?;
+    let (resolver, ids) = load_resolver(tx)?;
     let names = |id: &str, target: &str| {
         resolver
             .resolve(target)
@@ -259,22 +313,27 @@ pub fn accept(
     };
 
     record(
-        &tx,
+        tx,
         (&from.note.id, &to.note.id, key.name),
         "accept",
-        decision.reason,
+        accepting.reason,
         0,
     )?;
     tx.execute("DELETE FROM candidates WHERE cid = ?", [cid])?;
+    let holder = stage::holder(tx, cid)?;
     let mut changes = Vec::new();
     for (file, text) in [(from, forward), (to, inverse)] {
+        let text = match holder.as_deref() == Some(file.note.id.as_str()) {
+            true => file.without_entry(text, cid)?,
+            false => text,
+        };
         if let Some(text) = text {
-            follow_hash(&tx, &file.note.id, &file.hash, &sha256(text.as_bytes()))?;
+            stage::follow(tx, &file.note.id, &file.hash, &text)?;
             changes.push((file, text));
         }
     }
+    tx.execute("DELETE FROM staged WHERE cid = ?", [cid])?;
     replace_all(vault, &changes)?;
-    tx.commit()?;
     Ok(Accepted {
         src: from.note.id.clone(),
         dst: to.note.id.clone(),
@@ -524,6 +583,18 @@ impl Checked {
     ) -> Result<Option<String>, ReviewError> {
         add_relation(&self.text, key, target, is_target)
             .map_err(|error| ReviewError::Write(self.path.clone(), error))
+    }
+
+    /// `text`, or the file as it is if that's `None`, without a staged entry.
+    fn without_entry(
+        &self,
+        text: Option<String>,
+        cid: &str,
+    ) -> Result<Option<String>, ReviewError> {
+        let base = text.as_deref().unwrap_or(&self.text);
+        let removed = unstage_entries(base, &[cid])
+            .map_err(|error| ReviewError::Write(self.path.clone(), error))?;
+        Ok(removed.or(text))
     }
 
     /// Refuses a second target for an exclusive key.

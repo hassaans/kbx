@@ -86,6 +86,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
                 generators: None,
                 // Never on a timer: judging spends money on every save.
                 judge: suggest::Judge::None,
+                stage: false,
                 budget: None,
                 dry_run: false,
                 eval: false,

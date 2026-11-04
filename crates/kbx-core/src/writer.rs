@@ -6,6 +6,7 @@
 //! keys in the same order. YAML too unusual to edit that way is refused rather
 //! than rewritten. See `docs/frontmatter-writer.md` for what that covers.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -13,10 +14,14 @@ use std::path::{Path, PathBuf};
 use serde_yaml::{Mapping, Value};
 use tempfile::{Builder, NamedTempFile};
 
+use crate::index::sha256;
 use crate::note::{Note, ParseError, parse_note, split_frontmatter};
 
 const QMD: &str = "qmd";
 const METADATA: &str = "metadata";
+const KBX: &str = "kbx";
+const PROPOSED: &str = "proposed";
+const REVIEWED: &str = "reviewed";
 
 /// Why a note's frontmatter could not be edited.
 #[derive(Debug, thiserror::Error)]
@@ -30,6 +35,9 @@ pub enum WriteError {
     /// `qmd:` is not a map, so there is nowhere to mirror into.
     #[error("frontmatter key `qmd` is not a map")]
     QmdNotAMap,
+    /// `kbx:` is not a map, so there is nowhere to stage into.
+    #[error("frontmatter key `kbx` is not a map")]
+    KbxNotAMap,
     /// The edit would have changed more than it should. Nothing is written.
     #[error("can't edit `{0}` in this frontmatter without changing anything else; edit it by hand")]
     Unsupported(String),
@@ -76,6 +84,218 @@ pub fn add_relation(
         &src[frontmatter.yaml_start + frontmatter.yaml.len()..],
     );
     Ok(Some(format!("{head}{yaml}{tail}")))
+}
+
+/// A proposal under `kbx.proposed` (§3), which the compiler never reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StagedEntry {
+    /// The relation proposed, or [`NONE`](crate::NONE) if nothing names one.
+    pub rel: String,
+    /// The note it would point at, as a wikilink.
+    pub to: String,
+    /// What proposed it: the generators, and `judge` if a judge agreed.
+    pub by: Vec<String>,
+    /// The signals combined, from 0 to 1.
+    pub score: f64,
+    /// The candidate's cid.
+    pub id: String,
+}
+
+impl StagedEntry {
+    fn value(&self) -> Value {
+        let by = self.by.iter().map(|name| Value::from(name.as_str()));
+        let mut entry = Mapping::new();
+        entry.insert("rel".into(), self.rel.as_str().into());
+        entry.insert("to".into(), self.to.as_str().into());
+        entry.insert("by".into(), Value::Sequence(by.collect()));
+        entry.insert("score".into(), self.score.into());
+        entry.insert("id".into(), self.id.as_str().into());
+        Value::Mapping(entry)
+    }
+}
+
+/// Adds the entries not already under `kbx.proposed`. Returns the whole new
+/// file, or `None` if there was nothing to add.
+pub fn stage_entries(src: &str, entries: &[StagedEntry]) -> Result<Option<String>, WriteError> {
+    edit_kbx(src, |kbx| {
+        let mut proposed = proposed_list(kbx)?;
+        let mut held: HashSet<String> = proposed.iter().filter_map(entry_id).collect();
+        for entry in entries {
+            if held.insert(entry.id.clone()) {
+                proposed.push(entry.value());
+            }
+        }
+        set_proposed(kbx, proposed);
+        Ok(())
+    })
+}
+
+/// Takes the entries with these ids out of `kbx.proposed`, and the key with
+/// them when it empties, and `kbx:` too if nothing else is under it. Returns
+/// the whole new file, or `None` if none of them was there.
+pub fn unstage_entries(src: &str, ids: &[&str]) -> Result<Option<String>, WriteError> {
+    edit_kbx(src, |kbx| {
+        let mut proposed = proposed_list(kbx)?;
+        proposed.retain(|item| !entry_id(item).is_some_and(|id| ids.contains(&id.as_str())));
+        set_proposed(kbx, proposed);
+        Ok(())
+    })
+}
+
+/// Sets `kbx.reviewed`. Returns the whole new file, or `None` if it says so.
+pub fn set_reviewed(src: &str, date: &str) -> Result<Option<String>, WriteError> {
+    edit_kbx(src, |kbx| {
+        kbx.insert(REVIEWED.into(), date.into());
+        Ok(())
+    })
+}
+
+/// The ids under `kbx.proposed`, or `None` if it holds something else. A list
+/// someone mangled says nothing about which proposals they meant to remove.
+pub fn proposed_ids(note: &Note) -> Option<HashSet<String>> {
+    let kbx = match &note.kbx {
+        None | Some(Value::Null) => return Some(HashSet::new()),
+        Some(Value::Mapping(kbx)) => kbx,
+        Some(_) => return None,
+    };
+    match kbx.get(PROPOSED) {
+        None | Some(Value::Null) => Some(HashSet::new()),
+        Some(Value::Sequence(items)) => items.iter().map(entry_id).collect(),
+        Some(_) => None,
+    }
+}
+
+/// `kbx.reviewed`, if the note has one.
+pub(crate) fn reviewed(note: &Note) -> Option<&str> {
+    note.kbx.as_ref()?.get(REVIEWED)?.as_str()
+}
+
+/// A hash of the file without `kbx:` and `qmd:`, the blocks kbx writes itself.
+/// It stays put through staging, syncing and mirroring, so it says whether the
+/// note's own content changed, which `content_hash` can't.
+pub(crate) fn user_content(src: &str) -> String {
+    let Ok(Some(frontmatter)) = split_frontmatter(src) else {
+        return sha256(src.as_bytes());
+    };
+    let yaml = frontmatter.yaml;
+    let mut kept = src[..frontmatter.yaml_start].to_string();
+    let mut at = 0;
+    for block in blocks(yaml)
+        .iter()
+        .filter(|b| matches!(b.key.as_str(), KBX | QMD))
+    {
+        kept.push_str(&yaml[at..block.start]);
+        at = block.content_end(yaml);
+    }
+    kept.push_str(&yaml[at..]);
+    kept.push_str(&src[frontmatter.yaml_start + yaml.len()..]);
+    sha256(kept.as_bytes())
+}
+
+fn entry_id(item: &Value) -> Option<String> {
+    item.get("id")?.as_str().map(str::to_string)
+}
+
+fn proposed_list(kbx: &Mapping) -> Result<Vec<Value>, WriteError> {
+    match kbx.get(PROPOSED) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Sequence(items)) => Ok(items.clone()),
+        Some(_) => Err(WriteError::Unsupported(format!("{KBX}.{PROPOSED}"))),
+    }
+}
+
+fn set_proposed(kbx: &mut Mapping, proposed: Vec<Value>) {
+    if proposed.is_empty() {
+        kbx.remove(PROPOSED);
+    } else if kbx.contains_key(PROPOSED) {
+        kbx.insert(PROPOSED.into(), Value::Sequence(proposed));
+    } else {
+        // §3 has `proposed` first.
+        let rest = std::mem::take(kbx);
+        kbx.insert(PROPOSED.into(), Value::Sequence(proposed));
+        kbx.extend(rest);
+    }
+}
+
+/// Changes `kbx:` and mirrors `qmd.metadata`, as every write does (§3).
+///
+/// The block is tool-owned, and an editor may have written it back in any
+/// style, so it's written out again from its value rather than edited by line.
+/// A comment inside it goes. Everything else is as in [`add_relation`].
+fn edit_kbx(
+    src: &str,
+    change: impl FnOnce(&mut Mapping) -> Result<(), WriteError>,
+) -> Result<Option<String>, WriteError> {
+    let frontmatter = split_frontmatter(src)?.ok_or(ParseError::NoFrontmatter)?;
+    let note = parse_note("", src)?;
+    let Value::Mapping(old) = serde_yaml::from_str(frontmatter.yaml).map_err(ParseError::Yaml)?
+    else {
+        return Err(ParseError::NotAMapping.into());
+    };
+    let before = match old.get(KBX) {
+        None | Some(Value::Null) => Mapping::new(),
+        Some(Value::Mapping(kbx)) => kbx.clone(),
+        Some(_) => return Err(WriteError::KbxNotAMap),
+    };
+    let mut kbx = before.clone();
+    change(&mut kbx)?;
+    if kbx == before {
+        return Ok(None);
+    }
+
+    let mut expected = old.clone();
+    let mut yaml = write_kbx(frontmatter.yaml, &kbx)
+        .ok_or_else(|| WriteError::Unsupported(KBX.to_string()))?;
+    match kbx.is_empty() {
+        true => expected.remove(KBX),
+        false => expected.insert(KBX.into(), Value::Mapping(kbx)),
+    };
+    if let Some(metadata) = stale_metadata(&note, &old)? {
+        yaml = write_metadata(&yaml, &metadata, &old)?;
+        set_metadata(&mut expected, metadata);
+    }
+    verify(&yaml, &old, &expected, KBX)?;
+
+    let (head, tail) = (
+        &src[..frontmatter.yaml_start],
+        &src[frontmatter.yaml_start + frontmatter.yaml.len()..],
+    );
+    Ok(Some(format!("{head}{yaml}{tail}")))
+}
+
+/// Replaces the `kbx:` block, or adds one where [`new_key`] puts relations
+/// ahead of, so that §3's order holds: relations, `kbx:`, `qmd:`.
+fn write_kbx(yaml: &str, kbx: &Mapping) -> Option<String> {
+    let all = blocks(yaml);
+    if let Some(block) = all.iter().find(|b| b.key == KBX) {
+        let end = block.content_end(yaml);
+        let text = kbx_text(kbx, eol_at(yaml, end));
+        return Some(format!("{}{text}{}", &yaml[..block.start], &yaml[end..]));
+    }
+    let last = all.iter().rfind(|b| !matches!(b.key.as_str(), KBX | QMD))?;
+    let at = last.content_end(yaml);
+    Some(insert(yaml, at, &kbx_text(kbx, eol_at(yaml, at))))
+}
+
+/// The block as §3 shows it: one line a key, and one line a list item.
+fn kbx_text(kbx: &Mapping, eol: &str) -> String {
+    if kbx.is_empty() {
+        return String::new();
+    }
+    let mut text = format!("{KBX}:{eol}");
+    for (key, value) in kbx {
+        let key = flow(key);
+        match value {
+            Value::Sequence(items) if !items.is_empty() => {
+                text.push_str(&format!("  {key}:{eol}"));
+                for item in items {
+                    text.push_str(&format!("    - {}{eol}", flow(item)));
+                }
+            }
+            value => text.push_str(&format!("  {key}: {}{eol}", flow(value))),
+        }
+    }
+    text
 }
 
 /// Replaces a file with `bytes`, or leaves it as it was: see [`Staged`].
@@ -285,9 +505,7 @@ fn append_link(
 /// is where §3 shows relations.
 fn new_key(yaml: &str, key: &str, quoted: &str) -> Option<String> {
     let all = blocks(yaml);
-    let last = all
-        .iter()
-        .rfind(|b| !matches!(b.key.as_str(), "kbx" | QMD))?;
+    let last = all.iter().rfind(|b| !matches!(b.key.as_str(), KBX | QMD))?;
     let at = last.content_end(yaml);
     let eol = eol_at(yaml, at);
     Some(insert(yaml, at, &format!("{key}: [{quoted}]{eol}")))
@@ -522,8 +740,9 @@ fn verify(yaml: &str, old: &Mapping, expected: &Mapping, key: &str) -> Result<()
     let Ok(Value::Mapping(new)) = serde_yaml::from_str(yaml) else {
         return Err(unsupported());
     };
-    let kept: Vec<_> = new.keys().filter(|k| old.contains_key(*k)).collect();
-    if new != *expected || !kept.into_iter().eq(old.keys()) {
+    let kept = new.keys().filter(|k| old.contains_key(*k));
+    let wanted = old.keys().filter(|k| new.contains_key(*k));
+    if new != *expected || !kept.eq(wanted) {
         return Err(unsupported());
     }
     Ok(())

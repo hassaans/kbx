@@ -117,12 +117,16 @@ enum Command {
         /// Keep at most this many candidates; qmd_knn stops searching there.
         #[arg(long, value_name = "CANDIDATES")]
         budget: Option<usize>,
+        /// Also write the proposals under `kbx.proposed` in the notes, for an
+        /// editor to show. `kbx sync-stage` takes back what's decided there.
+        #[arg(long)]
+        stage: bool,
         /// Print counts and token estimates; leave the database alone.
         #[arg(long)]
         dry_run: bool,
         /// Score each generator's precision and recall against the reviews
         /// table, and change nothing.
-        #[arg(long, conflicts_with_all = ["note", "judge", "budget", "dry_run"])]
+        #[arg(long, conflicts_with_all = ["note", "judge", "budget", "stage", "dry_run"])]
         eval: bool,
     },
     /// Keep the index current: re-index saved notes and lint them.
@@ -199,6 +203,14 @@ enum Command {
         /// Print the suppressed pairs instead.
         #[arg(long, conflicts_with = "cids")]
         list: bool,
+    },
+    /// Take edits made under `kbx.proposed` as decisions: a line removed is a
+    /// rejection, a line moved into a relation key an acceptance.
+    SyncStage {
+        /// Also set `kbx.reviewed` on each note this run finished, which locks
+        /// it from new proposals until its content changes.
+        #[arg(long)]
+        mark_reviewed: bool,
     },
     /// Print the graph or the review decisions, for other tools.
     Export {
@@ -307,6 +319,7 @@ fn main() -> ExitCode {
             generators,
             judge,
             budget,
+            stage,
             dry_run,
             eval,
         } => suggest::run(suggest::Options {
@@ -314,6 +327,7 @@ fn main() -> ExitCode {
             generators,
             judge,
             budget,
+            stage,
             dry_run,
             eval,
         }),
@@ -336,6 +350,7 @@ fn main() -> ExitCode {
         Command::Defer { cids, rel, reason } => review::defer(&cids, &rel, &reason),
         Command::Unreject { cids, list: false } => review::unreject(&cids),
         Command::Unreject { list: true, .. } => review::list_suppressed(),
+        Command::SyncStage { mark_reviewed } => review::sync_stage(mark_reviewed),
         Command::Export { what } => match what {
             ExportWhat::Edges(_) => export::edges(),
             ExportWhat::Reviews(_) => export::reviews(),

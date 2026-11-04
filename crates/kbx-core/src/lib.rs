@@ -7,8 +7,10 @@
 //! [`lint_vault`] checks one against the ontology. [`accept`], [`reject`],
 //! [`defer`] and [`unreject`] record review decisions, a [`Queue`] takes them
 //! one candidate at a time, and [`add_relation`] writes accepted relations to
-//! frontmatter. [`Graph::edges`], [`Graph::reviews`] and [`turtle`] export what
-//! the database holds. This crate never touches a model and never prints.
+//! frontmatter. [`stage`] puts candidates under `kbx.proposed` for editors, and
+//! [`sync_stage`] takes back what was decided there. [`Graph::edges`],
+//! [`Graph::reviews`] and [`turtle`] export what the database holds. This crate
+//! never touches a model and never prints.
 
 mod config;
 mod export;
@@ -46,9 +48,13 @@ pub use ontology::{
 };
 pub use path::find_on_path;
 pub use review::{
-    Accepted, Decision, Deferred, Item, Queue, Rejected, ReviewError, STRIKES, Unrejected, accept,
-    cid, defer, excerpt, ordered, reject, suppressed_pairs, unreject,
+    Accepted, Decision, Deferred, Item, Queue, Rejected, ReviewError, STRIKES, StageReport, Synced,
+    Unrejected, accept, cid, defer, excerpt, locked_notes, mark_reviewed, ordered, reject, stage,
+    suppressed_pairs, sync_stage, unreject, unstage,
 };
 pub use section::{Block, Section, section_key};
 pub use vault::{Finding, FindingCode, Resolved, ResolvedVia, Resolver, Severity, Vault};
-pub use writer::{WriteError, add_relation, write_atomic};
+pub use writer::{
+    StagedEntry, WriteError, add_relation, proposed_ids, set_reviewed, stage_entries,
+    unstage_entries, write_atomic,
+};

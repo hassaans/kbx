@@ -117,8 +117,8 @@ impl<'a> Labels<'a> {
 /// Accepting a pair links it and deletes its candidate, and rejecting it enough
 /// suppresses it, so a generator run on the index as it stands can't find a
 /// single reviewed pair. The run gets a temporary copy instead, without the
-/// links between accepted pairs and without strikes, and no budget: the point
-/// is what each generator can find.
+/// links between accepted pairs, strikes or `kbx.reviewed` locks, and no
+/// budget: the point is what each generator can find.
 ///
 /// `type_pair_prior` is left out. It finds no pairs of its own, and it learned
 /// from the very rows it would be scored on.
@@ -168,6 +168,8 @@ fn hold_out(copy: &Graph) -> rusqlite::Result<()> {
         )?;
     }
     connection.execute("UPDATE reviews SET strikes = 0", [])?;
+    // An older database, opened read-only, doesn't have the table.
+    connection.execute("DROP TABLE IF EXISTS locks", [])?;
     Ok(())
 }
 
