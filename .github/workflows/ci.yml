@@ -51,3 +51,13 @@ jobs:
             echo "run $i passed"
           done
         shell: bash -e {0}
+
+  # Temporary: diagnoses the Windows event stream.
+  watch-diag:
+    name: watch diag windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --package kbx --locked --test watch saves_that_outlast -- --nocapture

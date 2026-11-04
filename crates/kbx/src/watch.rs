@@ -44,7 +44,8 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     println!("watching {}", project.vault.display());
 
     let mut timers = Timers::new(&options);
-    let mut saved = BTreeSet::new();
+    let mut saved: BTreeSet<PathBuf> = BTreeSet::new();
+    let started = Instant::now();
     loop {
         let message = match timers.next() {
             Some(at) => events.recv_timeout(at.saturating_duration_since(Instant::now())),
@@ -52,6 +53,9 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         };
         match message {
             Ok(Ok(batch)) => {
+                for event in &batch {
+                    eprintln!("DIAG {:?} batch {:?} {:?}", started.elapsed(), event.kind, event.paths);
+                }
                 let (paths, rescan) = changed_paths(&project.vault, &batch);
                 if rescan {
                     timers.reconcile_now();
@@ -72,7 +76,8 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         }
 
         if timers.take_index(Instant::now()) {
-            let paths = mem::take(&mut saved).into_iter().collect();
+            let paths: Vec<PathBuf> = mem::take(&mut saved).into_iter().collect();
+            eprintln!("DIAG {:?} index {:?}", started.elapsed(), paths);
             match update(&project, paths) {
                 Ok(changed) => timers.after_batch(changed),
                 Err(error) => {
