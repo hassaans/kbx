@@ -143,7 +143,7 @@ enum Command {
         /// Also run `kbx suggest` once the saves stop.
         #[arg(long)]
         suggest: bool,
-        /// Wait this long after a file's last event before indexing it.
+        /// Wait this long after the last save before indexing what was saved.
         #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u64).range(1..))]
         debounce_ms: u64,
         /// Hash the whole vault this often, for filesystems that drop events.
