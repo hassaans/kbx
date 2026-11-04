@@ -1,14 +1,16 @@
 //! Drives `kbx init` and `kbx index` over a copy of the fixture vault.
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use common::{FIXTURE, FakePath, copy_dir, id};
 use rusqlite::Connection;
 use tempfile::TempDir;
 
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/vault");
 const EXAMPLE_ONTOLOGY: &str = include_str!("../../../schema/ontology.example.yaml");
 
 /// Tables that `kbx index` fills from the files.
@@ -25,25 +27,10 @@ const OWNERS: [(&str, &str); 7] = [
     ("meta", "k"),
 ];
 
-fn id(n: u32) -> String {
-    format!("01KBX{n:021}")
-}
-
-fn copy_dir(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for entry in fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let target = to.join(entry.file_name());
-        if entry.path().is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            fs::copy(entry.path(), target).unwrap();
-        }
-    }
-}
-
 struct Vault {
     dir: TempDir,
+    /// `kbx init` installs a missing qmd, so it must never find the real npm.
+    path: FakePath,
 }
 
 impl Vault {
@@ -51,6 +38,7 @@ impl Vault {
     fn empty() -> Vault {
         Vault {
             dir: TempDir::new().unwrap(),
+            path: FakePath::with_qmd(),
         }
     }
 
@@ -93,11 +81,7 @@ impl Vault {
     }
 
     fn kbx_in(&self, dir: &Path, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_kbx"))
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("kbx should run")
+        self.path.kbx(dir, args)
     }
 
     /// Runs kbx, requires success, and returns stdout.
@@ -308,7 +292,7 @@ fn index_needs_a_config_and_finds_it_from_a_subfolder() {
     let vault = Vault::fixture();
     let output = vault.kbx_in(&vault.path("engineering"), &["index"]);
     assert!(output.status.success());
-    assert_eq!(vault.count("files"), 23);
+    assert_eq!(vault.count("files"), 25);
 }
 
 // --- schema -----------------------------------------------------------------
@@ -433,11 +417,11 @@ fn the_database_has_the_section_4_schema_in_wal_mode() {
 fn index_fills_files_aliases_sections_and_edges() {
     let vault = Vault::fixture();
     let stdout = vault.ok(&["index"]);
-    assert!(stdout.contains("indexed 23,"), "{stdout}");
+    assert!(stdout.contains("indexed 25,"), "{stdout}");
 
-    assert_eq!(vault.count("files"), 23);
+    assert_eq!(vault.count("files"), 25);
     assert!(vault.count("aliases") > 0);
-    assert!(vault.count("sections") >= 23);
+    assert!(vault.count("sections") >= 25);
     assert!(vault.count("edges") > 0);
 
     let db = vault.db();
@@ -494,7 +478,7 @@ fn a_second_index_touches_no_rows() {
     let stdout = vault.ok(&["index"]);
 
     assert!(stdout.contains("indexed 0,"), "{stdout}");
-    assert!(stdout.contains(", 23 unchanged"), "{stdout}");
+    assert!(stdout.contains(", 25 unchanged"), "{stdout}");
     assert_eq!(vault.audited(), Vec::<String>::new());
 }
 
@@ -527,7 +511,7 @@ fn editing_one_note_reindexes_only_that_file() {
     let stdout = vault.ok(&["index"]);
 
     assert!(stdout.contains("indexed 1,"), "{stdout}");
-    assert!(stdout.contains(", 22 unchanged"), "{stdout}");
+    assert!(stdout.contains(", 24 unchanged"), "{stdout}");
     let db = vault.db();
     let mut statement = db
         .prepare("SELECT path FROM files WHERE indexed_at <> 0")
@@ -626,7 +610,7 @@ fn full_rebuilds_everything() {
 
     let stdout = vault.ok(&["index", "--full"]);
 
-    assert!(stdout.contains("indexed 23,"), "{stdout}");
+    assert!(stdout.contains("indexed 25,"), "{stdout}");
     assert_eq!(vault.dump(), before);
     let untouched: i64 = vault
         .db()
@@ -694,7 +678,7 @@ fn a_deleted_path_removes_its_rows_and_an_unknown_one_is_an_error() {
 
     let stdout = vault.ok(&["index", RATE_LIMITS]);
     assert!(stdout.contains("removed 1,"), "{stdout}");
-    assert_eq!(vault.count("files"), 22);
+    assert_eq!(vault.count("files"), 24);
 
     assert!(!vault.kbx(&["index", "no/such/file.md"]).status.success());
     let outside = TempDir::new().unwrap();
@@ -708,7 +692,7 @@ fn full_with_paths_reindexes_only_those_paths() {
     vault.ok(&["index"]);
     let stdout = vault.ok(&["index", "--full", "decisions"]);
     assert!(stdout.contains("indexed 3,"), "{stdout}");
-    assert_eq!(vault.count("files"), 23);
+    assert_eq!(vault.count("files"), 25);
 }
 
 // --- AC3: the files are the only source of truth ----------------------------
@@ -932,7 +916,7 @@ fn a_new_pipeline_version_rebuilds() {
 
     let stdout = vault.ok(&["index"]);
 
-    assert!(stdout.contains("indexed 23,"), "{stdout}");
+    assert!(stdout.contains("indexed 25,"), "{stdout}");
     let version: String = vault
         .db()
         .query_row(
@@ -1025,7 +1009,7 @@ fn renaming_a_file_keeps_links_by_id_and_hides_links_by_filename() {
 
     assert!(!vault.has_edge(&id(21), &id(22), "see_also", "frontmatter"));
     assert!(vault.has_edge(&id(8), &id(6), "depends_on", "frontmatter"));
-    assert_eq!(vault.count("files"), 23);
+    assert_eq!(vault.count("files"), 25);
 }
 
 // --- what isn't a note ------------------------------------------------------
@@ -1040,13 +1024,14 @@ fn a_file_without_frontmatter_is_skipped_and_logged_at_debug() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains(", 1 skipped"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains(", 2 skipped"));
     let log = String::from_utf8_lossy(&output.stderr);
     assert!(log.contains("DEBUG") && log.contains("README.md"), "{log}");
-    assert_eq!(vault.count("files"), 23);
+    assert_eq!(vault.count("files"), 25);
 
     let quiet = vault.kbx(&["index"]);
-    assert!(quiet.stderr.is_empty(), "the skip is debug only");
+    let log = String::from_utf8_lossy(&quiet.stderr);
+    assert!(!log.contains("README.md"), "the skip is debug only: {log}");
 }
 
 #[test]
@@ -1055,7 +1040,7 @@ fn a_note_that_stops_having_frontmatter_loses_its_rows() {
     vault.ok(&["index"]);
     vault.write(RATE_LIMITS, "Plain text now.\n");
     vault.ok(&["index"]);
-    assert_eq!(vault.count("files"), 22);
+    assert_eq!(vault.count("files"), 24);
     let sections: i64 = vault
         .db()
         .query_row(
@@ -1080,13 +1065,13 @@ fn a_malformed_note_warns_and_does_not_stop_the_run() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(", 2 failed"), "{stdout}");
+    assert!(stdout.contains(", 4 failed"), "{stdout}");
     let log = String::from_utf8_lossy(&output.stderr);
     assert!(
         log.contains(RATE_LIMITS) && log.contains("lint/binary.md"),
         "{log}"
     );
-    assert_eq!(vault.count("files"), 22, "files are the source of truth");
+    assert_eq!(vault.count("files"), 24, "files are the source of truth");
 }
 
 #[test]

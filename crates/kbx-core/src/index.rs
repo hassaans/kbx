@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
@@ -73,6 +73,31 @@ pub enum IndexError {
     /// The working directory could not be read.
     #[error("{0}: {1}")]
     Io(PathBuf, io::Error),
+}
+
+/// How the index compares with what a run would build from now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexState {
+    /// No run has finished.
+    Unbuilt,
+    /// Built by this pipeline, from this ontology.
+    Current,
+    /// Built by another pipeline, or from another ontology.
+    Stale,
+}
+
+/// Reads the state of the index from `meta`. Files changed since the last run
+/// don't show here: finding them takes the walk `kbx index` does.
+pub fn index_state(graph: &Graph, ontology_yaml: &str) -> rusqlite::Result<IndexState> {
+    let Some(pipeline) = meta(&graph.conn, "pipeline_version")? else {
+        return Ok(IndexState::Unbuilt);
+    };
+    let ontology = meta(&graph.conn, "ontology_hash")?;
+    if pipeline == PIPELINE_VERSION && ontology == Some(sha256(ontology_yaml.as_bytes())) {
+        Ok(IndexState::Current)
+    } else {
+        Ok(IndexState::Stale)
+    }
 }
 
 /// Compiles the markdown files under `vault` into `graph`, in one transaction.
@@ -155,10 +180,10 @@ pub fn index_vault(
 }
 
 /// A file or folder the run covers.
-struct Selected {
-    absolute: PathBuf,
+pub(crate) struct Selected {
+    pub(crate) absolute: PathBuf,
     /// From the vault root with `/` separators, empty for the root itself.
-    relative: String,
+    pub(crate) relative: String,
 }
 
 impl Selected {
@@ -169,7 +194,7 @@ impl Selected {
         }
     }
 
-    fn contains(&self, path: &str) -> bool {
+    pub(crate) fn contains(&self, path: &str) -> bool {
         self.relative.is_empty()
             || path
                 .strip_prefix(&self.relative)
@@ -177,7 +202,7 @@ impl Selected {
     }
 }
 
-fn select(vault: &Path, paths: &[PathBuf]) -> Result<Vec<Selected>, IndexError> {
+pub(crate) fn select(vault: &Path, paths: &[PathBuf]) -> Result<Vec<Selected>, IndexError> {
     if paths.is_empty() {
         return Ok(vec![Selected::whole_vault(vault)]);
     }
@@ -215,7 +240,7 @@ fn normalize(path: &Path) -> PathBuf {
     clean
 }
 
-fn slash_path(path: &Path) -> String {
+pub(crate) fn slash_path(path: &Path) -> String {
     let parts: Vec<_> = path
         .components()
         .map(|part| part.as_os_str().to_string_lossy())
@@ -227,7 +252,7 @@ fn slash_path(path: &Path) -> String {
 /// `.obsidian` are left out, and symlinks aren't followed, so a link back up
 /// the tree can't loop. A folder that can't be read is as good as absent,
 /// which is how §1 enforces ACLs.
-fn walk(vault: &Path, folder: &str, found: &mut BTreeSet<String>) {
+pub(crate) fn walk(vault: &Path, folder: &str, found: &mut BTreeSet<String>) {
     let entries = match fs::read_dir(vault.join(folder)) {
         Ok(entries) => entries,
         Err(error) => {
@@ -794,8 +819,8 @@ fn write_edges(tx: &Transaction<'_>, wanted: &BTreeMap<EdgeKey, EdgeRow>) -> rus
     Ok(())
 }
 
-fn meta(tx: &Transaction<'_>, key: &str) -> rusqlite::Result<Option<String>> {
-    tx.query_row("SELECT v FROM meta WHERE k = ?", [key], |row| row.get(0))
+fn meta(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT v FROM meta WHERE k = ?", [key], |row| row.get(0))
         .optional()
 }
 

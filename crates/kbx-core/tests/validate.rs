@@ -1,4 +1,4 @@
-use kbx_core::{Finding, FindingCode, Note, Ontology, ResolvedVia, Vault, parse_note};
+use kbx_core::{Finding, FindingCode, Link, Note, Ontology, ResolvedVia, Vault, parse_note};
 
 const ONTOLOGY: &str = include_str!("../../../schema/ontology.example.yaml");
 
@@ -129,6 +129,81 @@ fn rel_range() {
     assert_eq!(found[0].code.as_str(), "rel.range");
     assert_eq!(found[0].line, 5);
     assert!(found[0].message.contains("Decision"));
+}
+
+#[test]
+fn rel_domain() {
+    let notes = vec![
+        note("tokens", "Concept", "", ""),
+        note(
+            "idea",
+            "Concept",
+            &format!("depends_on: [{}]\n", link("tokens")),
+            "",
+        ),
+    ];
+    let found = findings(notes);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].code, FindingCode::RelDomain);
+    assert_eq!(found[0].code.as_str(), "rel.domain");
+    assert_eq!(found[0].path.to_str(), Some("idea.md"));
+    assert_eq!(found[0].line, 5);
+    assert!(found[0].message.contains("depends_on"));
+}
+
+#[test]
+fn rel_domain_any_admits_every_class() {
+    let notes = vec![
+        note("tokens", "Concept", "", ""),
+        note(
+            "choice",
+            "Decision",
+            &format!("see_also: [{}]\n", link("tokens")),
+            "",
+        ),
+    ];
+    assert_eq!(codes(notes), Vec::<&str>::new());
+}
+
+#[test]
+fn rel_domain_of_an_inverse_key_is_the_relation_range() {
+    // `required_by` reads `depends_on` backwards, so it may sit on what
+    // `depends_on` may target, which a Decision is not.
+    let notes = vec![
+        note(
+            "flow",
+            "Procedure",
+            &format!("depends_on: [{}]\n", link("tokens")),
+            "",
+        ),
+        note(
+            "tokens",
+            "Concept",
+            &format!("required_by: [{}]\n", link("flow")),
+            "",
+        ),
+        note(
+            "choice",
+            "Decision",
+            &format!("required_by: [{}]\n", link("flow")),
+            "",
+        ),
+    ];
+    assert_eq!(codes(notes), ["rel.domain"]);
+}
+
+#[test]
+fn a_source_of_unknown_class_is_reported_once_as_type_unknown() {
+    let notes = vec![
+        note("tokens", "Concept", "", ""),
+        note(
+            "odd",
+            "Recipe",
+            &format!("depends_on: [{}]\n", link("tokens")),
+            "",
+        ),
+    ];
+    assert_eq!(codes(notes), ["type.unknown"]);
 }
 
 #[test]
@@ -408,11 +483,82 @@ fn ambiguous_links_do_not_resolve() {
     ]);
     assert_eq!(resolve(&vault, "shared"), None);
     assert_eq!(resolve(&vault, "same"), None);
-    assert_eq!(resolve(&vault, "3"), None);
     assert_eq!(
         resolve(&vault, "a/same"),
         Some(("1", ResolvedVia::Filename))
     );
+}
+
+fn at(path: &str, id: &str, extra: &str) -> Note {
+    parse_note(
+        path,
+        &format!("---\nid: {id}\ntype: Concept\ntitle: {path}\n{extra}---\n"),
+    )
+    .unwrap()
+}
+
+fn resolved_path(vault: &Vault, text: &str) -> Option<String> {
+    let link = Link {
+        target: text.to_string(),
+        fragment: None,
+        display: None,
+        line: 1,
+    };
+    let resolved = vault.resolve(&link)?;
+    Some(resolved.note.path.to_str().unwrap().to_string())
+}
+
+#[test]
+fn the_lowest_path_keeps_a_shared_id_whatever_the_order_given() {
+    let vault = vault(vec![at("b.md", "1", ""), at("a.md", "1", "")]);
+    assert_eq!(resolved_path(&vault, "1"), Some("a.md".to_string()));
+    assert_eq!(resolved_path(&vault, "1-slug"), Some("a.md".to_string()));
+}
+
+#[test]
+fn lowest_means_the_string_order_the_index_uses() {
+    // Path comparison goes by component and would put `a/` first, but `-`
+    // sorts before `/`.
+    let vault = vault(vec![at("a/x.md", "1", ""), at("a-b/x.md", "1", "")]);
+    assert_eq!(resolved_path(&vault, "1"), Some("a-b/x.md".to_string()));
+}
+
+#[test]
+fn a_note_that_lost_its_id_answers_to_nothing() {
+    let vault = vault(vec![
+        at("a.md", "1", ""),
+        at("b.md", "1", "aliases: [lost, shared]\n"),
+        at("c.md", "2", "aliases: [shared]\n"),
+    ]);
+    assert_eq!(resolved_path(&vault, "lost"), None);
+    assert_eq!(resolved_path(&vault, "b"), None);
+    // The index has no row for b.md, so the alias isn't ambiguous there.
+    assert_eq!(resolved_path(&vault, "shared"), Some("c.md".to_string()));
+}
+
+#[test]
+fn id_duplicate_is_reported_on_every_file_at_the_id_line() {
+    let vault = vault(vec![
+        at("a.md", "1", ""),
+        at("b.md", "1", ""),
+        at("c.md", "1", ""),
+        at("d.md", "2", ""),
+    ]);
+    let found = vault.validate(&ontology());
+    let places: Vec<_> = found
+        .iter()
+        .map(|f| (f.code.as_str(), f.path.to_str().unwrap(), f.line))
+        .collect();
+    assert_eq!(
+        places,
+        [
+            ("id.duplicate", "a.md", 2),
+            ("id.duplicate", "b.md", 2),
+            ("id.duplicate", "c.md", 2),
+        ]
+    );
+    assert!(found[0].message.contains("b.md") && found[0].message.contains("c.md"));
+    assert!(found[1].message.contains("a.md"));
 }
 
 #[test]

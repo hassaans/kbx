@@ -1,6 +1,7 @@
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension, Row};
 
 /// The §4 schema, plus two tables it has no room for:
 ///
@@ -37,6 +38,45 @@ CREATE TABLE IF NOT EXISTS reviews (src TEXT, dst TEXT, rel TEXT,
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 ";
 
+/// A note in the index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Node {
+    /// The note's id.
+    pub id: String,
+    /// The note's class, which the ontology may not know.
+    pub class: String,
+    /// The note's title.
+    pub title: String,
+}
+
+/// One edge seen from a note: where it goes and what kind it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Neighbor {
+    /// The note at the other end.
+    pub node: Node,
+    /// The edge's `rel`: a frontmatter key, or [`MENTIONS`](crate::MENTIONS).
+    pub rel: String,
+    /// The edge's `origin`: `frontmatter`, `inline` or `derived`.
+    pub origin: String,
+    /// The relation's weight. Mentions and keys outside the ontology have none.
+    pub weight: Option<f64>,
+    /// The edge points at the note it's seen from, not away from it.
+    pub incoming: bool,
+}
+
+/// What the index holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GraphStats {
+    /// Rows in `files`.
+    pub nodes: i64,
+    /// Rows in `edges`, derived inverses included.
+    pub edges: i64,
+    /// Rows in `sections`.
+    pub sections: i64,
+    /// Links that resolve to nothing (§8).
+    pub hidden: i64,
+}
+
 /// The graph database, `.kbx/graph.sqlite`.
 #[derive(Debug)]
 pub struct Graph {
@@ -56,4 +96,88 @@ impl Graph {
     pub fn connection(&self) -> &Connection {
         &self.conn
     }
+
+    /// The note with this id.
+    pub fn node(&self, id: &str) -> rusqlite::Result<Option<Node>> {
+        self.conn
+            .query_row(
+                "SELECT id, type, title FROM files WHERE id = ?",
+                [id],
+                |row| node(row, 0),
+            )
+            .optional()
+    }
+
+    /// Every edge at a note, outgoing first, then by `rel` and id. A relation
+    /// has a mirror row from each end, so only edges without one, which are
+    /// the ones with no weight, are also listed from the end they point at.
+    pub fn neighbors(&self, id: &str) -> rusqlite::Result<Vec<Neighbor>> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT f.id, f.type, f.title, e.rel, e.origin, e.weight, 0 AS incoming
+             FROM edges e JOIN files f ON f.id = e.dst WHERE e.src = ?1
+             UNION ALL
+             SELECT f.id, f.type, f.title, e.rel, e.origin, e.weight, 1 AS incoming
+             FROM edges e JOIN files f ON f.id = e.src
+             WHERE e.dst = ?1 AND e.src <> ?1 AND e.weight IS NULL
+             ORDER BY incoming, rel, id",
+        )?;
+        let rows = statement.query_map([id], |row| {
+            Ok(Neighbor {
+                node: node(row, 0)?,
+                rel: row.get(3)?,
+                origin: row.get(4)?,
+                weight: row.get(5)?,
+                incoming: row.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// A shortest path between two notes, as the hops after `from`. Empty if
+    /// they are the same note, `None` if no path joins them.
+    pub fn path(&self, from: &str, to: &str) -> rusqlite::Result<Option<Vec<Neighbor>>> {
+        let mut seen = HashSet::from([from.to_string()]);
+        let mut queue = VecDeque::from([from.to_string()]);
+        let mut reached_by: HashMap<String, (String, Neighbor)> = HashMap::new();
+        while let Some(id) = queue.pop_front() {
+            if id == to {
+                let mut hops = Vec::new();
+                let mut at = id;
+                while let Some((previous, hop)) = reached_by.remove(&at) {
+                    hops.push(hop);
+                    at = previous;
+                }
+                hops.reverse();
+                return Ok(Some(hops));
+            }
+            for neighbor in self.neighbors(&id)? {
+                let next = neighbor.node.id.clone();
+                if seen.insert(next.clone()) {
+                    reached_by.insert(next.clone(), (id.clone(), neighbor));
+                    queue.push_back(next);
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Counts what the index holds.
+    pub fn stats(&self) -> rusqlite::Result<GraphStats> {
+        let count = |sql: &str| self.conn.query_row(sql, [], |row| row.get(0));
+        Ok(GraphStats {
+            nodes: count("SELECT COUNT(*) FROM files")?,
+            edges: count("SELECT COUNT(*) FROM edges")?,
+            sections: count("SELECT COUNT(*) FROM sections")?,
+            hidden: count("SELECT COUNT(*) FROM links WHERE dst IS NULL")?,
+        })
+    }
+}
+
+/// Reads a [`Node`] from three columns, starting at `first`.
+fn node(row: &Row<'_>, first: usize) -> rusqlite::Result<Node> {
+    Ok(Node {
+        id: row.get(first)?,
+        class: row.get(first + 1)?,
+        title: row.get(first + 2)?,
+    })
 }

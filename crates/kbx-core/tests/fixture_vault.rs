@@ -8,6 +8,10 @@ use kbx_core::{Note, Ontology, ParseError, Vault, parse_note};
 
 const VAULT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/vault");
 const ONTOLOGY: &str = include_str!("../../../schema/ontology.example.yaml");
+const MALFORMED: [&str; 2] = [
+    "lint/01KBX000000000000000000025-bad-yaml.md",
+    "lint/01KBX000000000000000000026-unterminated.md",
+];
 
 fn markdown_files(dir: &Path, found: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).unwrap() {
@@ -21,6 +25,7 @@ fn markdown_files(dir: &Path, found: &mut Vec<PathBuf>) {
 }
 
 /// Parses the vault, returning the notes and the files that aren't notes.
+/// Malformed files are left out: [`malformed`] covers them.
 fn load() -> (Vault, Vec<String>) {
     let mut files = Vec::new();
     markdown_files(Path::new(VAULT), &mut files);
@@ -32,7 +37,7 @@ fn load() -> (Vault, Vec<String>) {
         match parse_note(relative.clone(), &fs::read_to_string(&file).unwrap()) {
             Ok(note) => notes.push(note),
             Err(ParseError::NoFrontmatter) => plain.push(relative.display().to_string()),
-            Err(error) => panic!("{}: {error}", relative.display()),
+            Err(_) => assert!(MALFORMED.contains(&relative.to_str().unwrap())),
         }
     }
     (Vault::new(notes), plain)
@@ -93,14 +98,27 @@ fn linked(vault: &Vault, a: &str, b: &str) -> bool {
 fn every_file_but_the_readme_is_a_note() {
     let (vault, plain) = load();
     assert_eq!(plain, ["README.md"]);
-    assert_eq!(vault.notes().len(), 23);
+    assert_eq!(vault.notes().len(), 26);
+}
+
+#[test]
+fn the_malformed_files_fail_for_the_reasons_the_readme_gives() {
+    let parse = |path: &str| {
+        let src = fs::read_to_string(Path::new(VAULT).join(path)).unwrap();
+        parse_note(path, &src).unwrap_err()
+    };
+    assert!(matches!(parse(MALFORMED[0]), ParseError::Yaml(_)));
+    assert!(matches!(
+        parse(MALFORMED[1]),
+        ParseError::UnterminatedFrontmatter
+    ));
 }
 
 #[test]
 fn ids_are_ulids_and_prefix_their_filenames() {
     let (vault, _) = load();
     let crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-    let mut ids = BTreeSet::new();
+    let mut ids = BTreeMap::new();
     for note in vault.notes() {
         assert_eq!(note.id.len(), 26, "{}", note.id);
         assert!(
@@ -108,12 +126,14 @@ fn ids_are_ulids_and_prefix_their_filenames() {
             "{}",
             note.id
         );
-        assert!(ids.insert(&note.id), "duplicate {}", note.id);
+        *ids.entry(&note.id).or_insert(0) += 1;
         if slug(note) != "legacy-runbook" {
             let stem = note.path.file_stem().unwrap().to_str().unwrap();
             assert!(stem.starts_with(&note.id), "{stem}");
         }
     }
+    let shared: Vec<_> = ids.iter().filter(|(_, count)| **count > 1).collect();
+    assert_eq!(shared.len(), 1, "only the id.duplicate pair: {shared:?}");
 }
 
 #[test]
@@ -134,10 +154,13 @@ fn each_finding_code_comes_from_the_note_the_readme_names() {
         .collect();
     found.sort();
     let expected = [
+        ("id-duplicate-a", "id.duplicate"),
+        ("id-duplicate-b", "id.duplicate"),
         ("link-unresolved", "link.unresolved"),
         ("link-unresolved", "link.unresolved"),
         ("link-unstable", "link.unstable"),
         ("rel-cardinality", "rel.cardinality"),
+        ("rel-domain", "rel.domain"),
         ("rel-range", "rel.range"),
         ("rel-unknown", "rel.unknown"),
         ("restart-service", "schema.gap"),

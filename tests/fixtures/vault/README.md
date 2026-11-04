@@ -16,13 +16,19 @@ plain markdown file in a real vault. Walkers should skip it.
 | `type.unknown` | `lint/…17-type-unknown` | `type: Recipe` |
 | `rel.unknown` | `lint/…18-rel-unknown` | `relates_to` key |
 | `rel.range` | `lint/…19-rel-range` | `implements` points at a Decision |
+| `rel.domain` | `lint/…24-rel-domain` | `depends_on` on a Concept |
 | `schema.gap` | `operations/…10-restart-service` | Procedure without `depends_on` |
 | `rel.cardinality` | `lint/…20-rel-cardinality` | `supersedes` has two targets |
 | `link.unstable` | `lint/…21-link-unstable` | links to `legacy-runbook.md` by filename |
 | `link.unresolved` | `lint/…23-link-unresolved` | twice: a frontmatter link and an inline `[[ghost note]]` |
+| `note.invalid` | `lint/…25-bad-yaml`, `lint/…26-unterminated` | YAML that doesn't parse, and frontmatter that never closes |
+| `id.duplicate` | `lint/…27-id-duplicate-a`, `lint/…27-id-duplicate-b` | both claim id `…27`; `-a` is the lower path, so it keeps the id |
 
 No other note has a finding. `lint/legacy-runbook.md` (id `…22`) is the one file
 without an id prefix; it's the target of the `link.unstable` case.
+
+`kbx index` compiles 25 of the 28 files with frontmatter. It fails the two
+`note.invalid` files and skips `…27-id-duplicate-b`.
 
 ## §5 generator cases
 

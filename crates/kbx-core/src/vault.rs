@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde_yaml::Value;
 
+use crate::index::slash_path;
 use crate::link::Link;
 use crate::note::Note;
 use crate::ontology::{Ontology, RelationKey, admits};
@@ -13,6 +14,8 @@ use crate::ontology::{Ontology, RelationKey, admits};
 pub struct Vault {
     notes: Vec<Note>,
     resolver: Resolver,
+    /// The notes claiming each id, lowest path first.
+    holders: HashMap<String, Vec<usize>>,
 }
 
 /// Finds what a link target names, from ids, paths and aliases alone. The
@@ -60,7 +63,8 @@ pub struct Finding {
     pub message: String,
 }
 
-/// The finding codes from §3 and §8.
+/// The finding codes from §3 and §8, and three §3 has no rule for:
+/// `rel.domain`, `note.invalid` and `id.duplicate`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FindingCode {
     /// `type` isn't a class in the ontology.
@@ -70,6 +74,8 @@ pub enum FindingCode {
     RelUnknown,
     /// A link's target has a class outside the relation's `range`.
     RelRange,
+    /// The note's class is outside the `domain` of a relation it holds.
+    RelDomain,
     /// A relation the note's class `requires` is missing or empty.
     SchemaGap,
     /// An `exclusive` relation has more than one target.
@@ -78,6 +84,12 @@ pub enum FindingCode {
     LinkUnstable,
     /// A link resolved to no note, or to more than one.
     LinkUnresolved,
+    /// A file with frontmatter can't be read as a note, so `kbx index` fails
+    /// it and it has no rows.
+    NoteInvalid,
+    /// Several files claim one id. The lowest path keeps it, and the others
+    /// answer to nothing.
+    IdDuplicate,
 }
 
 impl FindingCode {
@@ -87,10 +99,13 @@ impl FindingCode {
             FindingCode::TypeUnknown => "type.unknown",
             FindingCode::RelUnknown => "rel.unknown",
             FindingCode::RelRange => "rel.range",
+            FindingCode::RelDomain => "rel.domain",
             FindingCode::SchemaGap => "schema.gap",
             FindingCode::RelCardinality => "rel.cardinality",
             FindingCode::LinkUnstable => "link.unstable",
             FindingCode::LinkUnresolved => "link.unresolved",
+            FindingCode::NoteInvalid => "note.invalid",
+            FindingCode::IdDuplicate => "id.duplicate",
         }
     }
 }
@@ -147,14 +162,27 @@ impl Resolver {
 }
 
 impl Vault {
-    /// Indexes `notes` by id, filename and alias. Sets of notes that share an
-    /// id or name are kept: links to them just don't resolve.
+    /// Indexes `notes` by id, filename and alias. Links to a name several
+    /// notes share don't resolve. Of notes that share an id, only the one with
+    /// the lowest path is registered, by id or any other name: `kbx index`
+    /// gives the others no rows, and the two must agree on where a link goes.
     pub fn new(notes: Vec<Note>) -> Vault {
-        let mut resolver = Resolver::default();
+        let mut holders: HashMap<String, Vec<usize>> = HashMap::new();
         for (index, note) in notes.iter().enumerate() {
-            resolver.add(index, &note.id, &note.path, &note.aliases);
+            holders.entry(note.id.clone()).or_default().push(index);
         }
-        Vault { notes, resolver }
+        let mut resolver = Resolver::default();
+        for indexes in holders.values_mut() {
+            // As strings, like the index: `Path` order puts `a/x` before `a-b/x`.
+            indexes.sort_by_key(|&index| slash_path(&notes[index].path));
+            let note = &notes[indexes[0]];
+            resolver.add(indexes[0], &note.id, &note.path, &note.aliases);
+        }
+        Vault {
+            notes,
+            resolver,
+            holders,
+        }
     }
 
     /// The notes, in the order given to [`Vault::new`].
@@ -196,6 +224,10 @@ impl Vault {
             });
         };
 
+        if let Some(message) = self.duplicate_message(note) {
+            report(FindingCode::IdDuplicate, note.id_line, message);
+        }
+
         match ontology.classes.get(&note.class) {
             None => {
                 let message = format!("type `{}` is not a class in the ontology", note.class);
@@ -216,6 +248,14 @@ impl Vault {
             if relation.is_none() {
                 let message = format!("`{}` is not a relation in the ontology", entry.key);
                 report(FindingCode::RelUnknown, entry.line, message);
+            }
+            // A note of unknown class already has its own type.unknown.
+            if let Some(relation) = relation
+                && ontology.classes.contains_key(&note.class)
+                && !admits(relation.domain(), &note.class)
+            {
+                let message = format!("{} is outside the domain of `{}`", note.class, entry.key);
+                report(FindingCode::RelDomain, entry.line, message);
             }
             let mut targets = BTreeSet::new();
             for link in &entry.links {
@@ -243,6 +283,25 @@ impl Vault {
             self.check_link(link, None, ontology, &mut report);
         }
         found
+    }
+
+    /// Says who else claims this note's id, if anyone does.
+    fn duplicate_message(&self, note: &Note) -> Option<String> {
+        let holders = self.holders.get(&note.id)?;
+        let paths = holders.iter().map(|&index| &self.notes[index].path);
+        let others: Vec<_> = paths
+            .filter(|path| **path != note.path)
+            .map(|path| path.display().to_string())
+            .collect();
+        if others.is_empty() {
+            return None;
+        }
+        let keeper = self.notes[holders[0]].path.display();
+        Some(format!(
+            "id `{}` is also used by {}; links go to {keeper}",
+            note.id,
+            others.join(", ")
+        ))
     }
 
     /// Reports on one link and returns what it points at, so that spellings
