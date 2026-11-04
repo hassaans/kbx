@@ -328,6 +328,17 @@ fn a_dry_run_stages_nothing() {
 }
 
 #[test]
+fn eval_changes_nothing_so_it_refuses_to_stage() {
+    let vault = indexed();
+    let output = vault.kbx(&["suggest", "--eval", "--stage"]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("cannot be used with"),
+        "{output:?}"
+    );
+}
+
+#[test]
 fn the_index_is_current_after_staging() {
     let vault = staged();
     let printed = vault.ok(&["index"]);
