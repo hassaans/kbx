@@ -33,3 +33,25 @@ jobs:
         shell: bash
         env:
           KBX_BINARY: target/debug/kbx${{ runner.os == 'Windows' && '.exe' || '' }}
+
+  # Temporary: removed before the PR is final.
+  watch-loop:
+    name: watch tests x20 ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --package kbx --locked --test watch --no-run
+      - run: |
+          for i in $(seq 1 20); do
+            echo "::group::run $i"
+            cargo test --package kbx --locked --test watch
+            echo "::endgroup::"
+            echo "run $i passed"
+          done
+        shell: bash -e {0}
