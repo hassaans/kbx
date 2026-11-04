@@ -30,7 +30,7 @@ fn review(src: &str, dst: &str, rel: &str, decision: &str) -> Review {
         rel: rel.to_string(),
         decision: decision.to_string(),
         reason: None,
-        strikes: Some(0),
+        strikes: 0,
         decided_at: Some(0),
     }
 }

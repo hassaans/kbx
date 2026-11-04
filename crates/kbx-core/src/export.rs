@@ -57,8 +57,10 @@ pub struct Review {
     pub decision: String,
     /// Why.
     pub reason: Option<String>,
-    /// Rejections that still count. `kbx unreject` clears them.
-    pub strikes: Option<i64>,
+    /// Rejections that still count. `kbx unreject` clears them. Never NULL in
+    /// the table: a NULL would swallow every later strike.
+    #[serde(default)]
+    pub strikes: i64,
     /// When, in seconds since the epoch.
     pub decided_at: Option<i64>,
 }
@@ -116,13 +118,20 @@ impl Graph {
     /// unless its decision is newer, so an old backup can't undo later work and
     /// importing twice changes nothing. Rows not mentioned stay, and notes are
     /// not touched: an imported `accept` writes no link.
+    ///
+    /// `kbx unreject` leaves `decided_at` alone, so one time on both sides is
+    /// the same decision, perhaps with its strikes cleared since. The lower
+    /// count stands.
     pub fn import_reviews(&self, reviews: &[Review]) -> rusqlite::Result<()> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let mut insert = tx.prepare(
             "INSERT INTO reviews (src, dst, rel, decision, reason, strikes, decided_at)
              VALUES (?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(src, dst, rel) DO UPDATE SET decision = excluded.decision,
-                 reason = excluded.reason, strikes = excluded.strikes,
+                 reason = excluded.reason,
+                 strikes = CASE WHEN ifnull(excluded.decided_at, 0) = ifnull(reviews.decided_at, 0)
+                     THEN min(ifnull(reviews.strikes, 0), excluded.strikes)
+                     ELSE excluded.strikes END,
                  decided_at = excluded.decided_at
              WHERE ifnull(excluded.decided_at, 0) >= ifnull(reviews.decided_at, 0)",
         )?;
@@ -162,7 +171,7 @@ fn review_row(row: &Row<'_>) -> rusqlite::Result<Review> {
         rel: row.get(2)?,
         decision: row.get(3)?,
         reason: row.get(4)?,
-        strikes: row.get(5)?,
+        strikes: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
         decided_at: row.get(6)?,
     })
 }

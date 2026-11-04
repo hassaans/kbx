@@ -38,7 +38,9 @@ It reads a file, or stdin without one, and adds to the table:
 - A row already there is replaced unless its `decided_at` is newer, so importing
   an old backup can't undo later decisions, and importing twice changes nothing.
 - Rows the file doesn't mention stay.
-- `strikes` come across, so imported rejections suppress pairs as they did.
+- `strikes` come across, so imported rejections suppress pairs as they did, and
+  a row without them has none. If a row here has the same `decided_at`, the lower
+  count stands, so a backup can't undo `kbx unreject`.
 - Notes are not touched. An imported `accept` writes no link: the row is a
   record of the decision, and the link is in the notes it came with.
 

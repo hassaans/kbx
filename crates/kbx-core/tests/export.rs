@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use kbx_core::{
-    DEFAULT_NAMESPACE, Graph, ImportError, IndexOptions, NOTE_NAMESPACE, Ontology, Review,
-    index_vault, parse_reviews, turtle,
+    DEFAULT_NAMESPACE, Graph, ImportError, IndexOptions, NOTE_NAMESPACE, Ontology, Review, STRIKES,
+    cid, index_vault, parse_reviews, suppressed_pairs, turtle, unreject,
 };
 use oxrdf::{NamedOrBlankNode, Term, Triple};
 use oxttl::TurtleParser;
@@ -43,7 +43,7 @@ fn review(src: &str, decision: &str, decided_at: i64) -> Review {
         rel: "see_also".to_string(),
         decision: decision.to_string(),
         reason: Some(format!("{decision}ed\nfor \"reasons\"")),
-        strikes: Some((decision == "reject") as i64),
+        strikes: (decision == "reject") as i64,
         decided_at: Some(decided_at),
     }
 }
@@ -78,7 +78,7 @@ fn review_rows_survive_json_lines() {
         review("a", "accept", 10),
         Review {
             reason: None,
-            strikes: None,
+            strikes: 0,
             decided_at: None,
             ..review("c", "defer", 0)
         },
@@ -162,6 +162,60 @@ fn a_newer_decision_replaces_an_older_one_and_not_the_other_way_round() {
         .import_reviews(&[review("a", "reject", 15)])
         .unwrap();
     assert_eq!(db.graph.reviews().unwrap()[0].decision, "accept");
+}
+
+#[test]
+fn an_old_backup_does_not_undo_an_unreject() {
+    let db = empty();
+    let suppressed = Review {
+        strikes: STRIKES,
+        ..review("a", "reject", 10)
+    };
+    db.graph
+        .import_reviews(std::slice::from_ref(&suppressed))
+        .unwrap();
+    assert_eq!(suppressed_pairs(db.graph.connection()).unwrap().len(), 1);
+    unreject(&db.graph, &cid("a", "b")).unwrap();
+
+    db.graph.import_reviews(&[suppressed]).unwrap();
+    assert_eq!(db.graph.reviews().unwrap()[0].strikes, 0);
+    assert!(suppressed_pairs(db.graph.connection()).unwrap().is_empty());
+}
+
+#[test]
+fn a_later_rejection_brings_its_strikes_with_it() {
+    let db = empty();
+    db.graph
+        .import_reviews(&[review("a", "reject", 10)])
+        .unwrap();
+    let later = Review {
+        strikes: STRIKES,
+        ..review("a", "reject", 20)
+    };
+    db.graph.import_reviews(&[later]).unwrap();
+    assert_eq!(db.graph.reviews().unwrap()[0].strikes, STRIKES);
+}
+
+#[test]
+fn a_row_without_strikes_has_none_and_can_still_gather_them() {
+    let line = r#"{"src":"a","dst":"b","rel":"see_also","decision":"reject"}"#;
+    let rows = parse_reviews(line).unwrap();
+    assert_eq!(rows[0].strikes, 0);
+
+    let db = empty();
+    db.graph.import_reviews(&rows).unwrap();
+    let strikes: Option<i64> = db
+        .graph
+        .connection()
+        .query_row("SELECT strikes FROM reviews", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(strikes, Some(0), "NULL would never add up to a suppression");
+}
+
+#[test]
+fn null_strikes_are_refused() {
+    let line = r#"{"src":"a","dst":"b","rel":"r","decision":"reject","strikes":null}"#;
+    assert!(matches!(parse_reviews(line), Err(ImportError::Line(1, _))));
 }
 
 #[test]
