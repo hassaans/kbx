@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use kbx_core::{Rates, find_on_path};
@@ -29,6 +30,10 @@ pub(crate) const DEFAULT_RATES: Rates = Rates {
     output: 0.50,
 };
 
+/// About what a probe reads: Claude Code's own prompt, at the least.
+const PROBE_INPUT_TOKENS: i64 = 8000;
+const PROBE_OUTPUT_TOKENS: i64 = 50;
+
 const PROBE_PROMPT: &str = r#"reply with {"ok":true}"#;
 const PROBE_SCHEMA: &str = r#"{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}"#;
 
@@ -38,6 +43,7 @@ pub struct ClaudeCli {
     model: String,
     rates: Rates,
     cache: ProbeCache,
+    probes_usd: Arc<Mutex<f64>>,
 }
 
 /// The fields of `--output-format json` that matter here.
@@ -66,6 +72,7 @@ impl ClaudeCli {
             model,
             rates,
             cache,
+            probes_usd: Arc::default(),
         }
     }
 
@@ -111,12 +118,19 @@ impl ClaudeCli {
         status.is_some_and(|s| s.get("loggedIn") == Some(&Value::Bool(false)))
     }
 
+    /// Adds a probe's cost to what's been spent, and reads its result.
+    fn charge_probe(&self, finished: &Finished) -> Result<Response, JudgeError> {
+        let cost = reported_cost(finished).unwrap_or(0.0);
+        *self.probes_usd.lock().expect("never poisoned") += cost;
+        read_response(finished)
+    }
+
     async fn probe(&self, program: &Path, workspace: &Workspace) -> Availability {
         let mut args = self.args(PROBE_SCHEMA);
         args.insert(1, PROBE_PROMPT.to_string());
         let cwd = workspace.cwd();
         match run(program, args, &cwd, b"", PROBE_TIMEOUT).await {
-            Ok(finished) => match read_response(&finished) {
+            Ok(finished) => match self.charge_probe(&finished) {
                 Ok(_) => Availability::Ready,
                 Err(error) => {
                     warn!("the claude-cli probe failed: {error}");
@@ -195,6 +209,17 @@ impl Judge for ClaudeCli {
 
     fn quote(&self, batch: &[CandidateView], ctx: &JudgeContext) -> f64 {
         quote(&self.rates, batch, ctx)
+    }
+
+    fn probe_quote(&self) -> f64 {
+        match self.cache.ready(ID) {
+            true => 0.0,
+            false => self.rates.price(PROBE_INPUT_TOKENS, 0, PROBE_OUTPUT_TOKENS),
+        }
+    }
+
+    fn probe_spend(&self) -> f64 {
+        *self.probes_usd.lock().expect("never poisoned")
     }
 }
 

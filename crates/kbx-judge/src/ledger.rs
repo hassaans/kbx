@@ -27,10 +27,12 @@ pub(crate) struct Ledger {
 }
 
 impl Ledger {
-    pub(crate) fn new(limit: Option<f64>) -> Ledger {
+    /// A ledger that opens with `spent`, what picking a backend cost.
+    pub(crate) fn new(limit: Option<f64>, spent: f64) -> Ledger {
         Ledger {
             limit,
-            ..Ledger::default()
+            spent: (spent > 0.0).then_some(spent),
+            dearest_pair: None,
         }
     }
 
@@ -62,12 +64,12 @@ mod tests {
 
     #[test]
     fn without_a_limit_anything_goes() {
-        assert!(Ledger::new(None).allows(1000, 1000.0));
+        assert!(Ledger::new(None, 0.0).allows(1000, 1000.0));
     }
 
     #[test]
     fn the_quote_decides_until_a_call_has_been_priced() {
-        let mut ledger = Ledger::new(Some(0.10));
+        let mut ledger = Ledger::new(Some(0.10), 0.0);
         assert!(ledger.allows(10, 0.10));
         assert!(!ledger.allows(10, 0.11));
 
@@ -81,7 +83,7 @@ mod tests {
 
     #[test]
     fn the_forecast_is_the_dearest_pair_so_far() {
-        let mut ledger = Ledger::new(Some(0.10));
+        let mut ledger = Ledger::new(Some(0.10), 0.0);
         ledger.record(2, Some(0.04));
         ledger.record(10, Some(0.01));
         assert_eq!(ledger.spent(), Some(0.05));
@@ -91,8 +93,16 @@ mod tests {
     }
 
     #[test]
+    fn what_was_spent_before_the_first_call_counts() {
+        let ledger = Ledger::new(Some(0.10), 0.08);
+        assert_eq!(ledger.spent(), Some(0.08));
+        assert!(ledger.allows(10, 0.02));
+        assert!(!ledger.allows(10, 0.03));
+    }
+
+    #[test]
     fn a_zero_limit_stops_a_paid_backend_and_not_a_free_one() {
-        let ledger = Ledger::new(Some(0.0));
+        let ledger = Ledger::new(Some(0.0), 0.0);
         assert!(!ledger.allows(1, 0.001));
         assert!(ledger.allows(1, 0.0));
     }

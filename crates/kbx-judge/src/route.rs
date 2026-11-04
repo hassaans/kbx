@@ -5,6 +5,7 @@ use kbx_core::Graph;
 use kbx_gen::Proposal;
 
 use crate::batch::pinned_views;
+use crate::run::probe;
 use crate::{Availability, CandidateView, Judge, JudgeId, first_ready, views};
 
 /// A backend and the pairs it may see.
@@ -28,12 +29,17 @@ pub struct Routes {
     pub pinned: usize,
     /// Pairs left out because a note is gone or can't be read.
     pub unreadable: usize,
+    /// What the probes cost, in USD.
+    pub probes_usd: f64,
+    /// Whether the budget stopped a probe from being made.
+    pub halted: bool,
 }
 
 /// Shares `candidates` out. Pairs with no pin go to the first of `general` that
 /// is ready. A pair with a note pinned to a backend in `pinned` goes to that
 /// backend or to nobody: if it's down the pair waits, and a pair pinned two
-/// ways is never judged. Checking on a backend shows it no pair.
+/// ways is never judged. Checking on a backend shows it no pair, and is paid
+/// for out of `budget_usd`: a backend it can't cover is treated as down.
 pub async fn route(
     g: &Graph,
     vault: &Path,
@@ -41,13 +47,16 @@ pub async fn route(
     overrides: &BTreeMap<String, String>,
     general: Vec<Box<dyn Judge>>,
     pinned: Vec<Box<dyn Judge>>,
+    budget_usd: Option<f64>,
 ) -> rusqlite::Result<Routes> {
-    let (chosen, passed_over) = first_ready(general).await;
+    let selection = first_ready(general, budget_usd).await;
     let mut routes = Routes {
-        passed_over,
+        passed_over: selection.passed_over,
+        probes_usd: selection.probes_usd,
+        halted: selection.halted,
         ..Routes::default()
     };
-    if let Some(judge) = chosen {
+    if let Some(judge) = selection.chosen {
         let found = views(g, vault, candidates, overrides, judge.id())?;
         routes.chosen = Some(judge.id());
         routes.pinned = found.pinned;
@@ -62,7 +71,11 @@ pub async fn route(
         if routes.chosen == Some(id) || routes.passed_over.iter().any(|seen| seen.0 == id) {
             continue;
         }
-        let availability = judge.available().await;
+        let Some(availability) = probe(judge.as_ref(), &mut routes.probes_usd, budget_usd).await
+        else {
+            routes.halted = true;
+            continue;
+        };
         if availability != Availability::Ready {
             routes.passed_over.push((id, availability));
             continue;
@@ -91,7 +104,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{JudgeContext, JudgeError, Verdict, judge_all};
+    use crate::{JudgeContext, JudgeError, Plan, Verdict, judge_all};
 
     const PRIVATE: &str = "PRIVATE-EXCERPT";
 
@@ -216,6 +229,7 @@ mod tests {
                 &overrides,
                 boxed(general),
                 boxed(pinned),
+                None,
             )
             .await
             .unwrap()
@@ -225,9 +239,14 @@ mod tests {
         async fn judge(&self, routes: &Routes) {
             let ctx =
                 JudgeContext::new(Ontology::parse(EXAMPLE_ONTOLOGY).unwrap(), EXAMPLE_ONTOLOGY);
+            let plan = Plan {
+                size: 20,
+                budget_usd: None,
+                spent_usd: 0.0,
+            };
             for assignment in &routes.assignments {
                 let judge = assignment.judge.as_ref();
-                judge_all(judge, &self.graph, &assignment.views, &ctx, 20)
+                judge_all(judge, &self.graph, &assignment.views, &ctx, plan)
                     .await
                     .unwrap();
             }

@@ -438,7 +438,8 @@ mod batches {
         assert!(output.status.success(), "{}", stderr(&output));
         let text = stdout(&output);
         assert!(text.contains("judged by claude-cli (haiku)"), "{text}");
-        assert!(text.contains("$0.0120, 4096 cached tokens"), "{text}");
+        // The batch, and the $0.0008 probe, which `verdicts` doesn't hold.
+        assert!(text.contains("$0.0128, 4096 cached tokens"), "{text}");
 
         let db = database(&vault);
         let (count, cost, cached): (i64, f64, i64) = db
@@ -1366,7 +1367,7 @@ mod cost_controls {
         assert_eq!(batches(&vault.path), 1);
         assert!(total_cost(&vault) <= 0.10);
         assert!(
-            out.contains("budget reached: spent $0.0600 of $0.1000"),
+            out.contains("budget reached: spent $0.0608 of $0.1000"),
             "{out}"
         );
         assert_eq!(verdict_count(&vault), 10);
@@ -1377,8 +1378,19 @@ mod cost_controls {
         let vault = indexed();
         answering_claude(&vault.path, 0.06);
         let out = wide(&vault, &["--budget-usd", "0"]);
-        assert_eq!(batches(&vault.path), 0);
+        assert!(calls(&vault.path, "claude").is_empty(), "not even a probe");
         assert!(out.contains("budget reached: spent $0.0000"), "{out}");
+    }
+
+    #[test]
+    fn a_probe_is_part_of_the_spend_until_it_is_cached() {
+        let vault = indexed();
+        answering_claude(&vault.path, 0.0);
+        // `PROBE_OK` reports $0.0008, and the batches here report nothing.
+        let out = wide(&vault, &["--budget-usd", "1"]);
+        assert!(out.contains("$0.0008"), "{out}");
+        let out = wide(&vault, &["--budget-usd", "0"]);
+        assert!(!out.contains("$0.0008"), "{out}");
     }
 
     #[test]

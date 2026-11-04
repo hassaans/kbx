@@ -186,6 +186,37 @@ pub(crate) fn judged(
     statement.query_map(key, |row| row.get(0))?.collect()
 }
 
+/// Makes the stored answers under this key the latest for `cids`, as the review
+/// queue reads "latest". Otherwise, going back to a judge would skip its cached
+/// verdict and leave the queue showing another judge's. A row that's already
+/// the latest isn't touched, so an unchanged re-run writes nothing. Replacing a
+/// row gives it the newest `rowid`, which settles a tie within the second.
+pub(crate) fn promote(
+    g: &Graph,
+    backend: JudgeId,
+    model: &str,
+    prompt_hash: &str,
+    cids: &[&str],
+) -> rusqlite::Result<()> {
+    let tx = Transaction::new_unchecked(g.connection(), TransactionBehavior::Immediate)?;
+    let now = now();
+    for cid in cids {
+        tx.execute(
+            "INSERT OR REPLACE INTO verdicts (cid, backend, model, prompt_hash, verdict, rel,
+                 confidence, rationale, cost_usd, cached_tokens, created_at)
+             SELECT cid, backend, model, prompt_hash, verdict, rel,
+                 confidence, rationale, cost_usd, cached_tokens, ?1
+             FROM verdicts v
+             WHERE cid = ?2 AND backend = ?3 AND model = ?4 AND prompt_hash = ?5
+                 AND EXISTS (SELECT 1 FROM verdicts newer
+                     WHERE newer.cid = v.cid AND newer.verdict IS NOT ?6
+                         AND (newer.created_at, newer.rowid) > (v.created_at, v.rowid))",
+            params![now, cid, backend.as_str(), model, prompt_hash, JUDGE_ERROR],
+        )?;
+    }
+    tx.commit()
+}
+
 /// Marks a failed batch's pairs, in one transaction, with the failure as their
 /// rationale and the call's cost shared out as a verdict's is. A [`JudgeError`]
 /// never quotes a note, so `reason` is safe to keep.

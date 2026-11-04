@@ -131,6 +131,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         let plan = Plan {
             size,
             budget_usd: options.budget_usd,
+            spent_usd: 0.0,
         };
         judge(options.judge, &project, &graph, &run, &context, plan)?;
         if options.stage {
@@ -236,12 +237,26 @@ fn judge(
                 &config.overrides,
                 general,
                 pinned,
+                plan.budget_usd,
             )
             .await?;
             // A CLI that was never installed is no surprise, and `auto` is the default.
             let worth_saying = |p: &&(JudgeId, Availability)| p.1 != Availability::NotInstalled;
             for (id, availability) in routes.passed_over.iter().filter(worth_saying) {
                 eprintln!("warning: {id} skipped: {availability}");
+            }
+            if let (true, Some(budget)) = (routes.halted, plan.budget_usd) {
+                let left = match routes.assignments.is_empty() {
+                    true => "the candidates are unjudged",
+                    false => "some pairs wait for another run",
+                };
+                println!(
+                    "budget reached: spent ${:.4} of ${budget:.4}; {left}",
+                    routes.probes_usd
+                );
+                if routes.assignments.is_empty() {
+                    return Ok(());
+                }
             }
             if routes.assignments.is_empty() {
                 if let Some(id) = named {
@@ -268,10 +283,18 @@ fn judge(
                     routes.unreadable
                 );
             }
+            // One budget for the run: each backend starts where the last one stopped.
+            let mut plan = Plan {
+                spent_usd: routes.probes_usd,
+                ..plan
+            };
+            let mut reported = 0.0;
             for assignment in &routes.assignments {
                 let judge = assignment.judge.as_ref();
                 let tally = judge_all(judge, graph, &assignment.views, context, plan).await?;
-                print_tally(judge.id(), judge.model(), &tally, plan.budget_usd);
+                print_tally(judge.id(), judge.model(), &tally, reported, plan.budget_usd);
+                plan.spent_usd = tally.cost_usd.unwrap_or(plan.spent_usd);
+                reported = tally.cost_usd.unwrap_or(reported);
             }
             Ok(())
         })
@@ -308,14 +331,15 @@ fn print_evaluation(evaluation: Evaluation, named: bool) -> Result<ExitCode, Box
     Ok(ExitCode::SUCCESS)
 }
 
-fn print_tally(id: JudgeId, model: &str, tally: &Tally, budget_usd: Option<f64>) {
+/// `reported` is what the backends before this one have already accounted for.
+fn print_tally(id: JudgeId, model: &str, tally: &Tally, reported: f64, budget_usd: Option<f64>) {
     println!(
         "judged by {id} ({model}): {} accept, {} reject, {} unsure, {} unjudged, {} error, {} already judged",
         tally.accepted, tally.rejected, tally.unsure, tally.unjudged, tally.errored, tally.cached
     );
-    let cost = tally
-        .cost_usd
-        .map_or(String::new(), |cost| format!("${cost:.4}, "));
+    let cost = tally.cost_usd.map(|cost| cost - reported);
+    let cost = cost.filter(|cost| *cost > 0.0);
+    let cost = cost.map_or(String::new(), |cost| format!("${cost:.4}, "));
     println!("  {cost}{} cached tokens", tally.cached_tokens);
     if let (true, Some(budget)) = (tally.halted, budget_usd) {
         println!(

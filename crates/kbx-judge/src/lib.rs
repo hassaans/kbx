@@ -41,7 +41,9 @@ pub use llama_server::LlamaServer;
 pub use ollama::Ollama;
 pub use prompt::{JudgeContext, SCHEMA, SYSTEM_PROMPT, prompt_hash};
 pub use route::{Assignment, Routes, route};
-pub use run::{Plan, Tally, backend, backends, first_ready, judge_all, pending, pinned_backends};
+pub use run::{
+    Plan, Selection, Tally, backend, backends, first_ready, judge_all, pending, pinned_backends,
+};
 pub use verdict::{Decision, Verdict};
 
 /// A judge of link candidates.
@@ -64,6 +66,15 @@ pub trait Judge: Send + Sync {
     /// What a call on `batch` should cost, in USD, for a budget to go by until
     /// a call has been priced. A local backend costs nothing.
     fn quote(&self, _batch: &[CandidateView], _ctx: &JudgeContext) -> f64 {
+        0.0
+    }
+    /// What the next [`Judge::available`] should cost, in USD: nothing unless
+    /// it would call a paid model.
+    fn probe_quote(&self) -> f64 {
+        0.0
+    }
+    /// What [`Judge::available`] has spent so far, in USD.
+    fn probe_spend(&self) -> f64 {
         0.0
     }
 }

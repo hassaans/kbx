@@ -23,6 +23,9 @@ prompt_hash)`. `prompt_hash` covers `prompts/judge.system.md`,
 `schema/judge.schema.json` and the ontology file, so changing any of them asks
 every pair again. Changing a note does not: `cid` depends only on the two ids.
 
+Going back to a judge costs nothing and makes its cached verdicts the latest, so
+`kbx review` shows that judge's answers again.
+
 The prompt and schema are compiled into the binary, so a change to either takes
 effect with the build that carries it.
 
@@ -42,6 +45,9 @@ A failed call that still cost money counts against the budget. Its cost reaches
 `--budget-usd X` stops before the next call would take this run past `X`, and
 prints what was spent. The limit is per run: run again to carry on, and pairs
 already judged cost nothing.
+
+The once-a-day login probe is a paid call too. It counts towards the spend and
+isn't made if the budget can't cover it. Its cost isn't in `verdicts`.
 
 | Backend | Spend |
 |---|---|

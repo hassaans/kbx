@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use kbx_core::{Rates, find_on_path};
@@ -29,6 +30,11 @@ pub(crate) const DEFAULT_RATES: Rates = Rates {
     output: 0.50,
 };
 
+/// About what a probe reads: `codex exec` loads the user's config and
+/// `AGENTS.md`.
+const PROBE_INPUT_TOKENS: i64 = 20_000;
+const PROBE_OUTPUT_TOKENS: i64 = 100;
+
 const PROBE_PROMPT: &[u8] = b"reply with ok";
 const PROBE_SCHEMA: &str = r#"{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}"#;
 
@@ -38,6 +44,7 @@ pub struct CodexCli {
     model: String,
     rates: Rates,
     cache: ProbeCache,
+    probes_usd: Arc<Mutex<f64>>,
 }
 
 /// What a `--json` event stream came to.
@@ -64,6 +71,7 @@ impl CodexCli {
             model,
             rates,
             cache,
+            probes_usd: Arc::default(),
         }
     }
 
@@ -101,11 +109,18 @@ impl CodexCli {
         })
     }
 
+    /// Adds a probe's cost to what's been spent, and reads its result.
+    fn charge_probe(&self, finished: &Finished) -> Result<Value, JudgeError> {
+        let cost = priced(&events(&finished.stdout), &self.rates).unwrap_or(0.0);
+        *self.probes_usd.lock().expect("never poisoned") += cost;
+        read_turn(finished).and_then(answer_of)
+    }
+
     async fn probe(&self, program: &Path, workspace: &Workspace) -> Availability {
         let args = self.args(workspace);
         let cwd = workspace.cwd();
         match run(program, args, &cwd, PROBE_PROMPT, PROBE_TIMEOUT).await {
-            Ok(finished) => match read_turn(&finished).and_then(answer_of) {
+            Ok(finished) => match self.charge_probe(&finished) {
                 Ok(_) => Availability::Ready,
                 Err(error) => {
                     warn!("the codex-cli probe failed: {error}");
@@ -182,6 +197,17 @@ impl Judge for CodexCli {
 
     fn quote(&self, batch: &[CandidateView], ctx: &JudgeContext) -> f64 {
         quote(&self.rates, batch, ctx)
+    }
+
+    fn probe_quote(&self) -> f64 {
+        match self.cache.ready(ID) {
+            true => 0.0,
+            false => self.rates.price(PROBE_INPUT_TOKENS, 0, PROBE_OUTPUT_TOKENS),
+        }
+    }
+
+    fn probe_spend(&self) -> f64 {
+        *self.probes_usd.lock().expect("never poisoned")
     }
 }
 

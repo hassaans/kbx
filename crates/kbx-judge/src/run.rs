@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::path::Path;
 
@@ -6,7 +7,7 @@ use sysinfo::System;
 use tracing::warn;
 
 use crate::ledger::Ledger;
-use crate::verdict::{judged, store, store_error};
+use crate::verdict::{judged, promote, store, store_error};
 use crate::{
     Availability, CandidateView, ClaudeCli, CodexCli, Decision, Judge, JudgeContext, JudgeError,
     JudgeId, LlamaServer, Ollama, ProbeCache, Verdict, claude, codex, llama_server, ollama,
@@ -19,6 +20,22 @@ pub struct Plan {
     pub size: usize,
     /// The most this run may spend, in USD.
     pub budget_usd: Option<f64>,
+    /// What the run has already spent, in USD: the probes, see
+    /// [`Selection::probes_usd`], and any backend that went before this one.
+    pub spent_usd: f64,
+}
+
+/// What [`first_ready`] came to.
+#[derive(Default)]
+pub struct Selection {
+    /// The first backend that's ready.
+    pub chosen: Option<Box<dyn Judge>>,
+    /// What was found of the ones passed over.
+    pub passed_over: Vec<(JudgeId, Availability)>,
+    /// What the probes cost, in USD, those of the ones passed over included.
+    pub probes_usd: f64,
+    /// Whether the budget stopped a probe from being made.
+    pub halted: bool,
 }
 
 /// What [`judge_all`] came to.
@@ -38,7 +55,8 @@ pub struct Tally {
     pub cached: usize,
     /// Whether the budget ended the run.
     pub halted: bool,
-    /// What the calls cost, failed ones included, when the backend says.
+    /// What the run has spent by now, [`Plan::spent_usd`] and failed calls
+    /// included, when the backend says.
     pub cost_usd: Option<f64>,
     /// Input tokens served from the provider's cache.
     pub cached_tokens: i64,
@@ -121,19 +139,40 @@ fn free_memory() -> Option<u64> {
     Some(system.available_memory()).filter(|free| *free > 0)
 }
 
-/// Goes down `backends`, stopping at the first that's ready. Also returns what
-/// was found of the ones passed over.
-pub async fn first_ready(
-    backends: Vec<Box<dyn Judge>>,
-) -> (Option<Box<dyn Judge>>, Vec<(JudgeId, Availability)>) {
-    let mut passed_over = Vec::new();
+/// Checks on `backend` and adds what that cost to `spent`, or returns `None` if
+/// `budget_usd` can't cover it: a probe is a paid call like any other.
+pub(crate) async fn probe(
+    backend: &dyn Judge,
+    spent: &mut f64,
+    budget_usd: Option<f64>,
+) -> Option<Availability> {
+    let forecast = *spent + backend.probe_quote();
+    if budget_usd.is_some_and(|budget| forecast > budget) {
+        return None;
+    }
+    let availability = backend.available().await;
+    *spent += backend.probe_spend();
+    Some(availability)
+}
+
+/// Goes down `backends`, stopping at the first that's ready, or at one whose
+/// probe `budget_usd` can't cover: a probe is a paid call like any other.
+pub async fn first_ready(backends: Vec<Box<dyn Judge>>, budget_usd: Option<f64>) -> Selection {
+    let mut selection = Selection::default();
     for backend in backends {
-        match backend.available().await {
-            Availability::Ready => return (Some(backend), passed_over),
-            availability => passed_over.push((backend.id(), availability)),
+        match probe(backend.as_ref(), &mut selection.probes_usd, budget_usd).await {
+            None => {
+                selection.halted = true;
+                break;
+            }
+            Some(Availability::Ready) => {
+                selection.chosen = Some(backend);
+                break;
+            }
+            Some(availability) => selection.passed_over.push((backend.id(), availability)),
         }
     }
-    (None, passed_over)
+    selection
 }
 
 /// The pairs of `views` with no verdict yet under `(cid, backend, model,
@@ -165,11 +204,15 @@ pub async fn judge_all(
     plan: Plan,
 ) -> Result<Tally, JudgeError> {
     let open = pending(judge, g, views, ctx)?;
+    let waiting: HashSet<&str> = open.iter().map(|view| view.cid.as_str()).collect();
+    let answered = views.iter().map(|view| view.cid.as_str());
+    let answered: Vec<&str> = answered.filter(|cid| !waiting.contains(cid)).collect();
+    promote(g, judge.id(), judge.model(), &ctx.prompt_hash, &answered)?;
     let mut session = Session {
         judge,
         g,
         ctx,
-        ledger: Ledger::new(plan.budget_usd),
+        ledger: Ledger::new(plan.budget_usd, plan.spent_usd),
         tally: Tally {
             cached: views.len() - open.len(),
             ..Tally::default()
@@ -294,7 +337,7 @@ fn total_cost(verdicts: &[Verdict]) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
     use kbx_core::{EXAMPLE_ONTOLOGY, JUDGE_ERROR, Ontology};
@@ -310,6 +353,10 @@ mod tests {
     struct Fake {
         model: &'static str,
         quote: f64,
+        probe_quote: f64,
+        probe_cost: f64,
+        ready: bool,
+        probes: Arc<Mutex<usize>>,
         answer: Box<Answer>,
         calls: Mutex<Vec<Vec<String>>>,
     }
@@ -324,6 +371,10 @@ mod tests {
             Fake {
                 model: "fake",
                 quote: 0.0,
+                probe_quote: 0.0,
+                probe_cost: 0.0,
+                ready: true,
+                probes: Arc::default(),
                 answer: Box::new(answer),
                 calls: Mutex::default(),
             }
@@ -352,7 +403,11 @@ mod tests {
         }
 
         async fn available(&self) -> Availability {
-            Availability::Ready
+            *self.probes.lock().unwrap() += 1;
+            match self.ready {
+                true => Availability::Ready,
+                false => Availability::NotLoggedIn,
+            }
         }
 
         async fn judge(
@@ -370,6 +425,14 @@ mod tests {
 
         fn quote(&self, _batch: &[CandidateView], _ctx: &JudgeContext) -> f64 {
             self.quote
+        }
+
+        fn probe_quote(&self) -> f64 {
+            self.probe_quote
+        }
+
+        fn probe_spend(&self) -> f64 {
+            self.probe_cost * *self.probes.lock().unwrap() as f64
         }
     }
 
@@ -425,6 +488,7 @@ mod tests {
         Plan {
             size,
             budget_usd: None,
+            spent_usd: 0.0,
         }
     }
 
@@ -432,6 +496,7 @@ mod tests {
         Plan {
             size,
             budget_usd: Some(usd),
+            spent_usd: 0.0,
         }
     }
 
@@ -611,6 +676,100 @@ mod tests {
         assert_eq!(fake.sizes(), [10]);
         assert_eq!(tally.cached, 20);
         assert!(!tally.halted);
+    }
+
+    #[tokio::test]
+    async fn a_probe_the_budget_cant_cover_is_not_made() {
+        let mut fake = Fake::costing(0.0);
+        fake.probe_quote = 0.001;
+        let probes = fake.probes.clone();
+        let selection = first_ready(vec![Box::new(fake)], Some(0.0)).await;
+        assert_eq!(*probes.lock().unwrap(), 0);
+        assert!(selection.halted);
+        assert!(selection.chosen.is_none());
+    }
+
+    #[tokio::test]
+    async fn every_probe_counts_and_opens_the_ledger() {
+        let mut logged_out = Fake::costing(0.0);
+        logged_out.ready = false;
+        logged_out.probe_cost = 0.03;
+        let mut ready = Fake::costing(0.04);
+        ready.probe_cost = 0.03;
+        let selection = first_ready(vec![Box::new(logged_out), Box::new(ready)], Some(1.0)).await;
+        assert!((selection.probes_usd - 0.06).abs() < 1e-9);
+        assert_eq!(selection.passed_over.len(), 1);
+
+        let (_dir, g) = graph();
+        let judge = selection.chosen.unwrap();
+        let plan = Plan {
+            spent_usd: selection.probes_usd,
+            ..budget(10, 0.10)
+        };
+        let tally = judge_all(judge.as_ref(), &g, &views(20), &context(), plan)
+            .await
+            .unwrap();
+        // $0.06 of probes and one batch at $0.04. The next would cross the line.
+        assert_eq!(tally.rejected, 10);
+        assert!(tally.halted);
+        assert!((tally.cost_usd.unwrap() - 0.10).abs() < 1e-9);
+    }
+
+    /// The verdict the queue would read for `cid`.
+    fn latest(g: &Graph, cid: &str) -> String {
+        g.connection()
+            .query_row(
+                "SELECT model FROM verdicts WHERE cid = ? AND verdict <> 'error'
+                 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                [cid],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn going_back_to_a_judge_makes_its_cached_verdict_current_for_free() {
+        let (_dir, g) = graph();
+        let (pairs, ctx) = (views(2), context());
+        let mut first = Fake::costing(0.0);
+        first.model = "first";
+        judge_all(&first, &g, &pairs, &ctx, plan(10)).await.unwrap();
+        let mut second = Fake::costing(0.0);
+        second.model = "second";
+        judge_all(&second, &g, &pairs, &ctx, plan(10))
+            .await
+            .unwrap();
+        assert_eq!(latest(&g, "cid-00"), "second");
+
+        let mut back = Fake::costing(0.0);
+        back.model = "first";
+        let tally = judge_all(&back, &g, &pairs, &ctx, plan(10)).await.unwrap();
+        assert!(back.sizes().is_empty());
+        assert_eq!(tally.cached, 2);
+        assert_eq!(latest(&g, "cid-00"), "first");
+        assert_eq!(latest(&g, "cid-01"), "first");
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_rerun_writes_nothing() {
+        let (_dir, g) = graph();
+        let (pairs, ctx) = (views(2), context());
+        judge_all(&Fake::costing(0.0), &g, &pairs, &ctx, plan(10))
+            .await
+            .unwrap();
+        let rowids = |g: &Graph| -> Vec<i64> {
+            let connection = g.connection();
+            let mut statement = connection
+                .prepare("SELECT rowid FROM verdicts ORDER BY cid")
+                .unwrap();
+            let found = statement.query_map([], |row| row.get(0)).unwrap();
+            found.map(Result::unwrap).collect()
+        };
+        let before = rowids(&g);
+        judge_all(&Fake::costing(0.0), &g, &pairs, &ctx, plan(10))
+            .await
+            .unwrap();
+        assert_eq!(rowids(&g), before);
     }
 
     // AC3.
