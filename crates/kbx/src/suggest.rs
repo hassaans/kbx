@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::env;
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::ValueEnum;
@@ -15,6 +14,8 @@ use kbx_judge::{
 };
 use tokio::runtime;
 use tracing::warn;
+
+use crate::qmd;
 
 /// Candidates per judge call, the default of `--batch` (§10).
 const BATCH: usize = 20;
@@ -36,6 +37,7 @@ pub struct Options {
     pub note: Option<String>,
     pub generators: Option<Vec<String>>,
     pub judge: Judge,
+    pub budget: Option<usize>,
     pub dry_run: bool,
 }
 
@@ -58,16 +60,28 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         crate::find_node(&graph, id)?;
     }
 
-    let qmd = &project.config.qmd;
-    let bin = find_on_path(&qmd.bin).unwrap_or_else(|| PathBuf::from(&qmd.bin));
-    let search = QmdSearch::new(bin, qmd.collections.clone(), &graph)?;
+    let roots = project.config.qmd.searched();
+    let wants_knn = |names: &Vec<String>| names.iter().any(|name| name == "qmd_knn");
+    let searching = options.generators.as_ref().is_none_or(wants_knn);
+    let installed = find_on_path(&project.config.qmd.bin).is_some();
+    if searching
+        && installed
+        && !roots.is_empty()
+        && !options.dry_run
+        && let Err(error) = qmd::refresh(&project)
+    {
+        eprintln!("warning: the qmd index may be out of date: {error}");
+    }
+    let search = QmdSearch::new(qmd::program(&project), project.qmd_index(), roots, &graph)?;
     let chosen = generators(options.generators.as_deref(), Some(Box::new(search)))?;
     let scope = Scope {
         vault: &project.vault,
         ontology: &ontology,
         note: options.note.as_deref(),
     };
-    let run = suggest(&graph, &chosen, &scope, Budget::default())?;
+    let mut budget = Budget::default();
+    budget.per_run = options.budget.unwrap_or(budget.per_run);
+    let run = suggest(&graph, &chosen, &scope, budget)?;
 
     for (name, error) in &run.skipped {
         eprintln!("warning: {name} skipped: {error}");

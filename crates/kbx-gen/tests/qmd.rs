@@ -1,6 +1,7 @@
 //! The qmd shell-out: against a stand-in everywhere, and against the real
 //! binary when there is one.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -13,6 +14,9 @@ use tempfile::TempDir;
 const ONTOLOGY: &str = include_str!("../../../schema/ontology.example.yaml");
 const ID_A: &str = "01KBX000000000000000000001";
 const ID_B: &str = "01KBX000000000000000000002";
+const INDEX: &str = "kbx-test";
+/// The one collection of most tests: a scope whose folder name has a space.
+const TEAM_X: &[(&str, &str)] = &[("team-x", "Team X")];
 
 /// A two-note vault, one note with two sections, and its index.
 struct Vault {
@@ -82,23 +86,24 @@ fn make_executable(_path: &Path) {
 /// A stand-in that prints `json`, from a file because `echo` treats quotes
 /// differently on each platform.
 fn answering(vault: &Vault, json: &str) -> QmdSearch {
-    answering_in(vault, json, &[])
+    answering_in(vault, json, TEAM_X)
 }
 
-fn answering_in(vault: &Vault, json: &str, collections: &[&str]) -> QmdSearch {
+fn answering_in(vault: &Vault, json: &str, roots: &[(&str, &str)]) -> QmdSearch {
     let file = vault.dir.path().join("answer.json");
     fs::write(&file, json).unwrap();
     let print = if cfg!(windows) { "type" } else { "cat" };
-    search(
-        vault,
-        &format!("{print} \"{}\"", file.display()),
-        collections,
-    )
+    search(vault, &format!("{print} \"{}\"", file.display()), roots)
 }
 
-fn search(vault: &Vault, script: &str, collections: &[&str]) -> QmdSearch {
-    let collections = collections.iter().map(|c| c.to_string()).collect();
-    QmdSearch::new(vault.stand_in(script), collections, &vault.graph).unwrap()
+fn roots(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    let owned = pairs.iter().map(|(c, r)| (c.to_string(), r.to_string()));
+    owned.collect()
+}
+
+fn search(vault: &Vault, script: &str, pairs: &[(&str, &str)]) -> QmdSearch {
+    let program = vault.stand_in(script);
+    QmdSearch::new(program, INDEX.to_string(), roots(pairs), &vault.graph).unwrap()
 }
 
 #[test]
@@ -120,11 +125,11 @@ fn hits_map_handles_back_to_notes_and_lines_to_sections() {
 }
 
 #[test]
-fn a_collection_rooted_at_a_scope_maps_like_one_rooted_at_the_vault() {
+fn a_collection_rooted_at_the_vault_maps_through_its_root() {
     let vault = Vault::new();
     let rooted = format!("qmd://whole-vault/team-x/{}-other.md", ID_B.to_lowercase());
     let json = format!("[{{\"score\":0.5,\"file\":\"{rooted}\",\"line\":5}}]");
-    let hits = answering_in(&vault, &json, &["whole-vault"])
+    let hits = answering_in(&vault, &json, &[("whole-vault", ".")])
         .search(&Query::Text("words"), 20)
         .unwrap();
     assert_eq!(hits.len(), 1);
@@ -132,15 +137,57 @@ fn a_collection_rooted_at_a_scope_maps_like_one_rooted_at_the_vault() {
 }
 
 #[test]
-fn a_collection_nobody_configured_is_not_taken_for_the_vault() {
+fn a_hit_maps_through_its_own_root_and_not_by_a_path_that_looks_right() {
     let vault = Vault::new();
-    let other = format!("qmd://unrelated/team-x/{}-other.md", ID_B.to_lowercase());
-    let json = format!("[{{\"score\":0.5,\"file\":\"{other}\",\"line\":5}}]");
-    for collections in [&[][..], &["team-x"][..]] {
-        let hits = answering_in(&vault, &json, collections)
-            .search(&Query::Text("words"), 20)
+    // `team-x/…` is a vault path, but in this collection it is another file.
+    let bare = format!("qmd://other/team-x/{}-other.md", ID_B.to_lowercase());
+    let scoped = format!("qmd://team-x/team-x/{}-other.md", ID_B.to_lowercase());
+    let unprefixed = format!("team-x/{}-other.md", ID_B.to_lowercase());
+    for file in [bare, scoped, unprefixed] {
+        let json = format!("[{{\"score\":0.5,\"file\":\"{file}\",\"line\":5}}]");
+        let hits = answering_in(
+            &vault,
+            &json,
+            &[("team-x", "Team X"), ("other", "Elsewhere")],
+        )
+        .search(&Query::Text("words"), 20)
+        .unwrap();
+        assert!(hits.is_empty(), "{file}: {hits:?}");
+    }
+}
+
+#[test]
+fn with_no_collections_nothing_is_searched_and_it_says_why() {
+    let vault = Vault::new();
+    let marker = vault.dir.path().join("ran");
+    let script = if cfg!(windows) {
+        format!("echo x > \"{}\"", marker.display())
+    } else {
+        format!(": > '{}'", marker.display())
+    };
+    let error = search(&vault, &script, &[])
+        .search(&Query::Text("words"), 20)
+        .unwrap_err();
+    assert!(error.to_string().contains("kbx init"), "{error}");
+    assert!(!marker.exists(), "qmd must not run");
+}
+
+/// The JSON of real `qmd search --json` runs: `file` is a lowercased handle
+/// in 1.0.7, with the line only in the snippet; 2.8.3 keeps the path as
+/// written, adds `?index=`, and gives `line`.
+#[test]
+fn real_output_of_both_qmd_versions_maps_to_the_section() {
+    let vault = Vault::new();
+    for json in [
+        include_str!("fixtures/qmd-1.0.7.json"),
+        include_str!("fixtures/qmd-2.8.3.json"),
+    ] {
+        let hits = answering(&vault, json)
+            .search(&Query::Text("burst"), 20)
             .unwrap();
-        assert!(hits.is_empty(), "{hits:?}");
+        assert_eq!(hits.len(), 1, "{json}");
+        assert_eq!(hits[0].note, ID_A);
+        assert_eq!(hits[0].section, vault.section_at(ID_A, "burst"), "{json}");
     }
 }
 
@@ -186,20 +233,19 @@ fn a_failing_qmd_reports_its_stderr() {
     } else {
         "echo 'Collection not found: nope' >&2; exit 1"
     };
-    let error = search(&vault, script, &["nope"])
+    let error = search(&vault, script, &[("nope", "nope")])
         .search(&Query::Text("anything"), 20)
         .unwrap_err();
     assert!(matches!(error, SearchError::Failed(_)), "{error:?}");
-    assert!(
-        error.to_string().contains("Collection not found"),
-        "{error}"
-    );
+    let error = error.to_string();
+    assert!(error.contains("Collection not found"), "{error}");
+    assert!(error.contains("kbx doctor --fix"), "{error}");
 }
 
 #[test]
 fn output_that_is_not_json_is_an_error() {
     let vault = Vault::new();
-    let error = search(&vault, "echo oops", &[])
+    let error = search(&vault, "echo oops", TEAM_X)
         .search(&Query::Text("anything"), 20)
         .unwrap_err();
     assert!(matches!(error, SearchError::Output(_)), "{error:?}");
@@ -209,26 +255,25 @@ fn output_that_is_not_json_is_an_error() {
 fn a_missing_binary_is_an_error() {
     let vault = Vault::new();
     let program = vault.dir.path().join("not-here");
-    let search = QmdSearch::new(program, Vec::new(), &vault.graph).unwrap();
+    let search = QmdSearch::new(program, INDEX.into(), roots(TEAM_X), &vault.graph).unwrap();
     let error = search.search(&Query::Text("x"), 20).unwrap_err();
     assert!(matches!(error, SearchError::Spawn(..)), "{error:?}");
 }
 
 #[cfg(unix)]
 #[test]
-fn arguments_are_query_json_limit_collections_and_one_line_of_text() {
+fn arguments_are_index_query_json_limit_collections_and_one_line_of_text() {
     let vault = Vault::new();
     let log = vault.dir.path().join("args");
     let script = format!(
         "for a in \"$@\"; do printf '%s\\n' \"$a\" >> '{}'; done; echo '[]'",
         log.display()
     );
-    let query = Query::Section {
+    let query = Query::Note {
         note: ID_A,
-        key: "k",
         text: "-leading dash\nand  a second line",
     };
-    let hits = search(&vault, &script, &["one", "two"])
+    let hits = search(&vault, &script, &[("one", "One"), ("two", "Two")])
         .search(&query, 20)
         .unwrap();
     assert!(hits.is_empty());
@@ -237,6 +282,8 @@ fn arguments_are_query_json_limit_collections_and_one_line_of_text() {
     assert_eq!(
         args,
         [
+            "--index",
+            INDEX,
             "query",
             "--json",
             "-n",
@@ -290,14 +337,14 @@ fn real_qmd_finds_a_note_by_its_collection() {
 
     let scope = vault.dir.path().join("vault/Team X");
     let added = Command::new(&wrapper)
-        .args(["collection", "add"])
+        .args(["--index", INDEX, "collection", "add"])
         .arg(&scope)
         .args(["--name", "team-x", "--mask", "**/*.md"])
         .output()
         .unwrap();
     assert!(added.status.success(), "{added:?}");
 
-    let search = QmdSearch::new(wrapper, vec!["team-x".to_string()], &vault.graph)
+    let search = QmdSearch::new(wrapper, INDEX.into(), roots(TEAM_X), &vault.graph)
         .unwrap()
         .keyword_only();
     let hits = search.search(&Query::Text("burst"), 20).unwrap();
@@ -309,7 +356,8 @@ fn real_qmd_finds_a_note_by_its_collection() {
 
     let error = QmdSearch::new(
         vault.dir.path().join("isolated-qmd"),
-        vec!["no-such-collection".to_string()],
+        INDEX.into(),
+        roots(&[("no-such-collection", "Team X")]),
         &vault.graph,
     )
     .unwrap()

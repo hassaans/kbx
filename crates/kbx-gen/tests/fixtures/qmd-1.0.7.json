@@ -1,0 +1,9 @@
+[
+  {
+    "docid": "#0d8a22",
+    "score": 0,
+    "file": "qmd://team-x/01kbx000000000000000000001-token-buckets.md",
+    "title": "Refill",
+    "snippet": "@@ -8,4 @@ (7 before, 0 after)\n\n# Burst\nA full bucket absorbs a burst of callers.\n"
+  }
+]

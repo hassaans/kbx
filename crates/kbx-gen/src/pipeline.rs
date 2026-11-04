@@ -128,7 +128,7 @@ pub fn suggest(
     let mut skipped = Vec::new();
     for generator in generators {
         let name = generator.name();
-        let candidates = match generator.run(g, scope) {
+        let candidates = match generator.run_within(g, scope, budget) {
             Ok(candidates) => candidates,
             Err(error) => {
                 skipped.push((name.to_string(), error));

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -11,14 +11,12 @@ use serde::Deserialize;
 pub enum Query<'a> {
     /// Free text.
     Text(&'a str),
-    /// The neighbours of a section. An engine with its own vectors can look
-    /// them up by `key`; `text` is for one that has to search by words.
-    Section {
-        /// The section's note.
+    /// The neighbours of a note. An engine with its own vectors can look them
+    /// up by `note`; `text` is for one that has to search by words.
+    Note {
+        /// The note's id.
         note: &'a str,
-        /// The section's key.
-        key: &'a str,
-        /// The section's text.
+        /// What the note says, from each of its sections.
         text: &'a str,
     },
 }
@@ -66,14 +64,15 @@ struct Row {
 
 /// Search by shelling out to QMD.
 ///
-/// §5 says `--filter`, but no qmd release has that flag and qmd ignores flags
-/// it doesn't know, so the search would not be limited at all. `-c` limits it
-/// to the configured collections, and hits are kept only if the index knows
-/// their file, so nothing outside the vault gets through.
+/// `-c` limits the search to the collections in `roots`, and each hit maps
+/// back through the root of its own collection, so that nothing outside the
+/// vault gets through and no other file passes for a note by its path.
 #[derive(Debug, Clone)]
 pub struct QmdSearch {
     bin: PathBuf,
-    collections: Vec<String>,
+    index: String,
+    /// Each collection's folder, relative to the vault root.
+    roots: BTreeMap<String, String>,
     command: &'static str,
     /// Note ids by the [`handle`] of their path.
     notes: HashMap<String, String>,
@@ -82,8 +81,14 @@ pub struct QmdSearch {
 }
 
 impl QmdSearch {
-    /// Runs `bin`, limited to `collections`, or to qmd's default ones if empty.
-    pub fn new(bin: PathBuf, collections: Vec<String>, g: &Graph) -> rusqlite::Result<QmdSearch> {
+    /// Runs `bin` on the qmd index `index`, limited to the collections in
+    /// `roots`. With none, every search fails: hits couldn't be mapped back.
+    pub fn new(
+        bin: PathBuf,
+        index: String,
+        roots: BTreeMap<String, String>,
+        g: &Graph,
+    ) -> rusqlite::Result<QmdSearch> {
         let connection = g.connection();
         let mut statement = connection.prepare("SELECT path, id FROM files")?;
         let rows = statement.query_map([], |row| {
@@ -105,7 +110,8 @@ impl QmdSearch {
         }
         Ok(QmdSearch {
             bin,
-            collections,
+            index,
+            roots,
             command: "query",
             notes,
             sections,
@@ -131,30 +137,31 @@ impl QmdSearch {
         })
     }
 
-    /// A collection may be rooted at a scope, which is how `kbx init` names
-    /// them, so that its name is part of the vault path. Or it may be rooted
-    /// at the vault, but only a configured one can be taken to be: the same
-    /// path in another collection is another file.
+    /// A hit is `qmd://<collection>/<path inside it>`, and only a collection
+    /// with a root can say where that is in the vault.
     fn note_at(&self, file: &str) -> Option<&String> {
-        let path = file.strip_prefix("qmd://").unwrap_or(file);
+        let path = file.strip_prefix("qmd://")?;
         let path = path.split_once('?').map_or(path, |(path, _)| path);
-        self.notes.get(&handle(path)).or_else(|| {
-            let (collection, inside) = path.split_once('/')?;
-            let configured = self.collections.iter().any(|c| c == collection);
-            configured.then(|| self.notes.get(&handle(inside)))?
-        })
+        let (collection, inside) = path.split_once('/')?;
+        let root = self.roots.get(collection)?;
+        self.notes.get(&handle(&format!("{root}/{inside}")))
     }
 }
 
 impl Search for QmdSearch {
     fn search(&self, query: &Query<'_>, limit: usize) -> Result<Vec<Hit>, SearchError> {
-        let (Query::Text(text) | Query::Section { text, .. }) = query;
+        if self.roots.is_empty() {
+            let failure = "no qmd collections are configured; run `kbx init`";
+            return Err(SearchError::Failed(failure.to_string()));
+        }
+        let (Query::Text(text) | Query::Note { text, .. }) = query;
         // qmd reads a query of several lines as a typed query document.
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
 
         let mut command = Command::new(&self.bin);
+        command.args(["--index", &self.index]);
         command.args([self.command, "--json", "-n", &limit.to_string()]);
-        for collection in &self.collections {
+        for collection in self.roots.keys() {
             command.args(["-c", collection]);
         }
         let output = command
@@ -164,7 +171,10 @@ impl Search for QmdSearch {
             .map_err(|error| SearchError::Spawn(self.bin.clone(), error))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let failure = format!("qmd failed: {} {}", output.status, stderr.trim());
+            let mut failure = format!("qmd failed: {} {}", output.status, stderr.trim());
+            if stderr.contains("Collection not found") {
+                failure.push_str("; run `kbx doctor --fix`");
+            }
             return Err(SearchError::Failed(failure));
         }
 
@@ -184,11 +194,14 @@ fn json_array(stdout: &str) -> &str {
     stdout.find("\n[").map_or(stdout, |at| &stdout[at + 1..])
 }
 
-/// The first line of a snippet headed `@@ -10,2 @@ …`.
+/// The first line with text in a snippet headed `@@ -10,2 @@ …`. A snippet can
+/// start on the blank line that ends the section before.
 fn snippet_line(snippet: &str) -> Option<usize> {
     let rest = snippet.strip_prefix("@@ -")?;
     let end = rest.find(|c: char| !c.is_ascii_digit())?;
-    rest[..end].parse().ok()
+    let first: usize = rest[..end].parse().ok()?;
+    let body = rest.lines().skip(1);
+    Some(first + body.take_while(|line| line.trim().is_empty()).count())
 }
 
 /// A path the way qmd stores it, which folds case and turns each run of other
@@ -238,6 +251,7 @@ mod tests {
             snippet_line("@@ -12,4 @@ (2 before, 0 after)\ntext"),
             Some(12)
         );
+        assert_eq!(snippet_line("@@ -8,4 @@ (7 before)\n\n# Burst\n"), Some(9));
         assert_eq!(snippet_line("no header"), None);
     }
 }

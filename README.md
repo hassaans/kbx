@@ -23,6 +23,7 @@ kbx graph stats            # node, edge and section counts
 kbx suggest                # store link candidates from every generator
 kbx suggest --dry-run      # counts and token estimates; the database is left alone
 kbx suggest --note <id> --generators schema_gap,alias_cooccur
+kbx suggest --budget 50    # keep at most 50 candidates
 kbx suggest --judge auto   # also judge them with the logged-in claude or codex CLI
 kbx watch                  # re-index saved notes and lint them, until stopped
 kbx watch --suggest        # also run `kbx suggest` 45 s after the last save
@@ -31,7 +32,8 @@ kbx accept <cid>… --rel see_also   # write relations and inverses to frontmatt
 kbx reject <cid>… --reason "…"     # three rejections of a pair suppress it
 kbx defer <cid>…           # put a decision off
 kbx unreject --list        # the suppressed pairs; `kbx unreject <cid>` lifts one
-kbx doctor                 # check the vault, the index, RAM, the judges and qmd
+kbx doctor                 # check the vault, the index, RAM, the judges, qmd and its collections
+kbx doctor --fix           # create the qmd collections that are missing
 ```
 
 The pre-commit hook lints staged notes as they are on disk, so a file edited
@@ -43,6 +45,13 @@ than id. That's a warning, because it's how most Obsidian vaults link.
 `kbx init` and `kbx doctor` install [QMD](https://www.npmjs.com/package/@tobilu/qmd),
 the search backend, with `npm i -g @tobilu/qmd` if it isn't on `PATH`. That needs
 Node >= 22.
+
+Each vault gets its own qmd index, with one collection per scope, so your other
+qmd collections are left alone. `qmd.roots` in `kbx.toml` says which folder each
+collection covers. `kbx suggest` brings the index up to date first, which
+downloads qmd's models (about 2 GB) the first time, then runs one search per
+note, the least linked first, at most 100 per run. Set `qmd.index` to use an index of
+your own; kbx then searches it but leaves updating it to you.
 
 Logs go to stderr. Set `KBX_LOG=debug` to see each file that's skipped, and pass
 `--log json` to get one JSON object per line.

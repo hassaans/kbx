@@ -13,6 +13,13 @@ below; the project's fixed decisions override it where they differ:
 - Search: QMD (`@tobilu/qmd`) is the v0 backend, installed silently when
   missing, and stays a supported option for good; a built-in engine becomes
   the default later. `kbx.toml` carries `search = "qmd"`.
+- Correction: §5 used to say `qmd query --filter`. No qmd release has that
+  flag, and qmd ignores flags it doesn't know, so it would limit nothing.
+  Searches use `-c <collection>`.
+- Each vault has its own qmd index, `--index kbx-<hash of the vault path>`, so
+  `qmd update` and `qmd embed` never reach the user's other collections.
+  `kbx init` creates a collection per scope and `qmd.roots` in `kbx.toml` maps
+  each one to its folder (§10).
 - `judge.min_confidence` is dropped from the example ontology: confidence is
   stored but never used for auto-accept (§6.3).
 - Licence: AGPL-3.0, no CLA.
@@ -101,7 +108,7 @@ kbx:
     - {rel: see_also, to: "[[01J9Z8…pkce]]", by: [adamic_adar, judge], score: 0.81, id: 7f3a…}
   reviewed: 2026-11-03             # optional lock: skip re-suggestion until content hash changes
 qmd:
-  metadata: {type: Procedure, tags: [auth, security]}   # mirrored for QMD --filter
+  metadata: {type: Procedure, tags: [auth, security]}   # mirrored for QMD metadata
 ---
 ```
 
@@ -179,7 +186,7 @@ Candidates from all generators are unioned on `(src, dst)`; `generators` records
 | `two_hop_bridge` | A→X←B where A,B unlinked; weighted by relation weights | the "both depend on the same concept" case |
 | `schema_gap` | node violates `requires` (e.g. Procedure without `depends_on`); candidates = nodes whose class is in the relation's `range`, same scope, ranked by other signals | uses the ontology as a hypothesis generator |
 | `alias_cooccur` | FTS hit of another note's `title`/`aliases` in this note's body with no link | exact, free, style-independent |
-| `qmd_knn` | `qmd query --json -n 20 --filter {...}` per section; HyDE sub-queries optional | topical neighbours, section-level |
+| `qmd_knn` | `qmd --index <vault index> query --json -n 20 -c <collection>` per note, least linked first, at most 100 per run; HyDE sub-queries optional | topical neighbours; the hit side is section-level |
 | `type_pair_prior` (optional) | learned from `reviews`: P(rel \| type(src), type(dst)) | cheap, improves over time |
 
 Hub damping: any node with degree > p99 is downweighted in `adamic_adar` and excluded as a `two_hop_bridge` intermediary unless the relation is `part_of`.
@@ -320,18 +327,18 @@ Read-only by default; `mcp.allow_resolve = true` is the only write path and it s
 ## 10. CLI surface
 
 ```
-kbx init [--ontology path]           create .kbx/, kbx.toml, example ontology; detect qmd
+kbx init [--ontology path]           create .kbx/, kbx.toml, example ontology; detect qmd; one qmd collection per scope
 kbx index [--full] [paths…]          compile frontmatter → graph.sqlite (incremental by content hash)
 kbx lint  [--format json]            validate against ontology
 kbx suggest [--note id] [--generators a,b] [--judge auto|claude-cli|codex-cli|ollama|llama-server|none]
-            [--batch 20] [--budget-usd X] [--stage] [--dry-run]
+            [--batch 20] [--budget N] [--budget-usd X] [--stage] [--dry-run]
 kbx review [--json]                  queue UI
 kbx accept|reject|defer <cid>… [--reason]
 kbx graph  neighbors|path|stats      ad-hoc queries
 kbx export edges|reviews|rdf         JSONL / Turtle (via ontology → predicate map)
 kbx mcp                              stdio server
 kbx watch
-kbx doctor                           backends, qmd, models, RAM, index health
+kbx doctor [--fix]                   backends, qmd, collections, models, RAM, index health; --fix creates missing collections
 ```
 
 `kbx.toml`:
@@ -340,7 +347,7 @@ kbx doctor                           backends, qmd, models, RAM, index health
 vault = "~/mesh"
 scopes = ["team-x", "team-y"]            # top-level folders = ACL scopes
 ontology = ".kbx/ontology.yaml"
-qmd = { bin = "qmd", collections = ["team-x", "team-y"] }
+qmd = { bin = "qmd", collections = ["team-x", "team-y"], roots = { team-x = "team-x", team-y = "team-y" } }
 
 [judge]
 order = ["claude-cli", "codex-cli", "ollama", "llama-server"]

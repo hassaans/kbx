@@ -68,8 +68,8 @@ enum LintFormat {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create .kbx/, kbx.toml and the example ontology, and install qmd if
-    /// it's missing.
+    /// Create .kbx/, kbx.toml and the example ontology, install qmd if it's
+    /// missing, and create a qmd collection per scope.
     Init {
         /// Use this ontology file instead of the example.
         #[arg(long)]
@@ -112,6 +112,9 @@ enum Command {
         /// Who judges the candidates.
         #[arg(long, value_enum, default_value_t = suggest::Judge::None)]
         judge: suggest::Judge,
+        /// Keep at most this many candidates; qmd_knn stops searching there.
+        #[arg(long, value_name = "CANDIDATES")]
+        budget: Option<usize>,
         /// Print counts and token estimates; leave the database alone.
         #[arg(long)]
         dry_run: bool,
@@ -186,7 +189,11 @@ enum Command {
     },
     /// Check the vault, the index, RAM, the judges and qmd, installing qmd if
     /// it's missing.
-    Doctor,
+    Doctor {
+        /// Create the qmd collections that are missing.
+        #[arg(long)]
+        fix: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -246,11 +253,13 @@ fn main() -> ExitCode {
             note,
             generators,
             judge,
+            budget,
             dry_run,
         } => suggest::run(suggest::Options {
             note,
             generators,
             judge,
+            budget,
             dry_run,
         }),
         Command::Watch {
@@ -271,7 +280,7 @@ fn main() -> ExitCode {
         Command::Defer { cids, rel, reason } => review::defer(&cids, &rel, &reason),
         Command::Unreject { cids, list: false } => review::unreject(&cids),
         Command::Unreject { list: true, .. } => review::list_suppressed(),
-        Command::Doctor => doctor::run(),
+        Command::Doctor { fix } => doctor::run(fix),
     };
     match result {
         Ok(code) => code,
@@ -292,6 +301,19 @@ fn run_init(ontology: Option<PathBuf>) -> Result<ExitCode, Box<dyn Error>> {
         println!("created .kbx/ontology.yaml");
     }
     println!("found qmd at {}", qmd::ensure()?.display());
+    // The vault works without search, so this doesn't fail the command.
+    let mut project = Project::load(&dir.join(kbx_core::CONFIG_FILE))?;
+    match qmd::set_up_collections(&mut project) {
+        Ok(created) => {
+            for name in created {
+                println!("created qmd collection {name}");
+            }
+        }
+        Err(error) => {
+            eprintln!("warning: qmd collections not created: {error}");
+            eprintln!("run `kbx doctor --fix` to try again");
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 

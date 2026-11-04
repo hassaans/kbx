@@ -36,14 +36,14 @@ impl fmt::Display for Status {
 
 type Check = (Status, String);
 
-pub fn run() -> Result<ExitCode, Box<dyn Error>> {
+pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
     let mut healthy = true;
     let mut report = |name: &str, (status, detail): Check| {
-        println!("{name:<11}{status:<5}{detail}");
+        println!("{name:<12}{status:<5}{detail}");
         healthy &= status != Status::Fail;
     };
 
-    let found = Project::discover(&env::current_dir()?);
+    let mut found = Project::discover(&env::current_dir()?);
     match &found {
         Ok(project) => {
             report("vault", (Status::Ok, project.vault.display().to_string()));
@@ -73,7 +73,12 @@ pub fn run() -> Result<ExitCode, Box<dyn Error>> {
 
     // Last, so that its report is the end of the output.
     match qmd::ensure() {
-        Ok(path) => report("qmd", (Status::Ok, path.display().to_string())),
+        Ok(path) => {
+            report("qmd", (Status::Ok, path.display().to_string()));
+            if let Ok(project) = &mut found {
+                report("collections", check_collections(project, fix));
+            }
+        }
         Err(error) => {
             report("qmd", (Status::Fail, "not installed".to_string()));
             eprintln!("error: {error}");
@@ -160,6 +165,44 @@ fn check_judges(
         },
     ));
     Ok(rows)
+}
+
+/// Missing collections stop `qmd_knn` alone, so they are worth a warning.
+fn check_collections(project: &mut Project, fix: bool) -> Check {
+    if fix {
+        return match qmd::set_up_collections(project) {
+            Ok(created) if created.is_empty() => collections_present(project),
+            Ok(created) => (Status::Ok, format!("created {}", created.join(", "))),
+            Err(error) => (Status::Warn, error),
+        };
+    }
+    match qmd::missing_collections(project) {
+        Ok(missing) if missing.is_empty() => collections_present(project),
+        Ok(missing) => {
+            let names = missing.join(", ");
+            let detail = format!("missing {names}; run `kbx doctor --fix` to create them");
+            (Status::Warn, detail)
+        }
+        Err(error) => (Status::Warn, format!("can't be listed: {error}")),
+    }
+}
+
+fn collections_present(project: &Project) -> Check {
+    let qmd = &project.config.qmd;
+    let searched = qmd.searched();
+    let unrooted: Vec<&str> = qmd
+        .collections
+        .iter()
+        .filter(|name| !searched.contains_key(*name))
+        .map(String::as_str)
+        .collect();
+    if unrooted.is_empty() {
+        let detail = format!("{} in index {}", searched.len(), project.qmd_index());
+        return (Status::Ok, detail);
+    }
+    let names = unrooted.join(", ");
+    let detail = format!("no root in kbx.toml for {names}, so they find nothing");
+    (Status::Warn, detail)
 }
 
 fn check_ram() -> Check {
