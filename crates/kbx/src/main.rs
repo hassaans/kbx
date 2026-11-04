@@ -133,7 +133,9 @@ enum Command {
         dry_run: bool,
         /// Score each generator's precision and recall against the reviews
         /// table, and change nothing.
-        #[arg(long, conflicts_with_all = ["note", "judge", "budget", "stage", "dry_run"])]
+        #[arg(long, conflicts_with_all = [
+            "note", "judge", "budget", "stage", "batch", "budget_usd", "dry_run",
+        ])]
         eval: bool,
     },
     /// Keep the index current: re-index saved notes and lint them.
