@@ -23,8 +23,14 @@ kbx graph stats            # node, edge and section counts
 kbx suggest                # store link candidates from every generator
 kbx suggest --dry-run      # counts and token estimates; the database is left alone
 kbx suggest --note <id> --generators schema_gap,alias_cooccur
+kbx watch                  # re-index saved notes and lint them, until stopped
+kbx watch --suggest        # also run `kbx suggest` 45 s after the last save
+kbx hook install           # lint staged notes on commit; prints an Obsidian recipe
 kbx doctor                 # check the vault, the index, RAM and qmd
 ```
+
+The pre-commit hook lints staged notes as they are on disk, so a file edited
+after `git add` is linted as edited.
 
 Every lint finding is an error except `link.unstable`, a link by filename rather
 than id. That's a warning, because it's how most Obsidian vaults link.
