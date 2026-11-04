@@ -38,6 +38,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+          registry-url: https://registry.npmjs.org
       - id: preflight
         run: .github/scripts/preflight.sh
         env:
@@ -132,6 +133,15 @@ jobs:
           mkdir smoke
           tar -xzf "dist/kbx-linux-x64-gnu-$VERSION.tgz" -C smoke
           smoke/package/bin/kbx --version
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+      # The same call as npm-publish, so a bad tarball path fails here, before
+      # anything goes out.
+      - name: Dry-run the npm publish
+        run: |
+          for pkg in kbx-darwin-arm64 kbx-darwin-x64 kbx-linux-x64-gnu kbx-linux-arm64-gnu kbx-win32-x64-msvc kbx; do
+            .github/scripts/publish-npm.sh "$pkg" "$VERSION" "dist/$pkg-$VERSION.tgz" --dry-run
+          done
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
       - uses: actions/upload-artifact@v7

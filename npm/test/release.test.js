@@ -18,7 +18,7 @@ const PUBLISHERS = { cargo: 'exit 97', curl: 'exit 97', gh: 'exit 97', npm: 'exi
 
 // Puts fake tools on PATH, given as { name: bash body }, and runs a release
 // script with them. Returns the result plus each fake's calls, one per line.
-function run(t, script, args, { tools = {}, env = {}, scripts = SCRIPTS } = {}) {
+function run(t, script, args, { tools = {}, env = {}, scripts = SCRIPTS, cwd } = {}) {
   const dir = tempDir(t);
   const calls = path.join(dir, 'calls');
   const output = path.join(dir, 'output');
@@ -34,6 +34,7 @@ function run(t, script, args, { tools = {}, env = {}, scripts = SCRIPTS } = {}) 
   // line of defence if a real tool is ever reached.
   const { BASH_ENV, ...inherited } = process.env;
   const result = spawnSync('bash', [path.join(scripts, script), ...args], {
+    cwd,
     encoding: 'utf8',
     env: {
       ...inherited,
@@ -60,6 +61,7 @@ function preflight(t, env, options) {
 }
 
 const TOKENS = { NPM_TOKEN: 'npm-secret', CARGO_REGISTRY_TOKEN: 'cargo-secret' };
+const NPM_ACCEPTS_TOKEN = { tools: { npm: 'exit 0' } };
 
 describe('release scripts', { skip: process.platform === 'win32' && 'they run on Linux' }, () => {
   it('runs the fakes, not the real tools', (t) => {
@@ -79,6 +81,7 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.output, /^publish=false$/m);
       assert.match(result.output, new RegExp(`^version=${VERSION}$`, 'm'));
+      assert.deepEqual(result.calls, []);
     });
 
     it('does not publish from a pull request', (t) => {
@@ -88,9 +91,25 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
     });
 
     it('publishes from a matching tag when both tokens are set', (t) => {
-      const result = preflight(t, { GITHUB_REF: `refs/tags/${TAG}`, ...TOKENS });
+      const result = preflight(t, { GITHUB_REF: `refs/tags/${TAG}`, ...TOKENS }, NPM_ACCEPTS_TOKEN);
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.output, /^publish=true$/m);
+    });
+
+    it('checks NPM_TOKEN against the registry before publishing', (t) => {
+      const npm = '[[ $NODE_AUTH_TOKEN == npm-secret ]]';
+      const result = preflight(t, { GITHUB_REF: `refs/tags/${TAG}`, ...TOKENS }, { tools: { npm } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(result.calls, ['npm whoami']);
+    });
+
+    it('fails when the registry refuses NPM_TOKEN', (t) => {
+      const npm = 'echo "npm error code E401" >&2; exit 1';
+      const result = preflight(t, { GITHUB_REF: `refs/tags/${TAG}`, ...TOKENS }, { tools: { npm } });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /E401/);
+      assert.match(result.stderr, /NPM_TOKEN/);
+      assert.doesNotMatch(result.output, /^publish=/m);
     });
 
     it('does not publish from a tag on a dry run, and needs no tokens there', (t) => {
@@ -120,7 +139,8 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
     });
 
     it('never prints a token', (t) => {
-      const result = preflight(t, { GITHUB_REF: `refs/tags/${TAG}`, ...TOKENS });
+      const result = preflight(t, { GITHUB_REF: `refs/tags/${TAG}`, ...TOKENS }, NPM_ACCEPTS_TOKEN);
+      assert.equal(result.status, 0, result.stderr);
       assert.doesNotMatch(result.stdout + result.stderr + result.output, /-secret/);
     });
 
@@ -149,44 +169,92 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
   });
 
   describe('publish-npm.sh', () => {
-    const args = ['kbx-darwin-arm64', '1.2.3', 'dist/kbx-darwin-arm64-1.2.3.tgz'];
+    const relative = 'dist/kbx-darwin-arm64-1.2.3.tgz';
+    const args = ['kbx-darwin-arm64', '1.2.3', relative];
+
+    // A checkout with the tarball in it, given to the script as release.yml does:
+    // relative to the working directory.
+    function checkout(t) {
+      const cwd = fs.realpathSync(tempDir(t));
+      fs.mkdirSync(path.join(cwd, 'dist'));
+      fs.writeFileSync(path.join(cwd, relative), '');
+      return { cwd, tarball: path.join(cwd, relative) };
+    }
 
     it('publishes the tarball when the package has never been published', (t) => {
+      const { cwd, tarball } = checkout(t);
       const view = 'if [[ $1 == view ]]; then echo "npm error code E404" >&2; exit 1; fi';
-      const result = run(t, 'publish-npm.sh', args, { tools: { npm: view } });
+      const result = run(t, 'publish-npm.sh', args, { cwd, tools: { npm: view } });
       assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(result.calls, [
-        'npm view kbx-darwin-arm64@1.2.3 version',
-        'npm publish dist/kbx-darwin-arm64-1.2.3.tgz',
-      ]);
+      assert.deepEqual(result.calls, ['npm view kbx-darwin-arm64@1.2.3 version', `npm publish ${tarball}`]);
+    });
+
+    it('never gives npm a path it can read as a GitHub repository', (t) => {
+      const { cwd } = checkout(t);
+      const result = run(t, 'publish-npm.sh', args, { cwd, tools: { npm: 'exit 0' } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(path.isAbsolute(result.calls[1].split(' ')[2]), result.calls[1]);
     });
 
     it('publishes when npm view finds nothing but exits 0', (t) => {
-      const result = run(t, 'publish-npm.sh', args, { tools: { npm: 'exit 0' } });
+      const { cwd } = checkout(t);
+      const result = run(t, 'publish-npm.sh', args, { cwd, tools: { npm: 'exit 0' } });
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.calls.length, 2);
       assert.match(result.calls[1], /^npm publish /);
     });
 
     it('skips a version that is already published', (t) => {
+      const { cwd } = checkout(t);
       const view = 'if [[ $1 == view ]]; then echo 1.2.3; fi';
-      const result = run(t, 'publish-npm.sh', args, { tools: { npm: view } });
+      const result = run(t, 'publish-npm.sh', args, { cwd, tools: { npm: view } });
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(result.calls, ['npm view kbx-darwin-arm64@1.2.3 version']);
       assert.match(result.stdout, /already published/);
     });
 
     it('stops without publishing when the registry cannot be read', (t) => {
+      const { cwd } = checkout(t);
       const view = 'if [[ $1 == view ]]; then echo "npm error code ETIMEDOUT" >&2; exit 1; fi';
-      const result = run(t, 'publish-npm.sh', args, { tools: { npm: view } });
+      const result = run(t, 'publish-npm.sh', args, { cwd, tools: { npm: view } });
       assert.equal(result.status, 1);
       assert.equal(result.calls.length, 1);
       assert.match(result.stderr, /ETIMEDOUT/);
     });
 
     it('fails when the publish fails', (t) => {
+      const { cwd } = checkout(t);
       const npm = 'if [[ $1 == publish ]]; then exit 1; fi';
-      assert.equal(run(t, 'publish-npm.sh', args, { tools: { npm } }).status, 1);
+      assert.equal(run(t, 'publish-npm.sh', args, { cwd, tools: { npm } }).status, 1);
+    });
+
+    it('fails before calling npm when the tarball is missing', (t) => {
+      const result = run(t, 'publish-npm.sh', args, { cwd: tempDir(t), tools: { npm: 'exit 0' } });
+      assert.equal(result.status, 1);
+      assert.deepEqual(result.calls, []);
+      assert.match(result.stderr, /no tarball at dist\/kbx-darwin-arm64-1\.2\.3\.tgz/);
+    });
+
+    it('takes a dry run through npm publish, even for a version already out', (t) => {
+      const { cwd, tarball } = checkout(t);
+      const view = 'if [[ $1 == view ]]; then echo 1.2.3; fi';
+      const result = run(t, 'publish-npm.sh', [...args, '--dry-run'], { cwd, tools: { npm: view } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(result.calls, [`npm publish --dry-run ${tarball}`]);
+    });
+
+    it('fails a dry run when npm does', (t) => {
+      const { cwd } = checkout(t);
+      const result = run(t, 'publish-npm.sh', [...args, '--dry-run'], { cwd, tools: { npm: 'exit 128' } });
+      assert.equal(result.status, 128);
+    });
+
+    it('refuses to publish for real on a mistyped dry run flag', (t) => {
+      const { cwd } = checkout(t);
+      const result = run(t, 'publish-npm.sh', [...args, '--dryrun'], { cwd, tools: { npm: 'exit 0' } });
+      assert.equal(result.status, 1);
+      assert.deepEqual(result.calls, []);
+      assert.match(result.stderr, /usage: publish-npm\.sh/);
     });
   });
 
