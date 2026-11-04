@@ -10,7 +10,7 @@ repository.workspace = true
 async-trait = "0.1"
 kbx-core = { version = "0.1.0", path = "../kbx-core" }
 kbx-gen = { version = "0.1.0", path = "../kbx-gen" }
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }

@@ -179,6 +179,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_https_host_never_gets_a_batch() {
+        let server = LlamaServer::new("m".to_string(), Some("https://models.example"));
+        assert_eq!(server.available().await, Availability::Unreachable);
+        let error = server.judge(&[view("a")], &ctx()).await.unwrap_err();
+        assert!(error.to_string().contains("no TLS"), "{error}");
+    }
+
+    #[tokio::test]
     async fn the_request_is_the_one_in_the_spec() {
         let server = FakeServer::start(|_| (200, completion(&verdicts(&["a"]), "stop")));
         let ctx = ctx();

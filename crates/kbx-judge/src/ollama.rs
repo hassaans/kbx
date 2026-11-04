@@ -259,6 +259,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_https_host_never_gets_a_batch() {
+        let ollama = Ollama::new("m".to_string(), Some("https://models.example"));
+        assert_eq!(ollama.available().await, Availability::Unreachable);
+        let error = ollama.judge(&[view("a")], &ctx()).await.unwrap_err();
+        assert!(error.to_string().contains("no TLS"), "{error}");
+    }
+
+    #[tokio::test]
     async fn the_request_is_the_one_in_the_spec() {
         let server = FakeServer::start(|_| (200, chat(&verdicts(&["a"]))));
         let ctx = ctx();

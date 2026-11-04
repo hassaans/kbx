@@ -15,6 +15,11 @@ use crate::{Availability, CandidateView, JudgeContext, JudgeError, JudgeId, Verd
 /// How long a server gets to answer whether it's there.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Why an `https://` host gets nowhere. A TLS stack would make every
+/// `cargo install kbx` need cmake and a C compiler, for servers that listen on
+/// plain `http`.
+const NO_TLS: &str = "this build has no TLS, so an https:// host can't be used; use http://";
+
 /// What a local model costs, which isn't the same as not saying (§6.3).
 const FREE: Spend = Spend {
     cost_usd: Some(0.0),
@@ -66,6 +71,10 @@ fn client() -> reqwest::Result<Client> {
 
 /// The body of a successful `GET`, or `None` if `url` didn't give one in time.
 pub(crate) async fn get(url: &str) -> Option<String> {
+    if wants_tls(url) {
+        warn!("{url}: {NO_TLS}");
+        return None;
+    }
     let request = client().ok()?.get(url).timeout(PROBE_TIMEOUT);
     let response = request.send().await.ok()?;
     let response = response.error_for_status().ok()?;
@@ -79,6 +88,9 @@ pub(crate) async fn post(
     url: &str,
     body: &impl Serialize,
 ) -> Result<String, JudgeError> {
+    if wants_tls(url) {
+        return Err(JudgeError::Failed(id, NO_TLS.to_string()));
+    }
     let failed = |error: reqwest::Error| {
         if error.is_timeout() {
             JudgeError::TimedOut(id)
@@ -111,10 +123,14 @@ pub(crate) fn read_reply(
     read_answer(answer, batch, ctx, FREE).map_err(|reason| JudgeError::Malformed(id, reason))
 }
 
+fn wants_tls(url: &str) -> bool {
+    url.starts_with("https://")
+}
+
 /// What to call a server that didn't answer at `host`: one that runs here and
 /// has no program on `PATH` isn't installed.
 pub(crate) fn silent(program: &str, host: &str) -> Availability {
-    if is_local(host) && find_on_path(program).is_none() {
+    if !wants_tls(host) && is_local(host) && find_on_path(program).is_none() {
         Availability::NotInstalled
     } else {
         Availability::Unreachable
@@ -270,7 +286,25 @@ mod tests {
         assert_eq!(url("localhost:1234"), "http://localhost:1234");
         assert_eq!(url(":1234"), "http://127.0.0.1:1234");
         assert_eq!(url("0.0.0.0:11434"), "http://127.0.0.1:11434");
-        assert_eq!(url("https://models.example"), "https://models.example");
+        assert_eq!(url("http://10.0.0.5:11434"), "http://10.0.0.5:11434");
+        assert_eq!(url("HTTPS://models.example"), "https://models.example");
+    }
+
+    #[tokio::test]
+    async fn an_https_host_is_refused_with_the_reason() {
+        let ctx = fake::ctx();
+        let error = post(
+            JudgeId::Ollama,
+            "https://models.example/api/chat",
+            &ctx.schema,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, JudgeError::Failed(..)), "{error}");
+        assert!(error.to_string().contains("https:// host"), "{error}");
+        assert_eq!(get("https://127.0.0.1:9/api/tags").await, None);
+        let availability = silent("no-such-program", "https://127.0.0.1:9");
+        assert_eq!(availability, Availability::Unreachable);
     }
 
     #[test]

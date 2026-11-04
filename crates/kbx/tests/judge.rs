@@ -1086,6 +1086,17 @@ mod local {
     }
 
     #[test]
+    fn an_https_host_says_why_it_cant_be_used() {
+        let vault = indexed();
+        let env = [("OLLAMA_HOST", "https://models.example"), MODEL];
+        let output = suggest_with(&vault, "ollama", &env);
+        assert!(!output.status.success());
+        let err = stderr(&output);
+        assert!(err.contains("no TLS"), "{err}");
+        assert!(err.contains("ollama can't judge: Unreachable"), "{err}");
+    }
+
+    #[test]
     fn auto_falls_through_the_clis_to_ollama_then_llama_server() {
         let vault = indexed();
         logged_out_claude(&vault.path);
