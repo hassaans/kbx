@@ -92,7 +92,42 @@ pub enum FindingCode {
     IdDuplicate,
 }
 
+/// How much a finding matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Severity {
+    /// Something is wrong, and `kbx lint` exits 1.
+    Error,
+    /// Worth fixing, but normal in a real vault, so it fails only under
+    /// `kbx lint --strict`.
+    Warning,
+}
+
+impl Severity {
+    /// The severity as printed, such as `warning`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        }
+    }
+}
+
+impl fmt::Display for Severity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl FindingCode {
+    /// How much this code matters. Filename links are how most Obsidian vaults
+    /// link, so `link.unstable` alone is a warning.
+    pub fn severity(self) -> Severity {
+        match self {
+            FindingCode::LinkUnstable => Severity::Warning,
+            _ => Severity::Error,
+        }
+    }
+
     /// The code as printed, such as `rel.range`.
     pub fn as_str(self) -> &'static str {
         match self {

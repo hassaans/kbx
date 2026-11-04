@@ -1,4 +1,6 @@
-use kbx_core::{Finding, FindingCode, Link, Note, Ontology, ResolvedVia, Vault, parse_note};
+use kbx_core::{
+    Finding, FindingCode, Link, Note, Ontology, ResolvedVia, Severity, Vault, parse_note,
+};
 
 const ONTOLOGY: &str = include_str!("../../../schema/ontology.example.yaml");
 
@@ -30,6 +32,26 @@ fn findings(notes: Vec<Note>) -> Vec<Finding> {
 
 fn codes(notes: Vec<Note>) -> Vec<&'static str> {
     findings(notes).iter().map(|f| f.code.as_str()).collect()
+}
+
+#[test]
+fn only_link_unstable_is_a_warning() {
+    assert_eq!(FindingCode::LinkUnstable.severity(), Severity::Warning);
+    for code in [
+        FindingCode::TypeUnknown,
+        FindingCode::RelUnknown,
+        FindingCode::RelRange,
+        FindingCode::RelDomain,
+        FindingCode::SchemaGap,
+        FindingCode::RelCardinality,
+        FindingCode::LinkUnresolved,
+        FindingCode::NoteInvalid,
+        FindingCode::IdDuplicate,
+    ] {
+        assert_eq!(code.severity(), Severity::Error, "{code}");
+    }
+    assert_eq!(Severity::Warning.as_str(), "warning");
+    assert_eq!(Severity::Error.to_string(), "error");
 }
 
 #[test]

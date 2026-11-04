@@ -33,4 +33,4 @@ pub use ontology::{
     ANY, Class, Direction, Judge, NONE, Ontology, OntologyError, Relation, RelationKey,
 };
 pub use section::{Block, Section, section_key};
-pub use vault::{Finding, FindingCode, Resolved, ResolvedVia, Resolver, Vault};
+pub use vault::{Finding, FindingCode, Resolved, ResolvedVia, Resolver, Severity, Vault};

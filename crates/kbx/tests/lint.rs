@@ -39,6 +39,14 @@ fn expected() -> Vec<(String, String, u64)> {
     rows
 }
 
+fn severity_of(code: &str) -> &'static str {
+    if code == "link.unstable" {
+        "warning"
+    } else {
+        "error"
+    }
+}
+
 fn findings(output: &Output) -> Vec<Value> {
     let report: Value = serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
     report["findings"].as_array().unwrap().clone()
@@ -68,12 +76,14 @@ fn prints_every_code_at_its_location_and_exits_1() {
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     let text = stdout(&output);
     for (code, path, line) in expected() {
-        let place = format!("{path}:{line}: {code}: ");
-        assert!(text.contains(&place), "{place} is missing from:\n{text}");
+        let severity = severity_of(&code);
+        let place = format!("{severity}: {path}:{line}: {code}: ");
+        let found = text.lines().any(|line| line.starts_with(&place));
+        assert!(found, "{place} is missing from:\n{text}");
     }
     let lines = text.lines().filter(|line| line.contains(": ")).count();
     assert_eq!(lines, expected().len(), "{text}");
-    assert!(text.contains("13 findings"), "{text}");
+    assert_eq!(text.lines().last(), Some("12 errors, 1 warning"), "{text}");
 }
 
 #[test]
@@ -84,7 +94,12 @@ fn format_json_is_machine_parseable() {
     assert_eq!(places(&output), expected());
     for finding in findings(&output) {
         assert!(!finding["message"].as_str().unwrap().is_empty());
+        let code = finding["code"].as_str().unwrap();
+        assert_eq!(finding["severity"], severity_of(code), "{finding}");
     }
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["errors"], 12);
+    assert_eq!(report["warnings"], 1);
 }
 
 #[test]
@@ -104,6 +119,57 @@ fn a_clean_vault_exits_0() {
     let output = vault.kbx(&["lint", "--format", "json", "engineering"]);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(findings(&output), Vec::<Value>::new());
+}
+
+#[test]
+fn only_warnings_exit_0() {
+    let vault = Fixture::new();
+    let given = format!("{LINT}21-link-unstable.md");
+    let output = vault.kbx(&["lint", &given]);
+    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+    let text = stdout(&output);
+    let prefix = format!("warning: {given}:5: link.unstable: ");
+    assert!(text.starts_with(&prefix), "{text}");
+    assert_eq!(text.lines().last(), Some("0 errors, 1 warning"), "{text}");
+
+    let output = vault.kbx(&["lint", "--format", "json", &given]);
+    assert_eq!(output.status.code(), Some(0));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["findings"][0]["severity"], "warning");
+    assert_eq!(report["errors"], 0);
+    assert_eq!(report["warnings"], 1);
+}
+
+#[test]
+fn strict_promotes_warnings_to_errors() {
+    let vault = Fixture::new();
+    let given = format!("{LINT}21-link-unstable.md");
+    let output = vault.kbx(&["lint", "--strict", &given]);
+    assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
+    let text = stdout(&output);
+    let prefix = format!("error: {given}:5: link.unstable: ");
+    assert!(text.starts_with(&prefix), "{text}");
+    assert_eq!(text.lines().last(), Some("1 error, 0 warnings"), "{text}");
+
+    let output = vault.kbx(&["lint", "--strict", "--format", "json", &given]);
+    assert_eq!(output.status.code(), Some(1));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["findings"][0]["severity"], "error");
+    assert_eq!(report["errors"], 1);
+    assert_eq!(report["warnings"], 0);
+}
+
+#[test]
+fn strict_changes_nothing_on_a_clean_vault() {
+    let vault = Fixture::new();
+    let output = vault.kbx(&["lint", "--strict", "engineering"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+    assert!(stdout(&output).contains("no findings"));
+
+    let output = vault.kbx(&["lint", "--format", "json", "engineering"]);
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["errors"], 0);
+    assert_eq!(report["warnings"], 0);
 }
 
 #[test]
@@ -260,4 +326,7 @@ fn the_help_lists_every_code() {
     ] {
         assert!(help.contains(code), "{code} is missing from:\n{help}");
     }
+    let row = help.lines().find(|line| line.contains("link.unstable"));
+    assert!(row.unwrap().contains("warning"), "{help}");
+    assert!(help.contains("--strict"), "{help}");
 }

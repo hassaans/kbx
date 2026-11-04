@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use kbx_core::{
-    Finding, Graph, IndexOptions, Neighbor, Node, Project, index_vault, init, lint_vault,
+    Finding, Graph, IndexOptions, Neighbor, Node, Project, Severity, index_vault, init, lint_vault,
 };
 use serde_json::json;
 use tracing_subscriber::EnvFilter;
@@ -24,14 +24,17 @@ Finding codes:
   rel.domain       the note's class is outside the domain of a relation it holds
   schema.gap       a relation the note's class requires is missing or empty
   rel.cardinality  an exclusive relation has more than one target
-  link.unstable    a link resolves by filename, not id
+  link.unstable    a link resolves by filename, not id (warning)
   link.unresolved  a link resolves to no note, or to more than one
   note.invalid     a file with frontmatter can't be read as a note, so `kbx index`
                    leaves it out
   id.duplicate     several files claim one id; the lowest path keeps it, and links
                    and `kbx graph` go there
 
-Every finding is an error. Plain markdown without frontmatter is not a note.
+Every code is an error except link.unstable, a warning. Only errors make kbx lint
+exit 1; --strict promotes warnings to errors.
+
+Plain markdown without frontmatter is not a note.
 Paths in the output are relative to the vault root.";
 
 /// Turn a markdown vault into a typed knowledge graph.
@@ -74,12 +77,15 @@ enum Command {
         /// Limit the run to these files and folders.
         paths: Vec<PathBuf>,
     },
-    /// Check notes against the ontology. Exits 1 if there are findings.
+    /// Check notes against the ontology. Exits 1 if there are errors.
     #[command(after_help = LINT_CODES)]
     Lint {
         /// How to print the findings.
         #[arg(long, value_enum, default_value_t = LintFormat::Text)]
         format: LintFormat,
+        /// Promote warnings to errors.
+        #[arg(long)]
+        strict: bool,
         /// Report on these files and folders alone, such as the ones you
         /// changed. They are still checked against the whole vault.
         paths: Vec<PathBuf>,
@@ -125,7 +131,11 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Init { ontology } => run_init(ontology),
         Command::Index { full, paths } => run_index(IndexOptions { full, paths }),
-        Command::Lint { format, paths } => run_lint(format, &paths),
+        Command::Lint {
+            format,
+            strict,
+            paths,
+        } => run_lint(format, strict, &paths),
         Command::Graph { query } => run_graph(query),
         Command::Doctor => doctor::run(),
     };
@@ -173,44 +183,66 @@ fn run_index(options: IndexOptions) -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_lint(format: LintFormat, paths: &[PathBuf]) -> Result<ExitCode, Box<dyn Error>> {
+fn run_lint(
+    format: LintFormat,
+    strict: bool,
+    paths: &[PathBuf],
+) -> Result<ExitCode, Box<dyn Error>> {
     let project = Project::discover(&env::current_dir()?)?;
     let ontology = read_ontology(&project)?;
     let findings = lint_vault(&project.vault, &ontology, paths)?;
+    let severity = |finding: &Finding| match finding.code.severity() {
+        Severity::Warning if strict => Severity::Error,
+        severity => severity,
+    };
+    let rated: Vec<_> = findings.iter().map(|f| (f, severity(f))).collect();
+    let errors = rated.iter().filter(|(_, s)| *s == Severity::Error).count();
+    let warnings = rated.len() - errors;
     match format {
-        LintFormat::Text => print_findings(&findings),
+        LintFormat::Text => print_findings(&rated, errors, warnings),
         LintFormat::Json => {
-            let rows: Vec<_> = findings.iter().map(finding_json).collect();
-            println!("{}", json!({ "findings": rows }));
+            let rows: Vec<_> = rated.iter().map(|(f, s)| finding_json(f, *s)).collect();
+            let report = json!({ "findings": rows, "errors": errors, "warnings": warnings });
+            println!("{report}");
         }
     }
-    Ok(if findings.is_empty() {
+    Ok(if errors == 0 {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     })
 }
 
-fn print_findings(findings: &[Finding]) {
-    for finding in findings {
+fn print_findings(rated: &[(&Finding, Severity)], errors: usize, warnings: usize) {
+    for (finding, severity) in rated {
         println!(
-            "{}:{}: {}: {}",
+            "{severity}: {}:{}: {}: {}",
             finding.path.display(),
             finding.line,
             finding.code,
             finding.message
         );
     }
-    match findings.len() {
-        0 => println!("no findings"),
-        1 => println!("1 finding"),
-        count => println!("{count} findings"),
+    if rated.is_empty() {
+        println!("no findings");
+    } else {
+        println!(
+            "{}, {}",
+            plural(errors, "error"),
+            plural(warnings, "warning")
+        );
     }
 }
 
-fn finding_json(finding: &Finding) -> serde_json::Value {
+fn plural(count: usize, noun: &str) -> String {
+    let ending = if count == 1 { "" } else { "s" };
+    format!("{count} {noun}{ending}")
+}
+
+fn finding_json(finding: &Finding, severity: Severity) -> serde_json::Value {
     json!({
         "code": finding.code.as_str(),
+        "severity": severity.as_str(),
         "path": finding.path.to_string_lossy(),
         "line": finding.line,
         "message": finding.message,

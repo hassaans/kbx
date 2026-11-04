@@ -13,14 +13,18 @@ kbx init                   # create .kbx/, kbx.toml and the example ontology
 kbx index                  # compile changed notes into .kbx/graph.sqlite
 kbx index --full           # rebuild, ignoring the stored hashes
 kbx index notes/a.md       # limit the run to some files and folders
-kbx lint                   # check the vault; exits 1 if there are findings
+kbx lint                   # check the vault; exits 1 if there are errors
 kbx lint notes/a.md        # report on the files you changed
+kbx lint --strict          # treat warnings as errors
 kbx lint --format json     # findings as JSON; `kbx lint --help` lists the codes
 kbx graph neighbors <id>   # the typed edges at a note
 kbx graph path <a> <b>     # a shortest typed path between two notes
 kbx graph stats            # node, edge and section counts
 kbx doctor                 # check the vault, the index, RAM and qmd
 ```
+
+Every lint finding is an error except `link.unstable`, a link by filename rather
+than id. That's a warning, because it's how most Obsidian vaults link.
 
 `kbx init` and `kbx doctor` install [QMD](https://www.npmjs.com/package/@tobilu/qmd),
 the search backend, with `npm i -g @tobilu/qmd` if it isn't on `PATH`. That needs
