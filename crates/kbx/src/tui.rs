@@ -238,16 +238,21 @@ impl App {
 
     fn reject(&mut self, reason: Option<&str>) {
         let session = &self.session;
+        let cid = self.queue.current().map(|item| item.cid.clone());
         match self.queue.reject(&session.graph, &session.ontology, reason) {
             Ok(rejected) => {
                 self.tally.rejected += 1;
+                let unstaged = cid.map_or(Ok(()), |cid| self.session.unstage(&cid));
                 let outcome = if rejected.suppressed() {
                     ", suppressed; `kbx unreject` lifts it"
                 } else {
                     ""
                 };
                 let strikes = rejected.strikes;
-                let line = format!("rejected: strike {strikes} of {STRIKES}{outcome}");
+                let mut line = format!("rejected: strike {strikes} of {STRIKES}{outcome}");
+                if let Err(error) = unstaged {
+                    line.push_str(&format!("; its staged line stays: {error}"));
+                }
                 self.status = Status::Done(line);
             }
             Err(error) => self.refused(error),
@@ -594,6 +599,36 @@ mod tests {
         let cells: Vec<&str> = buffer.content.iter().map(|cell| cell.symbol()).collect();
         let rows = cells.chunks(width).map(|row| row.concat());
         rows.collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn rejecting_a_staged_candidate_takes_its_line_out_of_the_note() {
+        let (_dir, mut session) = session();
+        let queue = Queue::load(&session.graph, &session.ontology).unwrap();
+        let cids: Vec<String> = queue.items().iter().map(|i| i.cid.clone()).collect();
+        let vault = session.vault().to_path_buf();
+        let report = kbx_core::stage(&session.graph, &vault, &session.ontology, &cids).unwrap();
+        session.reindex(&report.written).unwrap();
+
+        let mut app = loaded(session);
+        let cid = app.queue.current().unwrap().cid.clone();
+        let path: String = app
+            .session
+            .graph
+            .connection()
+            .query_row(
+                "SELECT f.path FROM staged s JOIN files f ON f.id = s.note WHERE s.cid = ?",
+                [&cid],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let note = vault.join(path);
+        assert!(fs::read_to_string(&note).unwrap().contains(&cid));
+
+        app.reject(None);
+        assert!(!fs::read_to_string(&note).unwrap().contains(&cid));
+        let line = kbx_core::Queue::load(&app.session.graph, &app.session.ontology).unwrap();
+        assert!(!line.items().iter().any(|item| item.cid == cid));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use kbx_core::{Graph, cid, suppressed_pairs};
+use kbx_core::{Graph, cid, locked_notes, suppressed_pairs};
 use rusqlite::{Transaction, TransactionBehavior, params};
 use serde_json::{Map, Value};
 
@@ -74,6 +74,8 @@ pub struct Run {
     pub candidates: Vec<Proposal>,
     /// Pairs dropped for being linked or suppressed by rejections.
     pub dropped: usize,
+    /// Pairs left out for touching a note under a `kbx.reviewed` lock.
+    pub locked: usize,
     /// Pairs the [`Budget`] left out.
     pub over_budget: usize,
     /// Generators that failed, by name, and why.
@@ -163,6 +165,12 @@ pub fn suggest(
 
     let snapshot = Snapshot::load(g)?;
     let suppressed = suppressed_pairs(g.connection())?;
+    // At either end: the schema may yet turn a pair around, and accepting
+    // writes to both notes.
+    let locked = locked_notes(g.connection())?;
+    let reachable = union.len();
+    union.retain(|pair, _| !locked.contains(&pair.0) && !locked.contains(&pair.1));
+    let locked = reachable - union.len();
     let found = union.len();
     let mut proposals: Vec<Proposal> = union
         .into_iter()
@@ -195,6 +203,7 @@ pub fn suggest(
         over_budget: total - candidates.len(),
         candidates,
         dropped,
+        locked,
         skipped,
     })
 }

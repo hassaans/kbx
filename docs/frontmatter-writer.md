@@ -27,15 +27,21 @@ your last key, before `kbx:` and `qmd:`. A value is extended in its own style:
 
 ## Where a comment is lost
 
-`qmd:` is tool-owned (§3), and these are the only places a comment can go:
+`kbx:` and `qmd:` are tool-owned (§3), and these are the only places a comment
+can go:
 
 - When `qmd.metadata` is out of date, it is written again as one line. Comments
   on it or inside it are dropped. Other keys under `metadata`, and other lines
   under `qmd:`, stay.
 - When `qmd:` is itself one `{…}` map, that line is written again, with the same
   result for a comment on it.
+- When kbx changes `kbx:`, the whole block is written again from its value, in
+  the form §3 shows, because an editor may have written it back in any style.
+  [Staging](staging.md) does this. Comments in the block are dropped. Keys kbx
+  doesn't know stay.
 
-If `qmd.metadata` is already current, the block isn't touched at all.
+If `qmd.metadata` is already current, the block isn't touched at all. An
+acceptance leaves `kbx:` alone unless the candidate was staged.
 
 ## What is refused
 

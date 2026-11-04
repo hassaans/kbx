@@ -14,13 +14,14 @@ use crate::graph::Graph;
 use crate::note::{Note, ParseError, parse_note, split_frontmatter};
 use crate::ontology::{Ontology, OntologyError};
 use crate::vault::Resolver;
+use crate::writer::{reviewed, user_content};
 
 /// The `rel` of an edge from an inline `[[link]]`.
 pub const MENTIONS: &str = "mentions";
 
 /// Bump when the same file should compile to different rows, which makes the
 /// next run rebuild.
-const PIPELINE_VERSION: &str = "1";
+const PIPELINE_VERSION: &str = "2";
 
 const FRONTMATTER: &str = "frontmatter";
 const INLINE: &str = "inline";
@@ -460,6 +461,7 @@ impl<'a> Run<'a> {
         self.sync_sections(note, src)?;
         self.sync_blocks(note)?;
         self.sync_links(&note.id, INLINE, &inline_links(note))?;
+        self.sync_lock(note, src)?;
 
         self.by_id.insert(note.id.clone(), path.clone());
         self.report.changed.insert(path.clone());
@@ -472,6 +474,25 @@ impl<'a> Run<'a> {
             },
         );
         self.report.indexed += 1;
+        Ok(())
+    }
+
+    /// Keeps `locks` in line with `kbx.reviewed`. A date it hasn't seen sets the
+    /// baseline; the same date keeps it, so that a rebuild can't relock a note.
+    fn sync_lock(&self, note: &Note, src: &str) -> rusqlite::Result<()> {
+        let Some(date) = reviewed(note) else {
+            self.tx
+                .execute("DELETE FROM locks WHERE id = ?", [&note.id])?;
+            return Ok(());
+        };
+        self.tx.execute(
+            "INSERT INTO locks (id, reviewed, baseline, current) VALUES (?1, ?2, ?3, ?3)
+             ON CONFLICT(id) DO UPDATE SET current = excluded.current,
+                 baseline = CASE WHEN reviewed = excluded.reviewed THEN baseline
+                     ELSE excluded.baseline END,
+                 reviewed = excluded.reviewed",
+            params![note.id, date, user_content(src)],
+        )?;
         Ok(())
     }
 

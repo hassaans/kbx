@@ -25,6 +25,8 @@ kbx suggest --dry-run      # counts and token estimates; the database is left al
 kbx suggest --note <id> --generators schema_gap,alias_cooccur
 kbx suggest --budget 50    # keep at most 50 candidates
 kbx suggest --judge auto   # also judge them: logged-in claude or codex CLI, else local ollama or llama-server
+kbx suggest --stage        # also write proposals to `kbx.proposed` for your editor
+kbx sync-stage             # take edits there as decisions; see docs/staging.md
 kbx suggest --eval         # each generator's precision and recall against your reviews
 kbx watch                  # re-index saved notes and lint them, until stopped
 kbx watch --suggest        # also run `kbx suggest` 45 s after the last save

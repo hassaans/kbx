@@ -15,6 +15,15 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Row};
 /// `candidates` also has `src_hash` and `dst_hash`: each note's `content_hash`
 /// when the pair was generated, which `kbx accept` compares with the file. A
 /// later `kbx index` moves `files.content_hash`, so that can't serve.
+///
+/// `staged` is the ledger of `kbx.proposed`: what kbx put in which note, which
+/// is how `kbx sync-stage` can tell a line a person removed from one never
+/// written. `hash` is the note's `content_hash` after the write, and `content`
+/// the same without the tool namespaces.
+///
+/// `locks` holds each `kbx.reviewed`: `baseline` is the note's content when the
+/// date was first seen and `current` its content now, so equal means locked.
+/// The frontmatter has room for a date alone (§3).
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, id TEXT UNIQUE, type TEXT, title TEXT,
     content_hash TEXT, fm_hash TEXT, mtime INTEGER, scope TEXT, indexed_at INTEGER);
@@ -41,6 +50,9 @@ CREATE TABLE IF NOT EXISTS reviews (src TEXT, dst TEXT, rel TEXT,
     decision TEXT CHECK(decision IN ('accept','reject','defer')),
     reason TEXT, strikes INTEGER DEFAULT 0, decided_at INTEGER, PRIMARY KEY(src, dst, rel));
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS staged (cid TEXT PRIMARY KEY, note TEXT, target TEXT, rel TEXT,
+    hash TEXT, content TEXT);
+CREATE TABLE IF NOT EXISTS locks (id TEXT PRIMARY KEY, reviewed TEXT, baseline TEXT, current TEXT);
 ";
 
 /// A note in the index.
