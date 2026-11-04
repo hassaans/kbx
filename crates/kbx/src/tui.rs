@@ -59,6 +59,9 @@ pub(crate) struct App {
     tally: Tally,
     /// The current item's cid and both excerpts, read when it became current.
     excerpts: Option<(String, [String; 2])>,
+    /// Why the index is behind the notes, kept because the status bar may
+    /// never be drawn again: the last acceptance ends the session.
+    index_failure: Option<String>,
     quit: bool,
 }
 
@@ -70,7 +73,7 @@ pub fn run(session: Session, queue: Queue) -> Result<(), Box<dyn Error>> {
     ratatui::try_restore()?;
     result?;
     println!("{}", app.summary());
-    Ok(())
+    Ok(app.outcome()?)
 }
 
 impl App {
@@ -82,6 +85,7 @@ impl App {
             status: Status::Idle,
             tally: Tally::default(),
             excerpts: None,
+            index_failure: None,
             quit: false,
         };
         app.read_excerpts();
@@ -222,7 +226,9 @@ impl App {
                     accepted.src, accepted.rel, accepted.dst
                 );
                 if let Err(error) = self.session.reindex(&accepted.written) {
-                    line.push_str(&format!("; run `kbx index`: {error}"));
+                    let failure = format!("the index is out of date, run `kbx index`: {error}");
+                    line.push_str(&format!("; {failure}"));
+                    self.index_failure = Some(failure);
                 }
                 self.status = Status::Done(line);
             }
@@ -288,6 +294,11 @@ impl App {
         self.excerpts = Some((item.cid.clone(), both));
     }
 
+    /// What the session leaves for the user to repair.
+    fn outcome(&self) -> Result<(), String> {
+        self.index_failure.clone().map_or(Ok(()), Err)
+    }
+
     fn summary(&self) -> String {
         let Tally {
             accepted,
@@ -332,12 +343,17 @@ impl App {
             let hidden = self.queue.hidden();
             count.push_str(&format!("  ({hidden} hidden, already rejected)"));
         }
-        let rel = item.rel.as_deref().unwrap_or("no relation yet");
-        let pair = format!(
-            "{} -{rel}-> {}",
-            plain(title(&item.src_title, &item.src)),
-            plain(title(&item.dst_title, &item.dst)),
-        );
+        let ontology = &self.session.ontology;
+        let rel = item.rel.as_deref();
+        let name = rel.map(|rel| ontology.lookup(rel).map_or(rel, |key| key.name));
+        let src = plain(title(&item.src_title, &item.src));
+        let dst = plain(title(&item.dst_title, &item.dst));
+        let (from, to) = match item.swapped(ontology) {
+            true => (dst, src),
+            false => (src, dst),
+        };
+        let name = name.unwrap_or("no relation yet");
+        let pair = format!("{from} -{name}-> {to}");
         let bold = Style::default().add_modifier(Modifier::BOLD);
         Paragraph::new(vec![Line::raw(count), Line::styled(pair, bold)])
     }
@@ -686,6 +702,66 @@ mod tests {
         assert!(text.contains("judge: accept: both cover logins"), "{text}");
         assert!(text.contains("-see_also->"), "{text}");
         assert!(text.contains(KEYS), "{text}");
+    }
+
+    #[test]
+    fn the_header_reads_the_way_accepting_would_write_it() {
+        let (_dir, session) = session();
+        let db = session.graph.connection();
+        let of_class = |class: &str| -> (String, String) {
+            db.query_row(
+                "SELECT id, title FROM files WHERE type = ? ORDER BY id LIMIT 1",
+                [class],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        };
+        let (concept, concept_title) = of_class("Concept");
+        let (procedure, procedure_title) = of_class("Procedure");
+        let cid = kbx_core::cid(&concept, &procedure);
+        db.execute("DELETE FROM candidates WHERE cid = ?", [&cid])
+            .unwrap();
+        db.execute(
+            "INSERT INTO candidates (cid, src, dst, score, src_hash, dst_hash)
+             VALUES (?1, ?2, ?3, 2.0,
+                 (SELECT content_hash FROM files WHERE id = ?2),
+                 (SELECT content_hash FROM files WHERE id = ?3))",
+            params![cid, concept, procedure],
+        )
+        .unwrap();
+        verdict(&session, &cid, "accept", "depends_on", "x");
+        let mut app = loaded(session);
+        assert_eq!(current(&app).src, concept);
+
+        let shown = format!("{procedure_title} -depends_on-> {concept_title}");
+        assert!(screen(&app).contains(&shown), "{}", screen(&app));
+
+        press(&mut app, KeyCode::Char('a'));
+        let written = format!("accepted: {procedure} -depends_on-> {concept}");
+        assert_eq!(app.status, Status::Done(written));
+    }
+
+    #[test]
+    fn a_reindex_that_fails_on_the_last_acceptance_is_not_lost() {
+        let (_dir, session) = session();
+        let queue = Queue::load(&session.graph, &session.ontology).unwrap();
+        let cids: Vec<String> = queue.items().iter().map(|i| i.cid.clone()).collect();
+        for cid in &cids[1..] {
+            let db = session.graph.connection();
+            db.execute("DELETE FROM candidates WHERE cid = ?", [cid])
+                .unwrap();
+        }
+        let mut app = loaded(session);
+        assert_eq!(app.outcome(), Ok(()));
+        app.session.yaml = "not an ontology".to_string();
+
+        press(&mut app, KeyCode::Char('a'));
+        choose(&mut app, "see_also");
+
+        assert!(app.finished());
+        assert_eq!(app.tally.accepted, 1);
+        let error = app.outcome().unwrap_err();
+        assert!(error.contains("kbx index"), "{error}");
     }
 
     #[test]

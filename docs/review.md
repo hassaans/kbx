@@ -12,7 +12,8 @@ stay in the queue, in score order, with the verdict showing.
 Each one shows both notes' excerpts, what proposed it (`why_proposed`, one entry
 per generator), and the judge's verdict and rationale if there is one. The
 relation shown is the one a decision would use: the latest verdict that names
-one, unless you change it.
+one, unless you change it. It reads the way accepting would write it, which the
+schema may turn around from the order the generators found the pair in.
 
 | Key | What it does |
 |---|---|
@@ -24,6 +25,9 @@ one, unless you change it.
 | `q` | Quit, as does Ctrl-C. Decisions already taken stand. |
 
 The session is one pass through the queue and ends at the last candidate.
+
+If the index can't follow an acceptance, the links are still in your notes:
+`kbx review` says so when it ends, exits 1, and `kbx index` repairs it.
 
 A decision that is refused, for example because a note changed since
 `kbx suggest`, shows why in red and leaves the candidate where it is. See
@@ -44,7 +48,8 @@ strikes can reach three.
 
 ## `kbx review --json`
 
-An array, in queue order. A field with nothing to say is `null`.
+An array, in queue order. A field with nothing to say is `null`. `src` and `dst`
+are the candidate's own order: the schema decides the direction on accepting.
 
 ```json
 [

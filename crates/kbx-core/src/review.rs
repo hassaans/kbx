@@ -13,7 +13,7 @@ use tracing::warn;
 use crate::graph::Graph;
 use crate::index::{load_resolver, sha256};
 use crate::note::{Note, parse_note};
-use crate::ontology::{NONE, Ontology, admits};
+use crate::ontology::{NONE, Ontology, RelationKey, admits};
 use crate::writer::{Staged, WriteError, add_relation, holds_link, write_atomic};
 
 mod queue;
@@ -220,20 +220,14 @@ pub fn accept(
     let first = first.checked(candidate.src_hash.as_deref())?;
     let second = second.checked(candidate.dst_hash.as_deref())?;
 
-    // §3: the schema decides direction, and a tie keeps the candidate's.
-    let fits = |from: &Checked, to: &Checked| {
-        admits(&key.relation.domain, &from.note.class)
-            && admits(&key.relation.range, &to.note.class)
-    };
-    let (from, to) = if key.inverted {
-        (&second, &first)
-    } else {
-        (&first, &second)
-    };
-    let (from, to) = match (fits(from, to), fits(to, from)) {
-        (true, _) => (from, to),
-        (false, true) => (to, from),
-        (false, false) => {
+    let (from, to) = match runs_forward(&key, &first.note.class, &second.note.class) {
+        Some(true) => (&first, &second),
+        Some(false) => (&second, &first),
+        None => {
+            let (from, to) = match key.inverted {
+                true => (&second, &first),
+                false => (&first, &second),
+            };
             return Err(ReviewError::OutOfSchema {
                 rel: key.name.to_string(),
                 src: from.note.class.clone(),
@@ -287,6 +281,23 @@ pub fn accept(
         rel: key.name.to_string(),
         written: changes.iter().map(|(f, _)| f.path.clone()).collect(),
     })
+}
+
+/// Whether the relation runs from the candidate's `src` to its `dst`, given
+/// their classes. `None` if it fits neither way.
+///
+/// §3: the schema decides direction, and a tie keeps the candidate's.
+fn runs_forward(key: &RelationKey<'_>, src: &str, dst: &str) -> Option<bool> {
+    let fits = |from, to| admits(&key.relation.domain, from) && admits(&key.relation.range, to);
+    let (from, to) = match key.inverted {
+        true => (dst, src),
+        false => (src, dst),
+    };
+    match (fits(from, to), fits(to, from)) {
+        (true, _) => Some(!key.inverted),
+        (false, true) => Some(key.inverted),
+        (false, false) => None,
+    }
 }
 
 /// Records a rejection, adds a strike and takes the candidate out of the

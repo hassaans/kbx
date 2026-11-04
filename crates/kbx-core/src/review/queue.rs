@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 
 use super::{
     Accepted, Decision, Deferred, OnDisk, Rejected, ReviewError, accept, defer, judged_rel,
-    ordered, reject,
+    ordered, reject, runs_forward,
 };
 use crate::graph::Graph;
 use crate::note::split_frontmatter;
@@ -29,10 +29,14 @@ const EXCERPT_CHARS: usize = 2400;
 pub struct Item {
     /// The candidate.
     pub cid: String,
-    /// The note a relation would be written to.
+    /// The note a relation would be written to, unless [`Item::swapped`].
     pub src: String,
-    /// The note it would point at.
+    /// The note it would point at, unless [`Item::swapped`].
     pub dst: String,
+    /// `src`'s class. `None` if the note has left the index.
+    pub src_class: Option<String>,
+    /// `dst`'s class. `None` if the note has left the index.
+    pub dst_class: Option<String>,
     /// `src`'s title. `None` if the note has left the index.
     pub src_title: Option<String>,
     /// `dst`'s title. `None` if the note has left the index.
@@ -54,6 +58,16 @@ pub struct Item {
 }
 
 impl Item {
+    /// Whether [`accept`] would write [`Item::rel`] from `dst` to `src`, because
+    /// the schema reads it that way. Where nothing says, the order stands.
+    pub fn swapped(&self, ontology: &Ontology) -> bool {
+        let key = self.rel.as_deref().and_then(|rel| ontology.lookup(rel));
+        let (Some(key), Some(src), Some(dst)) = (key, &self.src_class, &self.dst_class) else {
+            return false;
+        };
+        runs_forward(&key, src, dst) == Some(false)
+    }
+
     fn unranked(&self) -> bool {
         self.verdict.as_deref() == Some(UNSURE)
     }
@@ -102,7 +116,8 @@ impl Queue {
         let connection = g.connection();
         let rejected = rejected_relations(connection)?;
         let mut statement = connection.prepare(
-            "SELECT c.cid, c.src, c.dst, s.title, d.title, c.score, c.generators, c.features
+            "SELECT c.cid, c.src, c.dst, s.title, d.title, c.score, c.generators, c.features,
+                 s.type, d.type
              FROM candidates c
              LEFT JOIN files s ON s.id = c.src
              LEFT JOIN files d ON d.id = c.dst",
@@ -236,6 +251,8 @@ fn item(connection: &Connection, row: &Row<'_>) -> rusqlite::Result<Item> {
         dst: row.get(2)?,
         src_title: row.get(3)?,
         dst_title: row.get(4)?,
+        src_class: row.get(8)?,
+        dst_class: row.get(9)?,
         score: row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
         generators: generators
             .and_then(|text| serde_json::from_str(&text).ok())

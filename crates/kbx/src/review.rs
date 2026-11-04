@@ -20,7 +20,7 @@ const NO_INDEX: &str = "the vault has no index yet; run `kbx index`";
 /// What every decision starts from.
 pub(crate) struct Session {
     pub(crate) project: Project,
-    yaml: String,
+    pub(crate) yaml: String,
     pub(crate) ontology: Ontology,
     pub(crate) graph: Graph,
 }

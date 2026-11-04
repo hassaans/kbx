@@ -282,6 +282,50 @@ fn a_relation_already_rejected_stays_out_of_the_queue() {
 }
 
 #[test]
+fn an_item_reads_the_way_accept_would_write_it() {
+    let vault = Vault::new();
+    vault.candidate("b", "a", 0.5);
+    let mut queue = vault.queue();
+    assert!(
+        !queue.current().unwrap().swapped(&vault.ontology),
+        "no relation yet"
+    );
+
+    queue.edit(&vault.ontology, "depends_on").unwrap();
+    let item = queue.current().unwrap();
+    assert_eq!((item.src.as_str(), item.dst.as_str()), ("b", "a"));
+    assert!(item.swapped(&vault.ontology));
+    let accepted = vault.accept(&mut queue).unwrap();
+    assert_eq!((accepted.src.as_str(), accepted.dst.as_str()), ("a", "b"));
+}
+
+#[test]
+fn an_inverse_named_by_a_verdict_reads_the_relation_the_other_way() {
+    let vault = Vault::new();
+    let cid = vault.candidate("b", "a", 0.5);
+    vault.verdict(&cid, "m", "accept", "required_by", 1);
+    let mut queue = vault.queue();
+    assert!(queue.current().unwrap().swapped(&vault.ontology));
+    let accepted = vault.accept(&mut queue).unwrap();
+    assert_eq!((accepted.src.as_str(), accepted.dst.as_str()), ("a", "b"));
+}
+
+#[test]
+fn a_relation_that_fits_both_ways_or_neither_keeps_the_candidates_order() {
+    let vault = Vault::new();
+    vault.candidate("b", "a", 0.5);
+    vault.candidate("b", "c", 0.4);
+    let mut queue = vault.queue();
+    queue.edit(&vault.ontology, "see_also").unwrap();
+    assert!(!queue.current().unwrap().swapped(&vault.ontology));
+    queue.skip();
+    queue.edit(&vault.ontology, "depends_on").unwrap();
+    assert!(!queue.current().unwrap().swapped(&vault.ontology));
+    let error = vault.accept(&mut queue).unwrap_err();
+    assert!(matches!(error, ReviewError::OutOfSchema { .. }), "{error}");
+}
+
+#[test]
 fn a_new_relation_on_a_rejected_pair_comes_back() {
     let vault = Vault::new();
     let cid = rejected_and_proposed_again(&vault, "depends_on");
