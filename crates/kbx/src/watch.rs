@@ -4,10 +4,11 @@ use std::collections::BTreeSet;
 use std::env;
 use std::error::Error;
 use std::fs;
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use kbx_core::{Graph, IndexOptions, Project, index_vault, is_note_path};
 use notify::event::{EventKind, ModifyKind};
@@ -31,8 +32,11 @@ pub struct Options {
 pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     let project = Project::discover(&env::current_dir()?)?;
     let (sender, events) = mpsc::channel();
+    // The debouncer ages each event on its own, so a burst longer than its
+    // timeout comes out in pieces. It only thins the events: `Timers` waits for
+    // the quiet that ends a burst, and the gaps between pieces fit inside that.
     let mut debouncer: Debouncer<RecommendedWatcher, RecommendedCache> =
-        new_debouncer(options.debounce, None, sender)?;
+        new_debouncer(options.debounce / 4, None, sender)?;
     debouncer.watch(&project.vault, RecursiveMode::Recursive)?;
 
     // After the watcher starts, so that no save falls between the two.
@@ -40,6 +44,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     println!("watching {}", project.vault.display());
 
     let mut timers = Timers::new(&options);
+    let mut saved = BTreeSet::new();
     loop {
         let message = match timers.next() {
             Some(at) => events.recv_timeout(at.saturating_duration_since(Instant::now())),
@@ -52,13 +57,8 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
                     timers.reconcile_now();
                 }
                 if !paths.is_empty() {
-                    match update(&project, paths) {
-                        Ok(changed) => timers.after_batch(changed),
-                        Err(error) => {
-                            eprintln!("error: {error}");
-                            timers.retry();
-                        }
-                    }
+                    saved.extend(paths);
+                    timers.after_save(Instant::now());
                 }
             }
             Ok(Err(errors)) => {
@@ -71,6 +71,20 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
             Err(RecvTimeoutError::Disconnected) => return Err("the file watcher stopped".into()),
         }
 
+        if timers.take_index(Instant::now()) {
+            // Windows can hold back the events of a burst until it ends, so
+            // the files have the last word on whether the saves have stopped.
+            match since_last_write(&saved).filter(|quiet| *quiet < options.debounce) {
+                Some(quiet) => timers.index_after(Instant::now(), options.debounce - quiet),
+                None => match update(&project, mem::take(&mut saved).into_iter().collect()) {
+                    Ok(changed) => timers.after_batch(changed),
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        timers.retry();
+                    }
+                },
+            }
+        }
         if timers.take_reconcile() {
             match update(&project, Vec::new()) {
                 Ok(changed) => timers.after_reconcile(changed),
@@ -102,8 +116,11 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
 
 /// When the work that isn't driven by an event is due.
 struct Timers {
+    debounce: Duration,
     reconcile_every: Option<Duration>,
     suggest_after: Option<Duration>,
+    /// When the saved notes are indexed, if the saves have stopped by then.
+    index_at: Option<Instant>,
     reconcile_at: Option<Instant>,
     /// A whole-vault pass is owed, because events were lost or a run failed.
     /// Only a pass that succeeds settles it.
@@ -114,8 +131,10 @@ struct Timers {
 impl Timers {
     fn new(options: &Options) -> Timers {
         Timers {
+            debounce: options.debounce,
             reconcile_every: options.reconcile,
             suggest_after: options.suggest,
+            index_at: None,
             reconcile_at: options.reconcile.map(|every| Instant::now() + every),
             recover_at: None,
             suggest_at: None,
@@ -123,8 +142,33 @@ impl Timers {
     }
 
     fn next(&self) -> Option<Instant> {
-        let timers = [self.reconcile_at, self.recover_at, self.suggest_at];
+        // Saves still to be indexed come first: `suggest` reads the index.
+        let suggest_at = self.suggest_at.filter(|_| self.index_at.is_none());
+        let timers = [
+            self.index_at,
+            self.reconcile_at,
+            self.recover_at,
+            suggest_at,
+        ];
         timers.into_iter().flatten().min()
+    }
+
+    /// Every save starts the wait again, so a burst is indexed once it ends,
+    /// however long it lasts.
+    fn after_save(&mut self, now: Instant) {
+        self.index_after(now, self.debounce);
+    }
+
+    fn index_after(&mut self, now: Instant, wait: Duration) {
+        self.index_at = Some(now + wait);
+    }
+
+    fn take_index(&mut self, now: Instant) -> bool {
+        let due = self.index_at.is_some_and(|at| at <= now);
+        if due {
+            self.index_at = None;
+        }
+        due
     }
 
     fn reconcile_now(&mut self) {
@@ -164,12 +208,23 @@ impl Timers {
     }
 
     fn take_suggest(&mut self) -> bool {
-        let due = self.suggest_at.is_some_and(|at| at <= Instant::now());
+        let waiting = self.index_at.is_some();
+        let due = !waiting && self.suggest_at.is_some_and(|at| at <= Instant::now());
         if due {
             self.suggest_at = None;
         }
         due
     }
+}
+
+/// How long ago the most recently written of `paths` was written. A path that
+/// is gone or dated in the future says nothing, so it can't hold up the index.
+fn since_last_write(paths: &BTreeSet<PathBuf>) -> Option<Duration> {
+    let now = SystemTime::now();
+    let written = paths
+        .iter()
+        .filter_map(|path| fs::metadata(path).ok()?.modified().ok());
+    written.filter_map(|at| now.duration_since(at).ok()).min()
 }
 
 /// Indexes `paths`, or the whole vault if there are none, and lints what
@@ -252,12 +307,73 @@ fn is_wanted(vault: &Path, path: &Path, kind: &EventKind) -> bool {
 mod tests {
     use super::*;
 
+    const DEBOUNCE: Duration = Duration::from_millis(100);
+
     fn timers(reconcile: Option<Duration>) -> Timers {
         Timers::new(&Options {
-            debounce: Duration::from_millis(1),
+            debounce: DEBOUNCE,
             reconcile,
             suggest: None,
         })
+    }
+
+    #[test]
+    fn saves_inside_the_window_put_off_the_index_until_they_stop() {
+        let mut timers = timers(None);
+        let start = Instant::now();
+        let mut last = start;
+        for n in 1..=10 {
+            last = start + DEBOUNCE / 2 * n;
+            assert!(!timers.take_index(last));
+            timers.after_save(last);
+        }
+
+        assert!(!timers.take_index(last + DEBOUNCE / 2));
+        assert!(timers.take_index(last + DEBOUNCE));
+        assert!(!timers.take_index(last + DEBOUNCE * 2));
+        assert_eq!(timers.next(), None);
+    }
+
+    #[test]
+    fn a_save_after_the_index_waits_again() {
+        let mut timers = timers(None);
+        let start = Instant::now();
+        timers.after_save(start);
+        assert!(timers.take_index(start + DEBOUNCE));
+
+        timers.after_save(start + DEBOUNCE);
+        assert!(!timers.take_index(start + DEBOUNCE));
+        assert!(timers.take_index(start + DEBOUNCE * 2));
+    }
+
+    #[test]
+    fn suggest_waits_for_the_saves_still_to_be_indexed() {
+        let mut timers = Timers::new(&Options {
+            debounce: DEBOUNCE,
+            reconcile: None,
+            suggest: Some(Duration::ZERO),
+        });
+        timers.after_batch(true);
+
+        let now = Instant::now();
+        timers.after_save(now);
+        assert!(!timers.take_suggest());
+        assert_eq!(timers.next(), Some(now + DEBOUNCE));
+
+        assert!(timers.take_index(now + DEBOUNCE));
+        assert!(timers.take_suggest());
+    }
+
+    #[test]
+    fn a_file_written_just_now_counts_and_a_missing_one_does_not() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let note = dir.path().join("note.md");
+        let gone = BTreeSet::from([dir.path().join("gone.md")]);
+        assert_eq!(since_last_write(&gone), None);
+
+        fs::write(&note, "saved").unwrap();
+        let quiet = since_last_write(&BTreeSet::from([note]));
+        assert!(quiet.is_none_or(|quiet| quiet < Duration::from_secs(60)));
     }
 
     #[test]

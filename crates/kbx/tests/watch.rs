@@ -61,6 +61,14 @@ fn writes(vault: &Fixture) -> Vec<(String, i64)> {
     rows.map(Result::unwrap).collect()
 }
 
+/// What `writes` holds after a burst to the busy note and `Watch::settle`.
+fn once_each() -> [(String, i64); 2] {
+    [
+        ("notes/busy.md".to_string(), 1),
+        ("notes/settled.md".to_string(), 1),
+    ]
+}
+
 fn is_indexed(vault: &Fixture, n: u32) -> bool {
     let count: i64 = db(vault)
         .query_row("SELECT COUNT(*) FROM files WHERE id = ?", [id(n)], |row| {
@@ -68,6 +76,25 @@ fn is_indexed(vault: &Fixture, n: u32) -> bool {
         })
         .unwrap();
     count == 1
+}
+
+/// Saves note 100 under a title that tells this save from the others.
+fn save(vault: &Fixture, n: u32) {
+    vault.write(
+        "notes/busy.md",
+        &format!(
+            "---\nid: {}\ntype: Concept\ntitle: Save {n}\n---\nFine.\n",
+            id(100)
+        ),
+    );
+}
+
+fn saved_title(vault: &Fixture) -> String {
+    db(vault)
+        .query_row("SELECT title FROM files WHERE id = ?", [id(100)], |row| {
+            row.get(0)
+        })
+        .unwrap()
 }
 
 /// A running `kbx watch`, killed when dropped.
@@ -121,6 +148,14 @@ impl Watch {
             );
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Returns once everything saved so far has been handled. Events arrive in
+    /// order and a batch commits whole, so nothing older is still on its way
+    /// once a note saved now is in the index.
+    fn settle(&self, vault: &Fixture) {
+        vault.write("notes/settled.md", &note(101, "Concept", "Fine."));
+        self.wait_until("the last note", || is_indexed(vault, 101));
     }
 
     /// The sum of `indexed N` over every report printed so far.
@@ -217,15 +252,33 @@ fn a_burst_of_saves_to_one_note_indexes_it_once() {
     let watch = Watch::start(&vault, &["--debounce-ms", "3000", "--reconcile-secs", "0"]);
 
     for n in 0..1000 {
-        vault.write(
-            "notes/busy.md",
-            &note(100, "Concept", &format!("Save {n}.")),
-        );
+        save(&vault, n);
     }
-    watch.wait_until("the note", || is_indexed(&vault, 100));
-    thread::sleep(Duration::from_secs(4));
+    watch.settle(&vault);
 
-    assert_eq!(writes(&vault), [("notes/busy.md".to_string(), 1)]);
+    assert_eq!(writes(&vault), once_each());
+    assert_eq!(saved_title(&vault), "Save 999");
+}
+
+#[test]
+fn saves_that_outlast_the_window_index_the_note_once() {
+    let vault = indexed();
+    audit(&vault);
+    let watch = Watch::start(&vault, &["--debounce-ms", "2000", "--reconcile-secs", "0"]);
+
+    // However fast the runner, this burst is longer than the window, and each
+    // gap is far inside it.
+    let start = Instant::now();
+    let mut last = 0;
+    while start.elapsed() < Duration::from_secs(5) {
+        last += 1;
+        save(&vault, last);
+        thread::sleep(Duration::from_millis(50));
+    }
+    watch.settle(&vault);
+
+    assert_eq!(writes(&vault), once_each());
+    assert_eq!(saved_title(&vault), format!("Save {last}"));
 }
 
 #[test]
