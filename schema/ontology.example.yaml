@@ -1,0 +1,18 @@
+version: 1
+classes:
+  Concept:   {description: "A definable idea or term."}
+  Procedure: {description: "Steps to achieve an outcome.", requires: [depends_on]}
+  Decision:  {description: "A choice made, with rationale."}
+  Entity:    {description: "A system, team, person, or product."}
+  Reference: {description: "External source material."}
+relations:
+  part_of:     {inverse: has_part,     domain: [any],       range: [any],       weight: 1.0, transitive: true}
+  depends_on:  {inverse: required_by,  domain: [Procedure], range: [Concept, Procedure, Entity], weight: 0.9}
+  implements:  {inverse: implemented_by, domain: [Procedure, Entity], range: [Concept], weight: 0.8}
+  supersedes:  {inverse: superseded_by, domain: [Decision], range: [Decision], weight: 0.8, exclusive: true}
+  contradicts: {inverse: contradicts,  domain: [any],       range: [any],       weight: 0.7, symmetric: true}
+  example_of:  {inverse: has_example,  domain: [any],       range: [Concept],   weight: 0.6}
+  see_also:    {inverse: see_also,     domain: [any],       range: [any],       weight: 0.3, symmetric: true}
+judge:
+  vocabulary: [part_of, depends_on, implements, supersedes, contradicts, example_of, see_also, none]
+  direction: from_schema          # direction is decided by domain/range, never by the model

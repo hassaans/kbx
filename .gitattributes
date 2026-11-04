@@ -1,0 +1,2 @@
+# Fixture bytes feed content hashes, so they must match on every platform.
+tests/fixtures/** text eol=lf

@@ -1,0 +1,277 @@
+use std::collections::{BTreeSet, HashMap};
+use std::fmt;
+use std::path::{Path, PathBuf};
+
+use serde_yaml::Value;
+
+use crate::link::Link;
+use crate::note::Note;
+use crate::ontology::{Ontology, RelationKey, admits};
+
+/// A set of parsed notes that links resolve against.
+#[derive(Debug, Clone)]
+pub struct Vault {
+    notes: Vec<Note>,
+    by_id: HashMap<String, BTreeSet<usize>>,
+    by_filename: HashMap<String, BTreeSet<usize>>,
+    by_alias: HashMap<String, BTreeSet<usize>>,
+}
+
+/// Where a link landed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Resolved<'a> {
+    /// The note the link points at.
+    pub note: &'a Note,
+    /// Which step matched.
+    pub via: ResolvedVia,
+}
+
+/// Which step of the resolution order matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedVia {
+    /// The target is the note's id, or the id followed by a slug
+    /// (`{id}-tokens`), the shape §3 uses. The slug is ignored, so renaming
+    /// the file doesn't break the link.
+    Id,
+    /// The target is the file's name or vault path. Breaks on rename, so it's
+    /// flagged [`FindingCode::LinkUnstable`].
+    Filename,
+    /// The target is one of the note's aliases.
+    Alias,
+}
+
+/// A validation problem at a place in a note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finding {
+    /// What kind of problem this is.
+    pub code: FindingCode,
+    /// The path of the note, as given to [`parse_note`](crate::parse_note).
+    pub path: PathBuf,
+    /// 1-based line.
+    pub line: usize,
+    /// A human-readable explanation.
+    pub message: String,
+}
+
+/// The finding codes from §3 and §8.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FindingCode {
+    /// `type` isn't a class in the ontology.
+    TypeUnknown,
+    /// A key holds wikilinks but isn't a relation or inverse in the ontology,
+    /// or a relation key holds something other than wikilinks.
+    RelUnknown,
+    /// A link's target has a class outside the relation's `range`.
+    RelRange,
+    /// A relation the note's class `requires` is missing or empty.
+    SchemaGap,
+    /// An `exclusive` relation has more than one target.
+    RelCardinality,
+    /// A link resolved by filename only.
+    LinkUnstable,
+    /// A link resolved to no note, or to more than one.
+    LinkUnresolved,
+}
+
+impl FindingCode {
+    /// The code as printed, such as `rel.range`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FindingCode::TypeUnknown => "type.unknown",
+            FindingCode::RelUnknown => "rel.unknown",
+            FindingCode::RelRange => "rel.range",
+            FindingCode::SchemaGap => "schema.gap",
+            FindingCode::RelCardinality => "rel.cardinality",
+            FindingCode::LinkUnstable => "link.unstable",
+            FindingCode::LinkUnresolved => "link.unresolved",
+        }
+    }
+}
+
+impl fmt::Display for FindingCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Vault {
+    /// Indexes `notes` by id, filename and alias. Sets of notes that share an
+    /// id or name are kept: links to them just don't resolve.
+    pub fn new(notes: Vec<Note>) -> Vault {
+        let mut vault = Vault {
+            notes,
+            by_id: HashMap::new(),
+            by_filename: HashMap::new(),
+            by_alias: HashMap::new(),
+        };
+        for (index, note) in vault.notes.iter().enumerate() {
+            vault
+                .by_id
+                .entry(note.id.clone())
+                .or_default()
+                .insert(index);
+            for name in filename_keys(&note.path) {
+                vault.by_filename.entry(name).or_default().insert(index);
+            }
+            for alias in &note.aliases {
+                vault
+                    .by_alias
+                    .entry(alias.to_lowercase())
+                    .or_default()
+                    .insert(index);
+            }
+        }
+        vault
+    }
+
+    /// The notes, in the order given to [`Vault::new`].
+    pub fn notes(&self) -> &[Note] {
+        &self.notes
+    }
+
+    /// Resolves by id first, then by filename, then by alias; filename and
+    /// alias ignore case, as Obsidian does. The first step that matches
+    /// decides, so a link is `None` if that step matches several notes.
+    pub fn resolve(&self, link: &Link) -> Option<Resolved<'_>> {
+        let target = link.target.as_str();
+        let id_prefix = target
+            .split(|c: char| !c.is_alphanumeric())
+            .next()
+            .unwrap_or(target);
+        let name = normalize_name(target);
+        let steps = [
+            (self.by_id.get(target), ResolvedVia::Id),
+            (self.by_id.get(id_prefix), ResolvedVia::Id),
+            (self.by_filename.get(&name), ResolvedVia::Filename),
+            (
+                self.by_alias.get(&target.to_lowercase()),
+                ResolvedVia::Alias,
+            ),
+        ];
+        let (matches, via) = steps.into_iter().find_map(|(hit, via)| Some((hit?, via)))?;
+        let mut matches = matches.iter();
+        match (matches.next(), matches.next()) {
+            (Some(&index), None) => Some(Resolved {
+                note: &self.notes[index],
+                via,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Validates every note, ordered by path and then line.
+    pub fn validate(&self, ontology: &Ontology) -> Vec<Finding> {
+        let mut findings: Vec<Finding> = self
+            .notes
+            .iter()
+            .flat_map(|note| self.validate_note(note, ontology))
+            .collect();
+        findings.sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
+        findings
+    }
+
+    /// Validates one note against the whole vault. §8 reports
+    /// `link.unresolved` only on files the author changed, so `kbx lint` calls
+    /// this on those alone.
+    pub fn validate_note(&self, note: &Note, ontology: &Ontology) -> Vec<Finding> {
+        let mut found = Vec::new();
+        let mut report = |code, line, message| {
+            found.push(Finding {
+                code,
+                path: note.path.clone(),
+                line,
+                message,
+            });
+        };
+
+        match ontology.classes.get(&note.class) {
+            None => {
+                let message = format!("type `{}` is not a class in the ontology", note.class);
+                report(FindingCode::TypeUnknown, note.class_line, message);
+            }
+            Some(class) => {
+                for key in &class.requires {
+                    if note.relation(key).is_none() {
+                        let message = format!("{} requires `{key}`", note.class);
+                        report(FindingCode::SchemaGap, note.class_line, message);
+                    }
+                }
+            }
+        }
+
+        for entry in &note.relations {
+            let relation = ontology.lookup(&entry.key);
+            if relation.is_none() {
+                let message = format!("`{}` is not a relation in the ontology", entry.key);
+                report(FindingCode::RelUnknown, entry.line, message);
+            }
+            let mut targets = BTreeSet::new();
+            for link in &entry.links {
+                targets.insert(self.check_link(link, relation, ontology, &mut report));
+            }
+            if relation.is_some_and(|r| r.exclusive()) && targets.len() > 1 {
+                let message = format!("`{}` allows only one target", entry.key);
+                report(FindingCode::RelCardinality, entry.line, message);
+            }
+        }
+
+        for property in &note.properties {
+            let empty = match &property.value {
+                Value::Null => true,
+                Value::Sequence(items) => items.is_empty(),
+                _ => false,
+            };
+            if !empty && ontology.lookup(&property.key).is_some() {
+                let message = format!("`{}` must be a list of quoted wikilinks", property.key);
+                report(FindingCode::RelUnknown, property.line, message);
+            }
+        }
+
+        for link in note.mentions() {
+            self.check_link(link, None, ontology, &mut report);
+        }
+        found
+    }
+
+    /// Reports on one link and returns what it points at, so that spellings
+    /// of the same note count as one target.
+    fn check_link(
+        &self,
+        link: &Link,
+        relation: Option<RelationKey<'_>>,
+        ontology: &Ontology,
+        report: &mut impl FnMut(FindingCode, usize, String),
+    ) -> String {
+        let Some(resolved) = self.resolve(link) else {
+            let message = format!("`{}` does not resolve to exactly one note", link.target);
+            report(FindingCode::LinkUnresolved, link.line, message);
+            return link.target.clone();
+        };
+        if resolved.via == ResolvedVia::Filename {
+            let message = format!("`{}` links by filename, not id", link.target);
+            report(FindingCode::LinkUnstable, link.line, message);
+        }
+        let class = &resolved.note.class;
+        // A target of unknown class already has its own type.unknown.
+        if let Some(relation) = relation
+            && ontology.classes.contains_key(class)
+            && !admits(relation.range(), class)
+        {
+            let message = format!("{} is outside the range of `{}`", class, relation.name);
+            report(FindingCode::RelRange, link.line, message);
+        }
+        resolved.note.id.clone()
+    }
+}
+
+/// The names a file answers to: its stem and its path without the extension.
+fn filename_keys(path: &Path) -> BTreeSet<String> {
+    let full = normalize_name(&path.to_string_lossy());
+    let stem = full.rsplit('/').next().unwrap_or(&full).to_string();
+    BTreeSet::from([stem, full])
+}
+
+fn normalize_name(name: &str) -> String {
+    let name = name.replace('\\', "/").to_lowercase();
+    name.strip_suffix(".md").map(str::to_string).unwrap_or(name)
+}
