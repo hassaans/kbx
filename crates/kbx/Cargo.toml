@@ -9,3 +9,10 @@ readme = "../../README.md"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
+kbx-core = { version = "0.1.0", path = "../kbx-core" }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+tempfile = "3.27.0"
+toml = "1.2.0"

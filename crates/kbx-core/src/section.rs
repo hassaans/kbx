@@ -32,6 +32,17 @@ pub struct Section {
     pub mentions: Vec<Link>,
 }
 
+impl Section {
+    /// The block on the heading line itself, if the heading carries an id.
+    pub fn heading_block(&self) -> Option<&Block> {
+        if self.heading_path.is_empty() {
+            return None;
+        }
+        let start = self.byte_range.start;
+        self.blocks.iter().find(|b| b.byte_range.start == start)
+    }
+}
+
 /// A block labelled with a `^block-id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
