@@ -134,10 +134,7 @@ impl Vault {
     /// decides, so a link is `None` if that step matches several notes.
     pub fn resolve(&self, link: &Link) -> Option<Resolved<'_>> {
         let target = link.target.as_str();
-        let id_prefix = target
-            .split(|c: char| !c.is_alphanumeric())
-            .next()
-            .unwrap_or(target);
+        let id_prefix = target.split_once('-').map_or(target, |(id, _)| id);
         let name = normalize_name(target);
         let steps = [
             (self.by_id.get(target), ResolvedVia::Id),

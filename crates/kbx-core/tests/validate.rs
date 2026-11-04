@@ -427,3 +427,32 @@ fn a_note_aliasing_itself_twice_is_not_ambiguous() {
     assert_eq!(resolve(&vault, "x"), Some(("1", ResolvedVia::Alias)));
     assert_eq!(resolve(&vault, "a"), Some(("1", ResolvedVia::Filename)));
 }
+
+#[test]
+fn the_id_prefix_needs_the_hyphen_form() {
+    let make = |path: &str, id: &str| {
+        parse_note(
+            path,
+            &format!("---\nid: {id}\ntype: Concept\ntitle: T\n---\n"),
+        )
+        .unwrap()
+    };
+    let vault = vault(vec![
+        make("01ABC-tokens.md", "01ABC"),
+        make("01ABC.backup.md", "01DEF"),
+        make("01ABC/other.md", "01GHI"),
+    ]);
+    assert_eq!(
+        resolve(&vault, "01ABC-tokens"),
+        Some(("01ABC", ResolvedVia::Id))
+    );
+    assert_eq!(
+        resolve(&vault, "01ABC.backup"),
+        Some(("01DEF", ResolvedVia::Filename))
+    );
+    assert_eq!(
+        resolve(&vault, "01ABC/other"),
+        Some(("01GHI", ResolvedVia::Filename))
+    );
+    assert_eq!(resolve(&vault, "01ABC other"), None);
+}

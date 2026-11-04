@@ -45,6 +45,12 @@ pub struct Block {
     pub end_line: usize,
 }
 
+/// The file types Obsidian embeds that aren't notes.
+const ATTACHMENT_EXTENSIONS: [&str; 19] = [
+    "avif", "base", "bmp", "canvas", "flac", "gif", "jpeg", "jpg", "m4a", "mkv", "mov", "mp3",
+    "mp4", "ogg", "pdf", "png", "svg", "wav", "webp",
+];
+
 static SECTION_NAMESPACE: LazyLock<Uuid> = LazyLock::new(|| {
     Uuid::new_v5(
         &Uuid::NAMESPACE_URL,
@@ -134,7 +140,7 @@ pub(crate) fn extract_sections(
                 let Some((level, mut text)) = heading.take() else {
                     continue;
                 };
-                if let Some(id) = trailing_block_id(&text) {
+                if let Some(id) = heading_block_id(&text, &body[range.clone()]) {
                     sections[current].blocks.push(block(id, range.clone()));
                     text.truncate(text.trim_end().len() - id.len() - 1);
                 }
@@ -216,6 +222,11 @@ pub(crate) fn extract_sections(
                     heading_text.push_str(&text);
                 }
             }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some((_, heading_text)) = &mut heading {
+                    heading_text.push(' ');
+                }
+            }
             _ => {}
         }
     }
@@ -248,11 +259,19 @@ fn empty_section(start: usize) -> Section {
 }
 
 /// `![[pic.png]]` embeds an attachment, which is not a note and can't resolve.
+/// Only known types count: `![[OAuth 2.0]]` is a note with a dot in its name,
+/// and an embed of an unlisted type surfaces as `link.unresolved`, not silently.
 fn embeds_a_note(link: &Link) -> bool {
-    match link.target.rsplit_once('.') {
-        Some((_, extension)) => extension.eq_ignore_ascii_case("md"),
-        None => true,
-    }
+    let extension = link.target.rsplit_once('.').map(|(_, e)| e.to_lowercase());
+    !extension.is_some_and(|e| ATTACHMENT_EXTENSIONS.contains(&e.as_str()))
+}
+
+/// The `^block-id` ending a heading. `text` has lost its markup, so `` `^x` ``
+/// and `\\^x` look like ids there; `source` shows whether the marker is real,
+/// once closing `#`s or a setext underline are gone.
+fn heading_block_id<'a>(text: &'a str, source: &str) -> Option<&'a str> {
+    let source = source.trim_end_matches(['#', '=', '-', ' ', '\t', '\r', '\n']);
+    trailing_block_id(text).filter(|id| trailing_block_id(source) == Some(*id))
 }
 
 /// The `^block-id` ending `text`, without the `^`.

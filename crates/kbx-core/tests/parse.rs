@@ -281,3 +281,12 @@ fn a_tag_does_not_hide_a_nested_map() {
     let err = parse_note("a.md", &minimal("x: !tag {a: 1}\n")).unwrap_err();
     assert!(matches!(err, ParseError::NestedMap(_)));
 }
+
+#[test]
+fn only_known_attachment_types_are_dropped_from_embeds() {
+    let body = "![[OAuth 2.0]] ![[v1.2 notes.md]] ![[a.PNG]] ![[b.pdf]] ![[c.mp4]] ![[d.canvas]]\n";
+    let src = minimal("").replace("Body.\n", body);
+    let note = parse_note("a.md", &src).unwrap();
+    let targets: Vec<_> = note.mentions().map(|l| l.target.as_str()).collect();
+    assert_eq!(targets, ["OAuth 2.0", "v1.2 notes.md"]);
+}

@@ -189,3 +189,31 @@ fn things_that_look_like_block_ids_are_ignored() {
     let note = note("x^2\n\n`a ^b`\n\n```\ncode ^c\n```\n\nfoot[^1]\n\n[^1]: note\n\n^bad_id!\n");
     assert!(block_ids(&note).is_empty());
 }
+
+#[test]
+fn a_caret_in_code_or_escaped_is_part_of_the_heading() {
+    let code = note("# Using `^caret`\n");
+    assert_eq!(code.sections[0].heading_path, ["Using ^caret"]);
+    assert!(block_ids(&code).is_empty());
+    let escaped = note("# Using \\^caret\n");
+    assert_eq!(escaped.sections[0].heading_path, ["Using ^caret"]);
+    assert!(block_ids(&escaped).is_empty());
+}
+
+#[test]
+fn heading_block_ids_work_with_closing_hashes_and_setext() {
+    let closed = note("## Steps ^steps ##\n");
+    assert_eq!(closed.sections[0].heading_path, ["Steps"]);
+    assert_eq!(block_ids(&closed), ["steps"]);
+    let setext = note("Steps ^steps\n=====\n");
+    assert_eq!(setext.sections[0].heading_path, ["Steps"]);
+    assert_eq!(block_ids(&setext), ["steps"]);
+}
+
+#[test]
+fn a_multiline_setext_heading_keeps_its_word_boundary() {
+    let wrapped = note("OAuth\nflow\n====\n");
+    assert_eq!(wrapped.sections[0].heading_path, ["OAuth flow"]);
+    assert_eq!(wrapped.sections[0].slug_path, "oauth-flow");
+    assert_eq!(keys(&wrapped), keys(&note("# OAuth flow\n")));
+}
