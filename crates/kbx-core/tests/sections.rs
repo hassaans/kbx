@@ -217,3 +217,64 @@ fn a_multiline_setext_heading_keeps_its_word_boundary() {
     assert_eq!(wrapped.sections[0].slug_path, "oauth-flow");
     assert_eq!(keys(&wrapped), keys(&note("# OAuth flow\n")));
 }
+
+fn fragment(note: &Note, at: usize) -> Option<String> {
+    note.section_fragment(&note.sections[at].key.to_string())
+}
+
+#[test]
+fn a_block_id_comes_before_the_heading_path() {
+    let note = note("# One\n\nFirst. ^first\n\nSecond. ^second\n\n# Two ^own\n\nText. ^text\n");
+    assert_eq!(fragment(&note, 0).as_deref(), Some("^first"));
+    assert_eq!(fragment(&note, 1).as_deref(), Some("^own"));
+}
+
+#[test]
+fn a_repeated_block_id_belongs_to_the_first_block() {
+    let note = note("# One\n\nA. ^same\n\n# Two\n\nB. ^same\n");
+    assert_eq!(fragment(&note, 0).as_deref(), Some("^same"));
+    assert_eq!(fragment(&note, 1).as_deref(), Some("Two"));
+}
+
+#[test]
+fn a_heading_path_is_spelled_for_a_wikilink() {
+    let note = note("# Rate limits\n\n## Burst: token [bucket] | 100%\n\ntext\n");
+    assert_eq!(
+        fragment(&note, 1).as_deref(),
+        Some("Rate limits#Burst token bucket 100")
+    );
+}
+
+#[test]
+fn only_the_first_of_several_headings_can_be_linked() {
+    let note = note(BODY);
+    let steps: Vec<_> = (0..note.sections.len())
+        .filter(|at| note.sections[*at].heading_path == ["One", "Steps"])
+        .collect();
+    assert_eq!(fragment(&note, steps[0]).as_deref(), Some("One#Steps"));
+    assert_eq!(fragment(&note, steps[1]), None);
+}
+
+#[test]
+fn text_before_the_first_heading_has_no_anchor_without_a_block_id() {
+    assert_eq!(fragment(&note("Intro.\n\n# One\n"), 0), None);
+    assert_eq!(
+        fragment(&note("Intro. ^start\n\n# One\n"), 0).as_deref(),
+        Some("^start")
+    );
+}
+
+#[test]
+fn a_heading_link_goes_to_the_first_section_it_could_mean() {
+    let note = note("# Rate-limits\n\n# Rate limits\n\n# Q: A\n\n# Q A\n\n# Q A\n");
+    assert_eq!(fragment(&note, 0).as_deref(), Some("Rate-limits"));
+    assert_eq!(fragment(&note, 1).as_deref(), Some("Rate limits"));
+    assert_eq!(fragment(&note, 2).as_deref(), Some("Q A"));
+    assert_eq!(fragment(&note, 3), None);
+    assert_eq!(fragment(&note, 4), None);
+}
+
+#[test]
+fn an_unknown_key_has_no_anchor() {
+    assert_eq!(note(BODY).section_fragment("nothing"), None);
+}

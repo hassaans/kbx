@@ -23,6 +23,10 @@ below; the project's fixed decisions override it where they differ:
 - `judge.min_confidence` is dropped from the example ontology: confidence is
   stored but never used for auto-accept (§6.3).
 - Licence: AGPL-3.0, no CLA.
+- §14's section-level question is settled in `docs/sections.md`: anchors are
+  opt-in (`write.section_anchors` in `kbx.toml`), `{id}#^{block-id}` is the
+  portable form, and a heading-slug path is the fallback address, written to
+  frontmatter as a heading link.
 
 ---
 

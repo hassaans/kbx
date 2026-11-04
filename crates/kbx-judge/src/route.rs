@@ -288,6 +288,8 @@ mod tests {
             generators: Vec::new(),
             features: Map::new(),
             score: 0.5,
+            src_section: None,
+            dst_section: None,
         }
     }
 

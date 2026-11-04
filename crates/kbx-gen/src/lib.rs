@@ -3,7 +3,8 @@
 //! Each [`Generator`] proposes pairs of unlinked notes from one signal.
 //! [`suggest`] runs them, unions their proposals on the pair, drops linked and
 //! suppressed pairs, re-ranks and applies the [`Budget`]; [`store`] writes the
-//! result to the `candidates` table. [`evaluate`] scores generators against
+//! result to the `candidates` table. [`place_sections`] narrows a run to sections
+//! where `write.section_anchors` asks for it. [`evaluate`] scores generators against
 //! `reviews`. This crate never prints.
 
 mod alias;
@@ -13,6 +14,7 @@ mod pipeline;
 mod prior;
 mod schema;
 mod search;
+mod sections;
 mod snapshot;
 mod structure;
 
@@ -33,6 +35,7 @@ pub use pipeline::{
 pub use prior::TypePairPrior;
 pub use schema::SchemaGap;
 pub use search::{Hit, QmdSearch, Query, Search, SearchError};
+pub use sections::{forget_sections, place_sections};
 pub use structure::{AdamicAdar, CommonNeighbors, TwoHopBridge};
 
 /// One signal that two notes should be linked.
