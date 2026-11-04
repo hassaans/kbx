@@ -12,7 +12,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use common::{CLOSED_PORT, FakeModel, FakePath, Fixture, id, stderr, stdout};
+use common::{CLOSED_PORT, FakeModel, FakePath, Fixture, id, stderr, stdout, write_executable};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -1154,7 +1154,7 @@ mod local {
             path = probe_log.display()
         );
         let script = script.replacen("d=\"${0%/*}\"\n", &format!("d=\"${{0%/*}}\"\n{line}"), 1);
-        fs::write(vault.path.program("claude"), script).unwrap();
+        write_executable(&vault.path.program("claude"), &script);
         pin(&vault, "operations", "ollama");
 
         let ollama = fake_ollama(&["qwen3:8b"]);
