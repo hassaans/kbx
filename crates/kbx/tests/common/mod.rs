@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use tempfile::TempDir;
+use tempfile::{NamedTempFile, TempDir};
 
 pub const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/vault");
 
@@ -25,6 +25,31 @@ pub fn copy_dir(from: &Path, to: &Path) {
             fs::copy(entry.path(), target).unwrap();
         }
     }
+}
+
+/// Writes a script that is run straight away. On Linux, exec fails with
+/// ETXTBSY while anything holds the file open for writing, and a child that
+/// another test thread has just forked holds a copy of this process's
+/// descriptors until it execs. So this process never opens the file for
+/// writing: `cp` does, and has exited by the time this returns.
+#[cfg(unix)]
+pub fn write_executable(path: &Path, text: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let staged = NamedTempFile::new().unwrap();
+    fs::write(staged.path(), text).unwrap();
+    let copied = Command::new("/bin/cp")
+        .arg(staged.path())
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(copied.success(), "cp to {}: {copied}", path.display());
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(not(unix))]
+pub fn write_executable(path: &Path, text: &str) {
+    fs::write(path, text).unwrap();
 }
 
 pub fn stdout(output: &Output) -> String {
@@ -78,12 +103,7 @@ impl FakePath {
         } else {
             format!("#!/bin/sh\n{script}\n")
         };
-        fs::write(&program, text).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        write_executable(&program, &text);
     }
 
     /// Runs kbx in `dir` with this as its whole `PATH`.
