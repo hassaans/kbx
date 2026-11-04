@@ -28,6 +28,8 @@ kbx suggest --judge auto   # also judge them with the logged-in claude or codex 
 kbx watch                  # re-index saved notes and lint them, until stopped
 kbx watch --suggest        # also run `kbx suggest` 45 s after the last save
 kbx hook install           # lint staged notes on commit; prints an Obsidian recipe
+kbx review                 # go through the candidates: a / r / d / e / s / q
+kbx review --json          # the same queue for editors and agents
 kbx accept <cid>… --rel see_also   # write relations and inverses to frontmatter
 kbx reject <cid>… --reason "…"     # three rejections of a pair suppress it
 kbx defer <cid>…           # put a decision off

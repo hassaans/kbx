@@ -3,6 +3,7 @@ mod hook;
 mod qmd;
 mod review;
 mod suggest;
+mod tui;
 mod watch;
 
 use std::env;
@@ -140,6 +141,13 @@ enum Command {
         #[command(subcommand)]
         action: HookAction,
     },
+    /// Go through the candidates in a terminal, best first: a accepts, r
+    /// rejects, d defers, e edits the relation, s skips, q quits.
+    Review {
+        /// Print the queue as JSON and change nothing.
+        #[arg(long)]
+        json: bool,
+    },
     /// Write candidates to frontmatter: the relation on one note, its inverse
     /// on the other. Refused if either note changed since `kbx suggest`.
     Accept {
@@ -275,6 +283,7 @@ fn main() -> ExitCode {
         Command::Hook {
             action: HookAction::Install { force },
         } => hook::install(force),
+        Command::Review { json } => review::run(json),
         Command::Accept { cids, rel, reason } => review::accept(&cids, &rel, &reason),
         Command::Reject { cids, rel, reason } => review::reject(&cids, &rel, &reason),
         Command::Defer { cids, rel, reason } => review::defer(&cids, &rel, &reason),

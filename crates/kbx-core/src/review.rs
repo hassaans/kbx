@@ -13,8 +13,12 @@ use tracing::warn;
 use crate::graph::Graph;
 use crate::index::{load_resolver, sha256};
 use crate::note::{Note, parse_note};
-use crate::ontology::{NONE, Ontology, admits};
+use crate::ontology::{NONE, Ontology, RelationKey, admits};
 use crate::writer::{Staged, WriteError, add_relation, holds_link, write_atomic};
+
+mod queue;
+
+pub use queue::{Item, Queue, excerpt};
 
 /// Rejections of a pair, across all relations, that suppress it from every
 /// generator.
@@ -87,6 +91,9 @@ pub struct Unrejected {
 /// Why a decision was refused. Nothing is written in any of these cases.
 #[derive(Debug, thiserror::Error)]
 pub enum ReviewError {
+    /// The [`Queue`] has no current item to decide on.
+    #[error("the queue is empty")]
+    EmptyQueue,
     /// The cid isn't in `candidates`.
     #[error("no candidate {0}; run `kbx suggest`")]
     UnknownCandidate(String),
@@ -213,20 +220,14 @@ pub fn accept(
     let first = first.checked(candidate.src_hash.as_deref())?;
     let second = second.checked(candidate.dst_hash.as_deref())?;
 
-    // §3: the schema decides direction, and a tie keeps the candidate's.
-    let fits = |from: &Checked, to: &Checked| {
-        admits(&key.relation.domain, &from.note.class)
-            && admits(&key.relation.range, &to.note.class)
-    };
-    let (from, to) = if key.inverted {
-        (&second, &first)
-    } else {
-        (&first, &second)
-    };
-    let (from, to) = match (fits(from, to), fits(to, from)) {
-        (true, _) => (from, to),
-        (false, true) => (to, from),
-        (false, false) => {
+    let (from, to) = match runs_forward(&key, &first.note.class, &second.note.class) {
+        Some(true) => (&first, &second),
+        Some(false) => (&second, &first),
+        None => {
+            let (from, to) = match key.inverted {
+                true => (&second, &first),
+                false => (&first, &second),
+            };
             return Err(ReviewError::OutOfSchema {
                 rel: key.name.to_string(),
                 src: from.note.class.clone(),
@@ -280,6 +281,23 @@ pub fn accept(
         rel: key.name.to_string(),
         written: changes.iter().map(|(f, _)| f.path.clone()).collect(),
     })
+}
+
+/// Whether the relation runs from the candidate's `src` to its `dst`, given
+/// their classes. `None` if it fits neither way.
+///
+/// §3: the schema decides direction, and a tie keeps the candidate's.
+fn runs_forward(key: &RelationKey<'_>, src: &str, dst: &str) -> Option<bool> {
+    let fits = |from, to| admits(&key.relation.domain, from) && admits(&key.relation.range, to);
+    let (from, to) = match key.inverted {
+        true => (dst, src),
+        false => (src, dst),
+    };
+    match (fits(from, to), fits(to, from)) {
+        (true, _) => Some(!key.inverted),
+        (false, true) => Some(key.inverted),
+        (false, false) => None,
+    }
 }
 
 /// Records a rejection, adds a strike and takes the candidate out of the
@@ -378,7 +396,7 @@ fn judged_rel(connection: &Connection, cid: &str) -> rusqlite::Result<Option<Str
     connection
         .query_row(
             "SELECT rel FROM verdicts WHERE cid = ?1 AND rel IS NOT NULL AND rel <> ?2
-             ORDER BY created_at DESC LIMIT 1",
+             ORDER BY created_at DESC, rowid DESC LIMIT 1",
             params![cid, NONE],
             |row| row.get(0),
         )

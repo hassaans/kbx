@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use common::{Fixture, stderr, stdout};
 use rusqlite::Connection;
+use serde_json::{Value, json};
 
 /// The first candidate `kbx suggest` stores for the vault, best score first.
 struct Pair {
@@ -265,4 +266,150 @@ fn deciding_before_the_first_index_says_to_run_it() {
     let output = vault.kbx(&["reject", "abc"]);
     assert!(!output.status.success());
     assert!(stderr(&output).contains("kbx index"), "{}", stderr(&output));
+}
+
+fn queue(vault: &Fixture) -> Vec<Value> {
+    let out = vault.ok(&["review", "--json"]);
+    let rows: Value = serde_json::from_str(&out).unwrap();
+    rows.as_array().unwrap().clone()
+}
+
+fn verdict(vault: &Fixture, cid: &str, verdict: &str, rel: &str, rationale: &str) {
+    db(vault)
+        .execute(
+            "INSERT INTO verdicts (cid, backend, model, prompt_hash, verdict, rel, rationale,
+                 created_at)
+             VALUES (?, 'test', 'm', 'p', ?, ?, ?, 1)",
+            rusqlite::params![cid, verdict, rel, rationale],
+        )
+        .unwrap();
+}
+
+#[test]
+fn review_json_lists_the_queue_with_every_field() {
+    let vault = suggested();
+    let pair = &pairs(&vault)[0];
+    verdict(&vault, &pair.cid, "accept", "see_also", "same topic");
+
+    let rows = queue(&vault);
+    assert_eq!(rows.len(), pairs(&vault).len());
+    let first = &rows[0];
+    let title = |id: &str| -> String {
+        db(&vault)
+            .query_row("SELECT title FROM files WHERE id = ?", [id], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(first["cid"], json!(pair.cid));
+    assert_eq!(first["src"], json!(pair.src));
+    assert_eq!(first["dst"], json!(pair.dst));
+    assert_eq!(first["src_title"], json!(title(&pair.src)));
+    assert_eq!(first["dst_title"], json!(title(&pair.dst)));
+    assert_eq!(first["rel"], json!("see_also"));
+    assert_eq!(first["generators"], json!(["common_neighbors"]));
+    assert_eq!(first["verdict"], json!("accept"));
+    assert_eq!(first["rationale"], json!("same topic"));
+    assert!(first["score"].as_f64().unwrap() > 0.0);
+}
+
+#[test]
+fn review_json_leaves_the_fields_of_an_unjudged_candidate_null() {
+    let rows = queue(&suggested());
+    for field in ["rel", "verdict", "rationale"] {
+        assert_eq!(rows[0][field], Value::Null, "{field}");
+    }
+}
+
+#[test]
+fn review_json_orders_by_score_with_unsure_at_the_end() {
+    let vault = suggested();
+    let all = pairs(&vault);
+    let top = &all[0].cid;
+    verdict(&vault, top, "unsure", "none", "can't tell");
+
+    let rows = queue(&vault);
+    assert_eq!(rows.last().unwrap()["cid"], json!(top));
+    let scores: Vec<f64> = rows[..rows.len() - 1]
+        .iter()
+        .map(|row| row["score"].as_f64().unwrap())
+        .collect();
+    assert!(scores.is_sorted_by(|a, b| a >= b), "{scores:?}");
+}
+
+#[test]
+fn review_json_changes_nothing() {
+    let vault = suggested();
+    // Fold the WAL in, so that the database is one file to compare.
+    db(&vault)
+        .pragma_update(None, "wal_checkpoint", "TRUNCATE")
+        .unwrap();
+    let graph = vault.root().join(".kbx/graph.sqlite");
+    let before = fs::read(&graph).unwrap();
+    queue(&vault);
+    assert_eq!(fs::read(&graph).unwrap(), before);
+}
+
+#[test]
+fn the_queue_follows_decisions_made_on_its_cids() {
+    let vault = suggested();
+    let rows = queue(&vault);
+    let cid = |at: usize| rows[at]["cid"].as_str().unwrap();
+    vault.ok(&["accept", cid(0), "--rel", "see_also"]);
+    vault.ok(&["reject", cid(1)]);
+    vault.ok(&["defer", cid(2)]);
+
+    let left = queue(&vault);
+    assert_eq!(left.len(), rows.len() - 2);
+    assert_eq!(left[0]["cid"], json!(cid(2)), "deferred, so still first");
+}
+
+#[test]
+fn a_relation_rejected_once_does_not_return_with_its_cached_verdict() {
+    let vault = suggested();
+    let cid = pairs(&vault)[0].cid.clone();
+    verdict(&vault, &cid, "accept", "see_also", "same topic");
+    vault.ok(&["reject", &cid]);
+    suggest(&vault);
+
+    let listed = |vault: &Fixture| queue(vault).iter().any(|row| row["cid"] == json!(cid));
+    assert!(pairs(&vault).iter().any(|p| p.cid == cid));
+    assert!(!listed(&vault));
+    vault.ok(&["unreject", &cid]);
+    assert!(listed(&vault));
+}
+
+#[test]
+fn review_json_before_the_first_index_says_to_run_it() {
+    let vault = Fixture::new();
+    let output = vault.kbx(&["review", "--json"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("kbx index"), "{}", stderr(&output));
+}
+
+#[test]
+fn review_json_does_not_create_a_missing_database() {
+    let vault = Fixture::new();
+    let graph = vault.root().join(".kbx/graph.sqlite");
+    fs::remove_file(&graph).unwrap();
+    let output = vault.kbx(&["review", "--json"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("kbx index"), "{}", stderr(&output));
+    assert!(!graph.exists());
+}
+
+#[test]
+fn review_without_a_terminal_points_at_json() {
+    let vault = suggested();
+    let output = vault.kbx(&["review"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--json"), "{}", stderr(&output));
+}
+
+#[test]
+fn review_of_an_empty_queue_needs_no_terminal() {
+    let vault = Fixture::new();
+    vault.ok(&["index"]);
+    assert!(vault.ok(&["review"]).contains("nothing to review"));
+    assert_eq!(queue(&vault), Vec::<Value>::new());
 }

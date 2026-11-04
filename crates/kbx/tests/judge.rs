@@ -857,3 +857,40 @@ mod selection {
         assert_eq!(id(10), NOTE);
     }
 }
+
+mod review {
+    use super::*;
+
+    #[test]
+    fn the_queue_shows_what_a_judge_stored_and_a_rejection_of_it_stays_rejected() {
+        let vault = indexed();
+        logged_in_claude(&vault.path);
+        let mut verdicts = answers(&vault);
+        let (accepted, unsure) = (verdicts[0]["cid"].clone(), verdicts[1]["cid"].clone());
+        verdicts[0]["verdict"] = json!("accept");
+        verdicts[0]["rel"] = json!("see_also");
+        verdicts[1]["verdict"] = json!("unsure");
+        let result = claude_result(&verdicts, 0.0, 0);
+        answer(&vault.path, "claude-batch", 0, &result);
+        let output = suggest(&vault, "claude-cli");
+        assert!(output.status.success(), "{}", stderr(&output));
+
+        let queue = |vault: &Fixture| -> Vec<Value> {
+            serde_json::from_str(&vault.ok(&["review", "--json"])).unwrap()
+        };
+        let rows = queue(&vault);
+        assert_eq!(rows.len(), verdicts.len());
+        assert_eq!(rows.last().unwrap()["cid"], unsure);
+        assert_eq!(rows.last().unwrap()["verdict"], json!("unsure"));
+        let row = rows.iter().find(|row| row["cid"] == accepted).unwrap();
+        assert_eq!(row["rel"], json!("see_also"));
+        assert_eq!(row["verdict"], json!("accept"));
+        assert_eq!(row["rationale"], json!("Both cover restarts."));
+
+        vault.ok(&["reject", accepted.as_str().unwrap()]);
+        let output = suggest(&vault, "claude-cli");
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert!(cids(&vault).contains(&accepted.as_str().unwrap().to_string()));
+        assert!(queue(&vault).iter().all(|row| row["cid"] != accepted));
+    }
+}

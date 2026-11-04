@@ -5,9 +5,9 @@
 //! validates them, producing [`Finding`]s. [`index_vault`] compiles a folder
 //! of notes into a [`Graph`], the SQLite file described by a [`Project`], and
 //! [`lint_vault`] checks one against the ontology. [`accept`], [`reject`],
-//! [`defer`] and [`unreject`] record review decisions, and [`add_relation`]
-//! writes accepted relations to frontmatter. This crate never touches a model
-//! and never prints.
+//! [`defer`] and [`unreject`] record review decisions, a [`Queue`] takes them
+//! one candidate at a time, and [`add_relation`] writes accepted relations to
+//! frontmatter. This crate never touches a model and never prints.
 
 mod config;
 mod graph;
@@ -41,8 +41,8 @@ pub use ontology::{
 };
 pub use path::find_on_path;
 pub use review::{
-    Accepted, Decision, Deferred, Rejected, ReviewError, STRIKES, Unrejected, accept, cid, defer,
-    ordered, reject, suppressed_pairs, unreject,
+    Accepted, Decision, Deferred, Item, Queue, Rejected, ReviewError, STRIKES, Unrejected, accept,
+    cid, defer, excerpt, ordered, reject, suppressed_pairs, unreject,
 };
 pub use section::{Block, Section, section_key};
 pub use vault::{Finding, FindingCode, Resolved, ResolvedVia, Resolver, Severity, Vault};
