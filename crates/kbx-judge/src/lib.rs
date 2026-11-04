@@ -7,7 +7,8 @@
 //! items, [`first_ready`] picks a backend, [`route`] shares the pairs out
 //! between it and the backends `[judge.overrides]` pins folders to, and
 //! [`judge_all`] runs the batches and stores what comes back in the `verdicts`
-//! table. This crate never prints.
+//! table. It works through the trait alone, so any backend gets the verdict
+//! cache, the retry and the budget. This crate never prints.
 //!
 //! What's in a note goes to a backend, on stdin or in a request body, and
 //! nowhere else: not to a file, not to a log, not into an error, and not
@@ -18,6 +19,7 @@ mod cache;
 mod claude;
 mod codex;
 mod http;
+mod ledger;
 mod llama_server;
 mod ollama;
 mod process;
@@ -31,7 +33,7 @@ use std::fmt;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-pub use batch::{CandidateView, NoteView, Views, views, why_proposed};
+pub use batch::{CandidateView, NoteView, Views, view_tokens, views, why_proposed};
 pub use cache::{CACHE_FILE, ProbeCache};
 pub use claude::ClaudeCli;
 pub use codex::CodexCli;
@@ -39,7 +41,7 @@ pub use llama_server::LlamaServer;
 pub use ollama::Ollama;
 pub use prompt::{JudgeContext, SCHEMA, SYSTEM_PROMPT, prompt_hash};
 pub use route::{Assignment, Routes, route};
-pub use run::{Tally, backend, backends, first_ready, judge_all, pinned_backends};
+pub use run::{Plan, Tally, backend, backends, first_ready, judge_all, pending, pinned_backends};
 pub use verdict::{Decision, Verdict};
 
 /// A judge of link candidates.
@@ -52,12 +54,18 @@ pub trait Judge: Send + Sync {
     fn model(&self) -> &str;
     /// Whether [`Judge::judge`] can be expected to work right now.
     async fn available(&self) -> Availability;
-    /// Judges every pair in `batch`, or fails as a whole.
+    /// Judges every pair in `batch`, or fails as a whole. A failure that still
+    /// cost money says how much, see [`JudgeError::billed`].
     async fn judge(
         &self,
         batch: &[CandidateView],
         ctx: &JudgeContext,
     ) -> Result<Vec<Verdict>, JudgeError>;
+    /// What a call on `batch` should cost, in USD, for a budget to go by until
+    /// a call has been priced. A local backend costs nothing.
+    fn quote(&self, _batch: &[CandidateView], _ctx: &JudgeContext) -> f64 {
+        0.0
+    }
 }
 
 /// A judge backend's name, as used in `--judge`, `kbx.toml` and `verdicts`.
@@ -148,4 +156,26 @@ pub enum JudgeError {
     /// The database failed.
     #[error("database: {0}")]
     Database(#[from] rusqlite::Error),
+    /// A failure the backend still charged for, in USD: it read the batch, then
+    /// answered with something unusable.
+    #[error("{1}")]
+    Billed(f64, Box<JudgeError>),
+}
+
+impl JudgeError {
+    /// This failure, having cost `cost_usd`.
+    pub fn billed(self, cost_usd: Option<f64>) -> JudgeError {
+        match cost_usd {
+            Some(cost) if cost > 0.0 => JudgeError::Billed(cost, Box::new(self)),
+            _ => self,
+        }
+    }
+
+    /// The failure itself, and what it cost if that's known.
+    fn unbilled(self) -> (JudgeError, Option<f64>) {
+        match self {
+            JudgeError::Billed(cost, error) => (*error, Some(cost)),
+            error => (error, None),
+        }
+    }
 }

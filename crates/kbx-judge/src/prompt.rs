@@ -28,20 +28,25 @@ pub struct JudgeContext {
 impl JudgeContext {
     /// `yaml` is the text `ontology` was parsed from.
     pub fn new(ontology: Ontology, yaml: &str) -> JudgeContext {
+        JudgeContext::with_prompt(SYSTEM_PROMPT, ontology, yaml)
+    }
+
+    /// As [`JudgeContext::new`], with `prompt` in place of [`SYSTEM_PROMPT`].
+    pub fn with_prompt(prompt: &str, ontology: Ontology, yaml: &str) -> JudgeContext {
         JudgeContext {
-            system: format!("{SYSTEM_PROMPT}\n{}", render_ontology(&ontology)),
+            system: format!("{prompt}\n{}", render_ontology(&ontology)),
             schema: schema_for(&ontology.judge.vocabulary),
-            prompt_hash: prompt_hash(yaml.as_bytes()),
+            prompt_hash: prompt_hash(prompt, yaml.as_bytes()),
             ontology,
         }
     }
 }
 
-/// The SHA-256, in hex, of [`SYSTEM_PROMPT`], [`SCHEMA`] and the ontology file.
+/// The SHA-256, in hex, of the system prompt, [`SCHEMA`] and the ontology file.
 /// A verdict stands until one of those changes.
-pub fn prompt_hash(ontology: &[u8]) -> String {
+pub fn prompt_hash(prompt: &str, ontology: &[u8]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(SYSTEM_PROMPT);
+    hasher.update(prompt);
     hasher.update(SCHEMA);
     hasher.update(ontology);
     let digest = hasher.finalize();
@@ -138,7 +143,9 @@ mod tests {
         let bytes = [SYSTEM_PROMPT, SCHEMA, EXAMPLE_ONTOLOGY].concat();
         let digest = Sha256::digest(bytes);
         let expected: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(prompt_hash(EXAMPLE_ONTOLOGY.as_bytes()), expected);
-        assert_ne!(prompt_hash(b"other"), expected);
+        let hash = |prompt, ontology| prompt_hash(prompt, ontology);
+        assert_eq!(hash(SYSTEM_PROMPT, EXAMPLE_ONTOLOGY.as_bytes()), expected);
+        assert_ne!(hash(SYSTEM_PROMPT, b"other"), expected);
+        assert_ne!(hash("other", EXAMPLE_ONTOLOGY.as_bytes()), expected);
     }
 }

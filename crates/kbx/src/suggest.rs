@@ -4,25 +4,29 @@ use std::collections::BTreeMap;
 use std::env;
 use std::error::Error;
 use std::fs;
+use std::ops::RangeInclusive;
 use std::process::ExitCode;
 
 use clap::ValueEnum;
-use kbx_core::{Graph, IndexOptions, IndexState, Ontology, Project, index_state, index_vault};
+use kbx_core::{
+    Graph, IndexOptions, IndexState, JudgeConfig, Ontology, Project, index_state, index_vault,
+};
 use kbx_gen::{
     Budget, Evaluation, QmdSearch, Run, Scope, estimate_tokens, evaluate, generators, store,
     suggest,
 };
 use kbx_judge::{
-    Availability, JudgeContext, JudgeId, Tally, backend, backends, judge_all, pinned_backends,
-    route,
+    Availability, Judge as Backend, JudgeContext, JudgeId, Plan, Tally, backend, backends,
+    judge_all, pending, pinned_backends, route, view_tokens, views,
 };
 use tokio::runtime;
 use tracing::warn;
 
 use crate::qmd;
 
-/// Candidates per judge call, the default of `--batch` (§10).
-const BATCH: usize = 20;
+/// Pairs per judge call (§6.3). Below this, start-up and the prefix dominate
+/// what a call costs; above it, one failure loses more.
+const BATCH_SIZES: RangeInclusive<usize> = 10..=25;
 
 /// Who judges the candidates.
 #[derive(Clone, Copy, ValueEnum)]
@@ -47,12 +51,19 @@ pub struct Options {
     pub judge: Judge,
     pub budget: Option<usize>,
     pub stage: bool,
+    pub batch: Option<usize>,
+    pub budget_usd: Option<f64>,
     pub dry_run: bool,
     pub eval: bool,
 }
 
 pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     let project = Project::discover(&env::current_dir()?)?;
+    let size = options.batch.unwrap_or(project.config.judge.batch);
+    if !BATCH_SIZES.contains(&size) {
+        let (least, most) = (BATCH_SIZES.start(), BATCH_SIZES.end());
+        return Err(format!("the batch size must be {least} to {most}, not {size}").into());
+    }
     let yaml = fs::read_to_string(&project.ontology)
         .map_err(|error| format!("{}: {error}", project.ontology.display()))?;
     let ontology = Ontology::parse(&yaml)?;
@@ -105,10 +116,11 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     if options.generators.is_some() && !run.skipped.is_empty() {
         return Err("a generator failed, so nothing was stored".into());
     }
+    let context = JudgeContext::new(ontology, &yaml);
     if options.dry_run {
         println!("would store {} candidates", run.candidates.len());
         print_counts(&run);
-        print_batches(&graph, &run)?;
+        print_batches(options.judge, &project, &graph, &run, &context, size)?;
         if options.stage {
             println!("would stage up to {} proposals", run.candidates.len());
         }
@@ -116,8 +128,11 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         store(&graph, &run)?;
         println!("{} candidates", run.candidates.len());
         print_counts(&run);
-        let context = JudgeContext::new(ontology, &yaml);
-        judge(options.judge, &project, &graph, &run, &context)?;
+        let plan = Plan {
+            size,
+            budget_usd: options.budget_usd,
+        };
+        judge(options.judge, &project, &graph, &run, &context, plan)?;
         if options.stage {
             return stage(&project, &mut graph, &yaml, &run);
         }
@@ -161,6 +176,36 @@ fn stage(
     })
 }
 
+/// The backends `choice` allows, best first, those folders are pinned to, and
+/// the one it names if it does.
+fn eligible(
+    choice: Judge,
+    config: &JudgeConfig,
+    project: &Project,
+) -> (
+    Vec<Box<dyn Backend>>,
+    Vec<Box<dyn Backend>>,
+    Option<JudgeId>,
+) {
+    let vault = Some(project.vault.as_path());
+    let named = match choice {
+        Judge::None => return (Vec::new(), Vec::new(), None),
+        Judge::Auto => None,
+        Judge::ClaudeCli => Some(JudgeId::ClaudeCli),
+        Judge::CodexCli => Some(JudgeId::CodexCli),
+        Judge::Ollama => Some(JudgeId::Ollama),
+        Judge::LlamaServer => Some(JudgeId::LlamaServer),
+    };
+    match named {
+        Some(id) => (vec![backend(id, config, vault)], Vec::new(), named),
+        None => (
+            backends(config, vault),
+            pinned_backends(config, vault),
+            None,
+        ),
+    }
+}
+
 /// Judges what's already stored, so that a backend that can't be used leaves
 /// the candidates in place. Under `auto` that's no failure: §6.1 ends in a run
 /// with no judge. Asking for a backend by name means its verdicts are the point,
@@ -172,21 +217,13 @@ fn judge(
     graph: &Graph,
     run: &Run,
     context: &JudgeContext,
+    plan: Plan,
 ) -> Result<(), Box<dyn Error>> {
+    if matches!(choice, Judge::None) {
+        return Ok(());
+    }
     let config = &project.config.judge;
-    let vault = Some(project.vault.as_path());
-    let named = match choice {
-        Judge::None => return Ok(()),
-        Judge::Auto => None,
-        Judge::ClaudeCli => Some(JudgeId::ClaudeCli),
-        Judge::CodexCli => Some(JudgeId::CodexCli),
-        Judge::Ollama => Some(JudgeId::Ollama),
-        Judge::LlamaServer => Some(JudgeId::LlamaServer),
-    };
-    let (general, pinned) = match named {
-        Some(id) => (vec![backend(id, config, vault)], Vec::new()),
-        None => (backends(config, vault), pinned_backends(config, vault)),
-    };
+    let (general, pinned, named) = eligible(choice, config, project);
 
     runtime::Builder::new_current_thread()
         .enable_all()
@@ -201,7 +238,9 @@ fn judge(
                 pinned,
             )
             .await?;
-            for (id, availability) in &routes.passed_over {
+            // A CLI that was never installed is no surprise, and `auto` is the default.
+            let worth_saying = |p: &&(JudgeId, Availability)| p.1 != Availability::NotInstalled;
+            for (id, availability) in routes.passed_over.iter().filter(worth_saying) {
                 eprintln!("warning: {id} skipped: {availability}");
             }
             if routes.assignments.is_empty() {
@@ -231,8 +270,8 @@ fn judge(
             }
             for assignment in &routes.assignments {
                 let judge = assignment.judge.as_ref();
-                let tally = judge_all(judge, graph, &assignment.views, context, BATCH).await?;
-                print_tally(judge.id(), judge.model(), &tally);
+                let tally = judge_all(judge, graph, &assignment.views, context, plan).await?;
+                print_tally(judge.id(), judge.model(), &tally, plan.budget_usd);
             }
             Ok(())
         })
@@ -269,15 +308,22 @@ fn print_evaluation(evaluation: Evaluation, named: bool) -> Result<ExitCode, Box
     Ok(ExitCode::SUCCESS)
 }
 
-fn print_tally(id: JudgeId, model: &str, tally: &Tally) {
+fn print_tally(id: JudgeId, model: &str, tally: &Tally, budget_usd: Option<f64>) {
     println!(
-        "judged by {id} ({model}): {} accept, {} reject, {} unsure, {} unjudged",
-        tally.accepted, tally.rejected, tally.unsure, tally.unjudged
+        "judged by {id} ({model}): {} accept, {} reject, {} unsure, {} unjudged, {} error, {} already judged",
+        tally.accepted, tally.rejected, tally.unsure, tally.unjudged, tally.errored, tally.cached
     );
     let cost = tally
         .cost_usd
         .map_or(String::new(), |cost| format!("${cost:.4}, "));
     println!("  {cost}{} cached tokens", tally.cached_tokens);
+    if let (true, Some(budget)) = (tally.halted, budget_usd) {
+        println!(
+            "budget reached: spent ${:.4} of ${budget:.4}; run again to judge the {} left",
+            tally.cost_usd.unwrap_or(0.0),
+            tally.unjudged
+        );
+    }
 }
 
 fn print_counts(run: &Run) {
@@ -297,10 +343,39 @@ fn print_counts(run: &Run) {
     }
 }
 
-fn print_batches(graph: &Graph, run: &Run) -> Result<(), Box<dyn Error>> {
-    let tokens = estimate_tokens(graph, &run.candidates)?;
+/// What a real run would send. Nothing is probed, so under `auto` this is for
+/// the first backend in `judge.order`, ready or not.
+fn print_batches(
+    choice: Judge,
+    project: &Project,
+    graph: &Graph,
+    run: &Run,
+    context: &JudgeContext,
+    size: usize,
+) -> Result<(), Box<dyn Error>> {
+    let config = &project.config.judge;
+    let tokens = match eligible(choice, config, project).0.first() {
+        Some(judge) => {
+            let found = views(
+                graph,
+                &project.vault,
+                &run.candidates,
+                &config.overrides,
+                judge.id(),
+            )?;
+            let open = pending(judge.as_ref(), graph, &found.ready, context)?;
+            let id = judge.id();
+            println!(
+                "for {id}: {} already judged, {} kept away by judge.overrides",
+                found.ready.len() - open.len(),
+                found.pinned
+            );
+            open.iter().map(view_tokens).collect()
+        }
+        None => estimate_tokens(graph, &run.candidates)?,
+    };
     println!("about {} judge input tokens", tokens.iter().sum::<i64>());
-    for (index, batch) in tokens.chunks(BATCH).enumerate() {
+    for (index, batch) in tokens.chunks(size).enumerate() {
         let total: i64 = batch.iter().sum();
         println!(
             "  batch {}: {} candidates, about {total} tokens",

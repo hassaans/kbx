@@ -1,10 +1,11 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use kbx_core::find_on_path;
+use kbx_core::{Rates, find_on_path};
 use serde_json::Value;
 use tracing::warn;
 
+use crate::ledger::quote;
 use crate::process::{
     BATCH_TIMEOUT, Finished, PROBE_TIMEOUT, RunError, Workspace, brief, means_logged_out, run,
 };
@@ -20,6 +21,14 @@ const ID: JudgeId = JudgeId::CodexCli;
 /// spec's `gpt-6-luna-fast` is refused under a ChatGPT login.
 pub(crate) const DEFAULT_MODEL: &str = "gpt-6-luna";
 
+/// `gpt-6-luna`'s prices. Codex reports tokens, not money, so a budget's spend
+/// is these times the tokens. `[judge.codex] rates` replaces them.
+pub(crate) const DEFAULT_RATES: Rates = Rates {
+    input: 0.10,
+    cached_input: 0.01,
+    output: 0.50,
+};
+
 const PROBE_PROMPT: &[u8] = b"reply with ok";
 const PROBE_SCHEMA: &str = r#"{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}"#;
 
@@ -27,6 +36,7 @@ const PROBE_SCHEMA: &str = r#"{"type":"object","properties":{"ok":{"type":"boole
 #[derive(Debug, Clone)]
 pub struct CodexCli {
     model: String,
+    rates: Rates,
     cache: ProbeCache,
 }
 
@@ -35,17 +45,26 @@ pub struct CodexCli {
 struct Turn {
     /// The last agent message.
     answer: Option<String>,
+    /// `input_tokens` from `turn.completed`, cached ones included.
+    input_tokens: Option<i64>,
     /// `cached_input_tokens` from `turn.completed`.
     cached_tokens: Option<i64>,
+    /// `output_tokens` from `turn.completed`.
+    output_tokens: Option<i64>,
     completed: bool,
     /// Why the turn failed. The `error` events before it may be retries.
     failure: Option<String>,
 }
 
 impl CodexCli {
-    /// A backend that asks for `model`, with its probes kept in `cache`.
-    pub fn new(model: String, cache: ProbeCache) -> CodexCli {
-        CodexCli { model, cache }
+    /// A backend that asks for `model`, priced at `rates`, with its probes
+    /// kept in `cache`.
+    pub fn new(model: String, rates: Rates, cache: ProbeCache) -> CodexCli {
+        CodexCli {
+            model,
+            rates,
+            cache,
+        }
     }
 
     /// The §6.2 invocation. The prompt comes on stdin.
@@ -153,13 +172,25 @@ impl Judge for CodexCli {
             }
         })?;
         let spend = Spend {
-            // Codex reports tokens, not money. The cost ledger prices them.
-            cost_usd: None,
+            cost_usd: priced(&turn, &self.rates),
             cached_tokens: turn.cached_tokens,
         };
-        let answer = answer_of(turn)?;
-        read_answer(answer, batch, ctx, spend).map_err(|reason| JudgeError::Malformed(ID, reason))
+        let answer = answer_of(turn).map_err(|error| error.billed(spend.cost_usd))?;
+        read_answer(answer, batch, ctx, spend)
+            .map_err(|reason| JudgeError::Malformed(ID, reason).billed(spend.cost_usd))
     }
+
+    fn quote(&self, batch: &[CandidateView], ctx: &JudgeContext) -> f64 {
+        quote(&self.rates, batch, ctx)
+    }
+}
+
+/// What the turn's tokens come to. `None` if it didn't report any.
+fn priced(turn: &Turn, rates: &Rates) -> Option<f64> {
+    let cached = turn.cached_tokens.unwrap_or(0);
+    let output = turn.output_tokens.unwrap_or(0);
+    turn.input_tokens
+        .map(|input| rates.price(input, cached, output))
 }
 
 /// Codex has no system prompt flag, so the stable prefix opens stdin.
@@ -188,8 +219,10 @@ fn events(stdout: &str) -> Turn {
                 }
             }
             Some("turn.completed") => {
-                let cached = event["usage"].get("cached_input_tokens");
-                turn.cached_tokens = cached.and_then(Value::as_i64);
+                let tokens = |key| event["usage"].get(key).and_then(Value::as_i64);
+                turn.input_tokens = tokens("input_tokens");
+                turn.cached_tokens = tokens("cached_input_tokens");
+                turn.output_tokens = tokens("output_tokens");
                 turn.completed = true;
             }
             Some("turn.failed") => {
@@ -251,6 +284,20 @@ mod tests {
         let turn = read_turn(&finished(true, stdout)).unwrap();
         assert_eq!(turn.cached_tokens, Some(512));
         assert_eq!(answer_of(turn).unwrap(), serde_json::json!({"ok": true}));
+    }
+
+    #[test]
+    fn a_turn_is_priced_with_cached_tokens_at_their_own_rate() {
+        let stdout = r#"{"type":"turn.completed","usage":{"input_tokens":1000000,"cached_input_tokens":400000,"output_tokens":100000}}"#;
+        let rates = Rates {
+            input: 1.0,
+            cached_input: 0.5,
+            output: 10.0,
+        };
+        // 600k fresh at $1, 400k cached at $0.50, 100k out at $10.
+        let cost = priced(&events(stdout), &rates).unwrap();
+        assert!((cost - 1.8).abs() < 1e-9, "{cost}");
+        assert_eq!(priced(&Turn::default(), &rates), None);
     }
 
     #[test]

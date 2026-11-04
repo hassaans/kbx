@@ -338,6 +338,50 @@ fn review_json_orders_by_score_with_unsure_at_the_end() {
 }
 
 #[test]
+fn confidence_moves_nothing_in_the_queue() {
+    let vault = suggested();
+    let all = pairs(&vault);
+    let order = |vault: &Fixture| -> Vec<Value> {
+        queue(vault).iter().map(|row| row["cid"].clone()).collect()
+    };
+    let before = order(&vault);
+    verdict(&vault, &all[0].cid, "reject", "none", "no");
+    let last = &all[all.len() - 1].cid;
+    verdict(&vault, last, "reject", "none", "no");
+    let set = |cid: &str, confidence: f64| {
+        db(&vault)
+            .execute(
+                "UPDATE verdicts SET confidence = ? WHERE cid = ?",
+                rusqlite::params![confidence, cid],
+            )
+            .unwrap();
+    };
+    set(&all[0].cid, 0.0);
+    set(last, 1.0);
+    assert_eq!(order(&vault), before);
+}
+
+#[test]
+fn a_failed_batch_does_not_hide_the_verdict_before_it() {
+    let vault = suggested();
+    let cid = &pairs(&vault)[0].cid;
+    verdict(&vault, cid, "accept", "see_also", "same topic");
+    db(&vault)
+        .execute(
+            "INSERT INTO verdicts (cid, backend, model, prompt_hash, verdict, rationale, created_at)
+             VALUES (?, 'test', 'm', 'newer', 'error', 'timed out', 2)",
+            [cid],
+        )
+        .unwrap();
+
+    let rows = queue(&vault);
+    let row = rows.iter().find(|row| row["cid"] == json!(cid)).unwrap();
+    assert_eq!(row["verdict"], json!("accept"));
+    assert_eq!(row["rel"], json!("see_also"));
+    assert_eq!(row["rationale"], json!("same topic"));
+}
+
+#[test]
 fn review_json_changes_nothing() {
     let vault = suggested();
     // Fold the WAL in, so that the database is one file to compare.

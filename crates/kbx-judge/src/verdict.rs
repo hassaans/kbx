@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use kbx_core::{Graph, NONE};
+use kbx_core::{Graph, JUDGE_ERROR, NONE};
 use rusqlite::{Transaction, TransactionBehavior, params};
 use serde::Deserialize;
 use serde_json::Value;
@@ -146,9 +146,7 @@ pub(crate) fn store(
 ) -> rusqlite::Result<()> {
     let connection = g.connection();
     let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs() as i64);
+    let now = now();
     for verdict in verdicts {
         tx.execute(
             "INSERT OR REPLACE INTO verdicts (cid, backend, model, prompt_hash, verdict, rel,
@@ -170,6 +168,65 @@ pub(crate) fn store(
         )?;
     }
     tx.commit()
+}
+
+/// The pairs that already have an answer under this exact key. A failed batch's
+/// rows don't count, so the next run tries those pairs again.
+pub(crate) fn judged(
+    g: &Graph,
+    backend: JudgeId,
+    model: &str,
+    prompt_hash: &str,
+) -> rusqlite::Result<HashSet<String>> {
+    let mut statement = g.connection().prepare(
+        "SELECT cid FROM verdicts
+         WHERE backend = ? AND model = ? AND prompt_hash = ? AND verdict IS NOT ?",
+    )?;
+    let key = params![backend.as_str(), model, prompt_hash, JUDGE_ERROR];
+    statement.query_map(key, |row| row.get(0))?.collect()
+}
+
+/// Marks a failed batch's pairs, in one transaction, with the failure as their
+/// rationale and the call's cost shared out as a verdict's is. A [`JudgeError`]
+/// never quotes a note, so `reason` is safe to keep.
+///
+/// [`JudgeError`]: crate::JudgeError
+pub(crate) fn store_error(
+    g: &Graph,
+    backend: JudgeId,
+    model: &str,
+    prompt_hash: &str,
+    batch: &[CandidateView],
+    reason: &str,
+    cost_usd: Option<f64>,
+) -> rusqlite::Result<()> {
+    let tx = Transaction::new_unchecked(g.connection(), TransactionBehavior::Immediate)?;
+    let now = now();
+    let share = cost_usd.map(|total| total / batch.len() as f64);
+    for view in batch {
+        tx.execute(
+            "INSERT OR REPLACE INTO verdicts (cid, backend, model, prompt_hash, verdict,
+                 rationale, cost_usd, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                view.cid,
+                backend.as_str(),
+                model,
+                prompt_hash,
+                JUDGE_ERROR,
+                reason,
+                share,
+                now
+            ],
+        )?;
+    }
+    tx.commit()
+}
+
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64)
 }
 
 #[cfg(test)]

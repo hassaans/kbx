@@ -12,7 +12,9 @@ use serde_json::Value;
 use crate::JudgeId;
 
 /// About four characters to a token, as the index counts them.
-const EXCERPT_CHARS: usize = EXCERPT_TOKENS as usize * 4;
+pub(crate) const CHARS_PER_TOKEN: usize = 4;
+
+const EXCERPT_CHARS: usize = EXCERPT_TOKENS as usize * CHARS_PER_TOKEN;
 
 /// A batch item (§6.3).
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -39,6 +41,12 @@ pub struct NoteView {
     pub title: String,
     /// The start of the body, without the frontmatter.
     pub excerpt: String,
+}
+
+/// About how many input tokens `view` adds to a batch.
+pub fn view_tokens(view: &CandidateView) -> i64 {
+    let json = serde_json::to_string(view).expect("a view serializes");
+    (json.len() / CHARS_PER_TOKEN) as i64
 }
 
 /// What [`views`] came to.

@@ -155,6 +155,16 @@ fn verdict_count(vault: &Fixture) -> i64 {
         .unwrap()
 }
 
+/// The stored reason for each pair marked `error`.
+fn error_rationales(vault: &Fixture) -> Vec<String> {
+    let db = database(vault);
+    let mut statement = db
+        .prepare("SELECT rationale FROM verdicts WHERE verdict = 'error'")
+        .unwrap();
+    let rows = statement.query_map([], |row| row.get(0)).unwrap();
+    rows.map(Result::unwrap).collect()
+}
+
 /// The verdicts a judge would give for every narrow candidate. Learns the cids
 /// from a run with no judge, then clears them, as a first run would see it.
 fn answers(vault: &Fixture) -> Vec<Value> {
@@ -187,6 +197,35 @@ fn codex_events(verdicts: &[Value], cached: i64) -> String {
                       "usage": {"input_tokens": 9000, "cached_input_tokens": cached,
                                 "output_tokens": 300}});
     format!("{{\"type\":\"thread.started\"}}\n{item}\n{turn}\n")
+}
+
+/// A logged-in `claude` that rejects whatever pairs it's sent, at `cost` a call,
+/// so that a run can have any number of batches.
+fn answering_claude(path: &FakePath, cost: f64) {
+    path.tool(
+        "claude",
+        &format!(
+            r#"d="${{0%/*}}"
+if [ "$1" = auth ]; then
+  echo '{LOGGED_IN}'
+  exit 0
+fi
+case "$2" in
+  'reply with'*) echo '{PROBE_OK}'; exit 0 ;;
+esac
+echo batch >> "$d/claude.log"
+items=$(/usr/bin/grep -o '"cid":"[0-9a-f]*"' \
+  | /usr/bin/sed 's/^/{{/; s/$/,"rationale":"r","verdict":"reject","rel":"none","confidence":0.5}}/' \
+  | /usr/bin/paste -s -d , -)
+echo "{{\"is_error\":false,\"structured_output\":{{\"verdicts\":[$items]}},\"total_cost_usd\":{cost},\"usage\":{{}}}}""#
+        ),
+    );
+}
+
+/// How many batches a fake `claude` has been sent.
+fn batches(path: &FakePath) -> usize {
+    let steps = calls(path, "claude");
+    steps.iter().filter(|step| *step == "batch").count()
 }
 
 fn status_of<'a>(output: &'a str, check: &str) -> Vec<&'a str> {
@@ -493,7 +532,7 @@ mod batches {
     }
 
     #[test]
-    fn codex_verdicts_are_stored_with_cached_input_tokens_and_no_invented_cost() {
+    fn codex_verdicts_are_stored_with_cached_input_tokens_and_an_estimated_cost() {
         let vault = indexed();
         logged_in_codex(&vault.path);
         let verdicts = answers(&vault);
@@ -516,7 +555,9 @@ mod batches {
             )
             .unwrap();
         assert_eq!(count as usize, verdicts.len());
-        assert_eq!(cost, None);
+        // 6,952 fresh and 2,048 cached input tokens and 300 output, at the defaults.
+        let expected = (6952.0 * 0.10 + 2048.0 * 0.01 + 300.0 * 0.50) / 1_000_000.0;
+        assert!((cost.unwrap() - expected).abs() < 1e-9, "{cost:?}");
         assert_eq!(cached, 2048);
         assert_eq!(backend, "codex-cli");
     }
@@ -625,7 +666,7 @@ mod batches {
     }
 
     #[test]
-    fn a_malformed_claude_response_stores_nothing_and_quotes_nothing() {
+    fn a_malformed_claude_response_is_marked_error_and_quotes_nothing() {
         let bad = [
             "NOTE-TEXT is not json".to_string(),
             r#"{"is_error":false,"result":"NOTE-TEXT in prose"}"#.to_string(),
@@ -641,11 +682,13 @@ mod batches {
 
             let output = suggest(&vault, "claude-cli");
             assert!(output.status.success(), "{}", stderr(&output));
-            assert_eq!(verdict_count(&vault), 0);
+            assert_eq!(error_rationales(&vault).len(), before.len());
+            assert_eq!(verdict_count(&vault) as usize, before.len());
             assert_eq!(cids(&vault), before, "the candidates stay");
             let (out, err) = (stdout(&output), stderr(&output));
             assert!(err.contains("malformed response"), "{err}");
-            assert!(out.contains(&format!("{} unjudged", before.len())), "{out}");
+            assert!(out.contains(&format!("{} error", before.len())), "{out}");
+            assert!(!error_rationales(&vault).concat().contains("NOTE-TEXT"));
             assert!(
                 !err.contains("NOTE-TEXT") && !out.contains("NOTE-TEXT"),
                 "{err}"
@@ -654,7 +697,7 @@ mod batches {
     }
 
     #[test]
-    fn a_malformed_codex_response_stores_nothing_and_quotes_nothing() {
+    fn a_malformed_codex_response_is_marked_error_and_quotes_nothing() {
         let vault = indexed();
         logged_in_codex(&vault.path);
         let _ = answers(&vault);
@@ -664,7 +707,10 @@ mod batches {
 
         let output = suggest(&vault, "codex-cli");
         assert!(output.status.success(), "{}", stderr(&output));
-        assert_eq!(verdict_count(&vault), 0);
+        let reasons = error_rationales(&vault);
+        assert_eq!(reasons.len() as i64, verdict_count(&vault));
+        assert!(!reasons.is_empty());
+        assert!(!reasons.concat().contains("NOTE-TEXT"));
         let err = stderr(&output);
         assert!(
             err.contains("malformed response") && !err.contains("NOTE-TEXT"),
@@ -795,6 +841,8 @@ mod selection {
         let output = suggest(&vault, "auto");
         assert!(output.status.success(), "{}", stderr(&output));
         assert!(!cids(&vault).is_empty());
+        assert!(stdout(&output).contains("no judge available"));
+        assert!(!stderr(&output).contains("skipped"), "{}", stderr(&output));
     }
 
     #[test]
@@ -812,12 +860,20 @@ mod selection {
     }
 
     #[test]
-    fn no_judge_is_called_unless_asked_for() {
+    fn a_bare_suggest_judges_with_the_first_ready_backend() {
         let vault = indexed();
-        logged_in_claude(&vault.path);
+        answering_claude(&vault.path, 0.0);
         let mut args = vec!["suggest"];
         args.extend(NARROW);
-        vault.ok(&args);
+        let out = vault.ok(&args);
+        assert!(out.contains("judged by claude-cli"), "{out}");
+        assert!(batches(&vault.path) > 0);
+    }
+
+    #[test]
+    fn judge_none_calls_nobody() {
+        let vault = indexed();
+        logged_in_claude(&vault.path);
         vault.ok(&["suggest", "--judge", "none"]);
         assert!(calls(&vault.path, "claude").is_empty());
     }
@@ -1236,5 +1292,210 @@ mod review {
         assert!(output.status.success(), "{}", stderr(&output));
         assert!(cids(&vault).contains(&accepted.as_str().unwrap().to_string()));
         assert!(queue(&vault).iter().all(|row| row["cid"] != accepted));
+    }
+}
+
+mod cost_controls {
+    use super::*;
+
+    /// Every generator that needs no qmd, which comes to more than one batch.
+    const WIDE: [&str; 2] = ["--generators", "schema_gap,common_neighbors,alias_cooccur"];
+
+    fn wide(vault: &Fixture, extra: &[&str]) -> String {
+        let mut args = vec!["suggest", "--judge", "claude-cli"];
+        args.extend(WIDE);
+        args.extend(extra);
+        vault.ok(&args)
+    }
+
+    fn total_cost(vault: &Fixture) -> f64 {
+        database(vault)
+            .query_row("SELECT SUM(cost_usd) FROM verdicts", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn an_unchanged_rerun_sends_no_batch() {
+        let vault = indexed();
+        answering_claude(&vault.path, 0.01);
+        wide(&vault, &[]);
+        let first = batches(&vault.path);
+        assert!(first > 0);
+
+        let out = wide(&vault, &[]);
+        assert_eq!(batches(&vault.path), first);
+        assert!(out.contains(" already judged"), "{out}");
+    }
+
+    #[test]
+    fn verdicts_from_another_prompt_are_asked_again() {
+        let vault = indexed();
+        answering_claude(&vault.path, 0.01);
+        wide(&vault, &[]);
+        let first = batches(&vault.path);
+
+        // What a build with another `prompts/judge.system.md` would have left.
+        database(&vault)
+            .execute("UPDATE verdicts SET prompt_hash = 'another prompt'", [])
+            .unwrap();
+        wide(&vault, &[]);
+        assert_eq!(batches(&vault.path), first * 2);
+    }
+
+    #[test]
+    fn editing_the_ontology_asks_again() {
+        let vault = indexed();
+        answering_claude(&vault.path, 0.01);
+        wide(&vault, &[]);
+        let first = batches(&vault.path);
+
+        let path = vault.root().join(".kbx/ontology.yaml");
+        let text = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("{text}\n# edited\n")).unwrap();
+        vault.ok(&["index"]);
+        wide(&vault, &[]);
+        assert_eq!(batches(&vault.path), first * 2);
+    }
+
+    #[test]
+    fn the_budget_halts_the_run_and_reports_the_spend() {
+        let vault = indexed();
+        answering_claude(&vault.path, 0.06);
+        let out = wide(&vault, &["--budget-usd", "0.10", "--batch", "10"]);
+
+        assert_eq!(batches(&vault.path), 1);
+        assert!(total_cost(&vault) <= 0.10);
+        assert!(
+            out.contains("budget reached: spent $0.0600 of $0.1000"),
+            "{out}"
+        );
+        assert_eq!(verdict_count(&vault), 10);
+    }
+
+    #[test]
+    fn a_budget_too_small_for_the_first_batch_spends_nothing() {
+        let vault = indexed();
+        answering_claude(&vault.path, 0.06);
+        let out = wide(&vault, &["--budget-usd", "0"]);
+        assert_eq!(batches(&vault.path), 0);
+        assert!(out.contains("budget reached: spent $0.0000"), "{out}");
+    }
+
+    #[test]
+    fn a_budget_must_be_an_amount() {
+        let vault = indexed();
+        for bad in ["NaN", "-1", "inf", "lots"] {
+            let output = vault.kbx(&["suggest", "--judge", "none", "--budget-usd", bad]);
+            assert!(!output.status.success(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_batch_size_comes_from_the_flag_then_the_config_and_stays_in_range() {
+        let vault = indexed();
+        answering_claude(&vault.path, 0.0);
+        let config = vault.root().join("kbx.toml");
+
+        for size in ["9", "26"] {
+            let output = vault.kbx(&["suggest", "--judge", "none", "--batch", size]);
+            assert!(!output.status.success(), "{size}");
+            assert!(stderr(&output).contains("10 to 25"), "{}", stderr(&output));
+        }
+
+        let text = fs::read_to_string(&config).unwrap();
+        fs::write(&config, text.replace("batch = 20", "batch = 3")).unwrap();
+        assert!(!vault.kbx(&["suggest", "--judge", "none"]).status.success());
+        vault.ok(&["suggest", "--judge", "none", "--batch", "10"]);
+
+        let text = fs::read_to_string(&config).unwrap();
+        fs::write(&config, text.replace("batch = 3", "batch = 10")).unwrap();
+        let out = vault.ok(&["suggest", "--judge", "none", "--dry-run"]);
+        assert!(out.contains("batch 1: 10 candidates"), "{out}");
+    }
+
+    #[test]
+    fn a_dry_run_leaves_out_what_a_real_run_would_skip() {
+        let vault = indexed();
+        answering_claude(&vault.path, 0.0);
+        let mut args = vec!["suggest", "--judge", "claude-cli", "--dry-run"];
+        args.extend(NARROW);
+        let before = vault.ok(&args);
+        assert!(before.contains("batch 1:"), "{before}");
+
+        suggest(&vault, "claude-cli");
+        let sent = batches(&vault.path);
+        let after = vault.ok(&args);
+        assert!(!after.contains("batch 1:"), "{after}");
+        assert_eq!(batches(&vault.path), sent);
+    }
+
+    #[test]
+    fn codex_spend_is_its_tokens_at_the_configured_rates() {
+        let vault = indexed();
+        logged_in_codex(&vault.path);
+        let verdicts = answers(&vault);
+        // 9,000 input, 4,000 of them cached, and 300 output.
+        answer(
+            &vault.path,
+            "codex-batch",
+            0,
+            &codex_events(&verdicts, 4000),
+        );
+        let config = vault.root().join("kbx.toml");
+        let text = fs::read_to_string(&config).unwrap();
+        let text = text.replace(
+            "codex  = { model = \"gpt-6-luna\" }",
+            "codex  = { model = \"gpt-6-luna\", rates = { input = 2.0, cached_input = 0.5, output = 10.0 } }",
+        );
+        fs::write(&config, text).unwrap();
+
+        suggest(&vault, "codex-cli");
+        let expected = (5000.0 * 2.0 + 4000.0 * 0.5 + 300.0 * 10.0) / 1_000_000.0;
+        assert!((total_cost(&vault) - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_failed_batch_is_retried_then_marked_error_and_the_queue_never_shows_it() {
+        let vault = indexed();
+        logged_in_claude(&vault.path);
+        let verdicts = answers(&vault);
+        answer(&vault.path, "claude-batch", 1, "");
+
+        let out = stdout(&suggest(&vault, "claude-cli"));
+        assert!(out.contains(&format!("{} error", verdicts.len())), "{out}");
+        let sent = calls(&vault.path, "claude");
+        assert_eq!(sent.iter().filter(|step| *step == "batch").count(), 3);
+
+        let rows: Value = serde_json::from_str(&vault.ok(&["review", "--json"])).unwrap();
+        for row in rows.as_array().unwrap() {
+            assert_eq!(row["verdict"], Value::Null);
+        }
+    }
+
+    #[test]
+    fn no_confidence_accepts_anything() {
+        let vault = indexed();
+        logged_in_claude(&vault.path);
+        let mut verdicts = answers(&vault);
+        for verdict in &mut verdicts {
+            verdict["verdict"] = json!("accept");
+            verdict["rel"] = json!("see_also");
+            verdict["confidence"] = json!(1.0);
+        }
+        answer(
+            &vault.path,
+            "claude-batch",
+            0,
+            &claude_result(&verdicts, 0.0, 0),
+        );
+        suggest(&vault, "claude-cli");
+
+        let db = database(&vault);
+        let reviews: i64 = db
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(reviews, 0);
+        let rows: Value = serde_json::from_str(&vault.ok(&["review", "--json"])).unwrap();
+        assert_eq!(rows.as_array().unwrap().len(), verdicts.len());
     }
 }

@@ -25,7 +25,7 @@ const GRAPH_FILE: &str = ".kbx/graph.sqlite";
 
 /// The parts of `kbx.toml` that are read so far. Other keys are left for the
 /// tasks that use them.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Config {
     /// The vault root. `~` is the home folder, and a relative path starts at
     /// the folder holding `kbx.toml`.
@@ -46,11 +46,14 @@ pub struct Config {
 }
 
 /// The `[judge]` table of `kbx.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct JudgeConfig {
     /// Backends to try, best first.
     #[serde(default = "default_judge_order")]
     pub order: Vec<String>,
+    /// Pairs per call, unless `--batch` says otherwise.
+    #[serde(default = "default_judge_batch")]
+    pub batch: usize,
     /// The `claude-cli` backend.
     #[serde(default)]
     pub claude: JudgeBackend,
@@ -73,6 +76,7 @@ impl Default for JudgeConfig {
     fn default() -> JudgeConfig {
         JudgeConfig {
             order: default_judge_order(),
+            batch: default_judge_batch(),
             claude: JudgeBackend::default(),
             codex: JudgeBackend::default(),
             ollama: JudgeBackend::default(),
@@ -83,12 +87,40 @@ impl Default for JudgeConfig {
 }
 
 /// One backend's settings under `[judge]`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct JudgeBackend {
     /// The model to ask for. Unset means the backend's default.
     pub model: Option<String>,
     /// Where a local backend listens. Unset means its usual address.
     pub host: Option<String>,
+    /// What the model costs. Unset means the backend's default.
+    pub rates: Option<Rates>,
+}
+
+/// A model's prices, in USD per million tokens. Every field is required: one
+/// left out would price those tokens at nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rates {
+    /// Input tokens the provider had to read.
+    pub input: f64,
+    /// Input tokens served from the provider's cache.
+    pub cached_input: f64,
+    /// Output tokens.
+    pub output: f64,
+}
+
+impl Rates {
+    /// The price of a call. `input` includes `cached`, as `input_tokens` does.
+    pub fn price(&self, input: i64, cached: i64, output: i64) -> f64 {
+        let fresh = (input - cached).max(0) as f64;
+        let total = fresh * self.input + cached as f64 * self.cached_input;
+        (total + output as f64 * self.output) / 1_000_000.0
+    }
+}
+
+fn default_judge_batch() -> usize {
+    20
 }
 
 fn default_judge_order() -> Vec<String> {
@@ -199,7 +231,7 @@ pub enum Search {
 }
 
 /// A `kbx.toml` with its paths worked out.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Project {
     /// The file as written.
     pub config: Config,
@@ -386,6 +418,8 @@ qmd = {{ bin = "qmd", collections = {collections}, roots = {roots} }}
 [judge]
 order = ["claude-cli", "codex-cli", "ollama", "llama-server"]
 batch = 20
+# Budgets price Codex's tokens at `rates`, in USD per million tokens. To set them:
+# codex = {{ model = "gpt-6-luna", rates = {{ input = 0.10, cached_input = 0.01, output = 0.50 }} }}
 claude = {{ model = "haiku" }}
 codex  = {{ model = "gpt-6-luna" }}
 ollama = {{ model = "qwen3:14b", host = "http://127.0.0.1:11434" }}

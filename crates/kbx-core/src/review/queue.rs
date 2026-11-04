@@ -18,7 +18,16 @@ use crate::note::split_frontmatter;
 use crate::ontology::{NONE, Ontology};
 
 /// The verdict that puts a candidate at the end of the queue, unranked (§6.3).
+///
+/// This is the only way a verdict moves a candidate. `verdicts.confidence` is
+/// stored and never read here, or anywhere that decides something: small
+/// models' self-reported confidence is uncalibrated, so nothing is accepted or
+/// ranked by it.
 const UNSURE: &str = "unsure";
+
+/// `verdicts.verdict` for a pair whose batch failed. It marks a judge's failure,
+/// not an opinion, so it never reaches the queue and never counts as judged.
+pub const JUDGE_ERROR: &str = "error";
 
 /// The most of a note an excerpt holds: the judge's 600 tokens (§6.3), at about
 /// four characters each.
@@ -267,16 +276,17 @@ fn item(connection: &Connection, row: &Row<'_>) -> rusqlite::Result<Item> {
     })
 }
 
-/// The `verdict` and `rationale` of the row [`judged_rel`] would look at first.
+/// The `verdict` and `rationale` of the row [`judged_rel`] would look at first,
+/// which a failed batch's row, naming no relation, never is.
 fn latest_verdict(
     connection: &Connection,
     cid: &str,
 ) -> rusqlite::Result<Option<(Option<String>, Option<String>)>> {
     connection
         .query_row(
-            "SELECT verdict, rationale FROM verdicts WHERE cid = ?
+            "SELECT verdict, rationale FROM verdicts WHERE cid = ?1 AND verdict IS NOT ?2
              ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            params![cid],
+            params![cid, JUDGE_ERROR],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
