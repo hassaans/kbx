@@ -93,6 +93,8 @@ impl FakePath {
             .current_dir(dir)
             .env("PATH", self.dir())
             .env_remove("KBX_LOG")
+            .env_remove("KBX_CLAUDE_MODEL")
+            .env_remove("KBX_CODEX_MODEL")
             .output()
             .expect("kbx should run")
     }

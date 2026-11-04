@@ -23,6 +23,7 @@ kbx graph stats            # node, edge and section counts
 kbx suggest                # store link candidates from every generator
 kbx suggest --dry-run      # counts and token estimates; the database is left alone
 kbx suggest --note <id> --generators schema_gap,alias_cooccur
+kbx suggest --judge auto   # also judge them with the logged-in claude or codex CLI
 kbx watch                  # re-index saved notes and lint them, until stopped
 kbx watch --suggest        # also run `kbx suggest` 45 s after the last save
 kbx hook install           # lint staged notes on commit; prints an Obsidian recipe
@@ -32,7 +33,7 @@ kbx accept <cid>… --rel see_also   # write relations and inverses to frontmatt
 kbx reject <cid>… --reason "…"     # three rejections of a pair suppress it
 kbx defer <cid>…           # put a decision off
 kbx unreject --list        # the suppressed pairs; `kbx unreject <cid>` lifts one
-kbx doctor                 # check the vault, the index, RAM and qmd
+kbx doctor                 # check the vault, the index, RAM, the judges and qmd
 ```
 
 The pre-commit hook lints staged notes as they are on disk, so a file edited

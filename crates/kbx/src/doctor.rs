@@ -4,10 +4,13 @@ use std::env;
 use std::error::Error;
 use std::fmt;
 use std::fs;
+use std::path::Path;
 use std::process::ExitCode;
 
-use kbx_core::{ConfigError, Graph, IndexState, Ontology, Project, index_state};
+use kbx_core::{ConfigError, Graph, IndexState, JudgeConfig, Ontology, Project, index_state};
+use kbx_judge::{Availability, backends};
 use sysinfo::System;
+use tokio::runtime;
 
 use crate::qmd;
 
@@ -36,18 +39,19 @@ type Check = (Status, String);
 pub fn run() -> Result<ExitCode, Box<dyn Error>> {
     let mut healthy = true;
     let mut report = |name: &str, (status, detail): Check| {
-        println!("{name:<9}{status:<5}{detail}");
+        println!("{name:<11}{status:<5}{detail}");
         healthy &= status != Status::Fail;
     };
 
-    match Project::discover(&env::current_dir()?) {
+    let found = Project::discover(&env::current_dir()?);
+    match &found {
         Ok(project) => {
             report("vault", (Status::Ok, project.vault.display().to_string()));
             let yaml = fs::read_to_string(&project.ontology).ok();
-            let ontology = check_ontology(&project, yaml.as_deref());
+            let ontology = check_ontology(project, yaml.as_deref());
             // Staleness means nothing against a file `kbx index` would refuse.
             let usable = yaml.as_deref().filter(|_| ontology.0 == Status::Ok);
-            let index = check_index(&project, usable);
+            let index = check_index(project, usable);
             report("ontology", ontology);
             report("index", index);
         }
@@ -58,6 +62,14 @@ pub fn run() -> Result<ExitCode, Box<dyn Error>> {
         Err(error) => report("vault", (Status::Fail, error.to_string())),
     }
     report("ram", check_ram());
+
+    let project = found.as_ref().ok();
+    let default = JudgeConfig::default();
+    let config = project.map_or(&default, |project| &project.config.judge);
+    let vault = project.map(|project| project.vault.as_path());
+    for (name, check) in check_judges(config, vault)? {
+        report(&name, check);
+    }
 
     // Last, so that its report is the end of the output.
     match qmd::ensure() {
@@ -116,6 +128,38 @@ fn check_index(project: &Project, ontology: Option<&str>) -> Check {
         Some(IndexState::Stale) => (Status::Warn, format!("{counts}; stale, run `kbx index`")),
         Some(IndexState::Current) | None => (Status::Ok, counts),
     }
+}
+
+/// A row per backend, whatever is chosen, then the one that would be.
+fn check_judges(
+    config: &JudgeConfig,
+    vault: Option<&Path>,
+) -> Result<Vec<(String, Check)>, Box<dyn Error>> {
+    let runtime = runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let mut rows = Vec::new();
+    let mut chosen = None;
+    for backend in backends(config, vault) {
+        let availability = runtime.block_on(backend.available());
+        let ready = availability == Availability::Ready;
+        let status = if ready { Status::Ok } else { Status::Warn };
+        rows.push((backend.id().to_string(), (status, availability.to_string())));
+        if ready {
+            chosen = chosen.or(Some(backend.id()));
+        }
+    }
+    rows.push((
+        "judge".to_string(),
+        match chosen {
+            Some(id) => (Status::Ok, format!("{id} would be chosen")),
+            None => {
+                let detail = "none ready; `kbx suggest` would leave candidates unjudged";
+                (Status::Warn, detail.to_string())
+            }
+        },
+    ));
+    Ok(rows)
 }
 
 fn check_ram() -> Check {

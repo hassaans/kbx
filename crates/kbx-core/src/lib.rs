@@ -16,13 +16,15 @@ mod link;
 mod lint;
 mod note;
 mod ontology;
+mod path;
 mod review;
 mod section;
 mod vault;
 mod writer;
 
 pub use config::{
-    CONFIG_FILE, Config, ConfigError, EXAMPLE_ONTOLOGY, InitReport, Project, Qmd, Search, init,
+    CONFIG_FILE, Config, ConfigError, EXAMPLE_ONTOLOGY, InitReport, JudgeBackend, JudgeConfig,
+    Project, Qmd, Search, init,
 };
 pub use graph::{Graph, GraphStats, Neighbor, Node};
 pub use index::{
@@ -35,8 +37,9 @@ pub use note::{
     Frontmatter, Note, ParseError, Property, RelationEntry, parse_note, split_frontmatter,
 };
 pub use ontology::{
-    ANY, Class, Direction, Judge, NONE, Ontology, OntologyError, Relation, RelationKey,
+    ANY, Class, Direction, Judge, NONE, Ontology, OntologyError, Orientation, Relation, RelationKey,
 };
+pub use path::find_on_path;
 pub use review::{
     Accepted, Decision, Deferred, Item, Queue, Rejected, ReviewError, STRIKES, Unrejected, accept,
     cid, defer, excerpt, ordered, reject, suppressed_pairs, unreject,

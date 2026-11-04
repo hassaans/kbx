@@ -192,7 +192,8 @@ enum Command {
         #[arg(long, conflicts_with = "cids")]
         list: bool,
     },
-    /// Check the vault, the index, RAM and qmd, installing qmd if it's missing.
+    /// Check the vault, the index, RAM, the judges and qmd, installing qmd if
+    /// it's missing.
     Doctor,
 }
 
@@ -252,11 +253,12 @@ fn main() -> ExitCode {
         Command::Suggest {
             note,
             generators,
-            judge: suggest::Judge::None,
+            judge,
             dry_run,
         } => suggest::run(suggest::Options {
             note,
             generators,
+            judge,
             dry_run,
         }),
         Command::Watch {

@@ -1,4 +1,4 @@
-use kbx_core::{Direction, Ontology, OntologyError};
+use kbx_core::{Direction, Ontology, OntologyError, Orientation};
 
 const EXAMPLE: &str = include_str!("../../../schema/ontology.example.yaml");
 
@@ -113,5 +113,34 @@ fn reserved_names_are_rejected() {
             "  none:    {inverse: none,"
         )
         .contains("none")
+    );
+}
+
+#[test]
+fn a_relation_runs_the_way_its_domain_and_range_allow() {
+    let ontology = Ontology::parse(EXAMPLE).unwrap();
+    let orient = |rel, a, b| ontology.orient(rel, a, b);
+    assert_eq!(
+        orient("depends_on", "Procedure", "Concept"),
+        Some(Orientation::Forward)
+    );
+    assert_eq!(
+        orient("depends_on", "Concept", "Procedure"),
+        Some(Orientation::Reverse)
+    );
+    assert_eq!(orient("depends_on", "Concept", "Concept"), None);
+    assert_eq!(orient("none", "Concept", "Concept"), None);
+}
+
+#[test]
+fn a_relation_that_fits_both_ways_keeps_the_pairs_order() {
+    let ontology = Ontology::parse(EXAMPLE).unwrap();
+    assert_eq!(
+        ontology.orient("see_also", "Concept", "Decision"),
+        Some(Orientation::Forward)
+    );
+    assert_eq!(
+        ontology.orient("depends_on", "Procedure", "Procedure"),
+        Some(Orientation::Forward)
     );
 }

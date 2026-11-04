@@ -25,7 +25,7 @@ const NAMES: [&str; 6] = [
 ];
 
 /// The most of a note the judge sees (§6.3).
-const EXCERPT_TOKENS: i64 = 600;
+pub const EXCERPT_TOKENS: i64 = 600;
 
 /// The ids, type, title and `why_proposed` of a batch item, around its excerpts.
 const ITEM_TOKENS: i64 = 80;
