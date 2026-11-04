@@ -332,6 +332,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "kbx-core",
+ "kbx-gen",
  "rusqlite",
  "serde_json",
  "sysinfo",
@@ -360,6 +361,16 @@ dependencies = [
 [[package]]
 name = "kbx-gen"
 version = "0.1.0"
+dependencies = [
+ "kbx-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "kbx-judge"

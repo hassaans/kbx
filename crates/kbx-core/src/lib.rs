@@ -18,7 +18,7 @@ mod section;
 mod vault;
 
 pub use config::{
-    CONFIG_FILE, Config, ConfigError, EXAMPLE_ONTOLOGY, InitReport, Project, Search, init,
+    CONFIG_FILE, Config, ConfigError, EXAMPLE_ONTOLOGY, InitReport, Project, Qmd, Search, init,
 };
 pub use graph::{Graph, GraphStats, Neighbor, Node};
 pub use index::{

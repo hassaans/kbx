@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, Row};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row};
 
 /// The §4 schema, plus two tables it has no room for:
 ///
@@ -92,6 +93,25 @@ impl Graph {
         Ok(Graph { conn })
     }
 
+    /// Opens an existing database for reading, changing nothing on disk.
+    ///
+    /// A plain read-only connection to a WAL database leaves `-wal` and `-shm`
+    /// files behind, so without a WAL to read the file is opened as immutable,
+    /// which creates neither. With one, a writer may have rows there that the
+    /// main file lacks, and both sidecars are already in place.
+    pub fn open_read_only(path: &Path) -> rusqlite::Result<Graph> {
+        let mut wal = path.as_os_str().to_os_string();
+        wal.push("-wal");
+        let live = fs::metadata(PathBuf::from(wal)).is_ok_and(|file| file.len() > 0);
+        let query = if live { "mode=ro" } else { "immutable=1" };
+        let uri = format!("{}?{query}", file_uri(path));
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
+        let conn = Connection::open_with_flags(uri, flags)?;
+        // Opening is lazy: fail here, not at the first query, if it's no database.
+        conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |_| Ok(()))?;
+        Ok(Graph { conn })
+    }
+
     /// The connection, for queries this crate has no method for yet.
     pub fn connection(&self) -> &Connection {
         &self.conn
@@ -173,6 +193,42 @@ impl Graph {
     }
 }
 
+/// `path` as a `file:` URI, which SQLite needs for its query parameters.
+fn file_uri(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if cfg!(windows) {
+        uri_of(&forward_slashes(&path))
+    } else {
+        uri_of(&path)
+    }
+}
+
+/// A Windows path with `/` separators and without the `\\?\` prefix that
+/// `canonicalize` adds, which means nothing in a URI.
+fn forward_slashes(path: &str) -> String {
+    let plain = match path.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => path.strip_prefix(r"\\?\").unwrap_or(path).to_string(),
+    };
+    plain.replace('\\', "/")
+}
+
+fn uri_of(path: &str) -> String {
+    let path = path
+        .replace('%', "%25")
+        .replace('?', "%3f")
+        .replace('#', "%23");
+    let bytes = path.as_bytes();
+    if path.starts_with("//") {
+        // A network share. What follows `file://` would be the authority.
+        format!("file://{path}")
+    } else if bytes.len() > 1 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        format!("file:/{path}")
+    } else {
+        format!("file:{path}")
+    }
+}
+
 /// Reads a [`Node`] from three columns, starting at `first`.
 fn node(row: &Row<'_>, first: usize) -> rusqlite::Result<Node> {
     Ok(Node {
@@ -180,4 +236,27 @@ fn node(row: &Row<'_>, first: usize) -> rusqlite::Result<Node> {
         class: row.get(first + 1)?,
         title: row.get(first + 2)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{forward_slashes, uri_of};
+
+    #[test]
+    fn windows_paths_lose_the_verbatim_prefix() {
+        let uri = |path| uri_of(&forward_slashes(path));
+        assert_eq!(uri(r"\\?\C:\a b\g.sqlite"), "file:/C:/a b/g.sqlite");
+        assert_eq!(uri(r"C:\a\g.sqlite"), "file:/C:/a/g.sqlite");
+        assert_eq!(
+            uri(r"\\?\UNC\host\share\g.sqlite"),
+            "file:////host/share/g.sqlite"
+        );
+    }
+
+    #[test]
+    fn unix_paths_keep_their_form_and_escape_uri_characters() {
+        assert_eq!(uri_of("/a/g.sqlite"), "file:/a/g.sqlite");
+        assert_eq!(uri_of(".kbx/g.sqlite"), "file:.kbx/g.sqlite");
+        assert_eq!(uri_of("/a#b?c%d"), "file:/a%23b%3fc%25d");
+    }
 }

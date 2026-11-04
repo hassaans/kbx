@@ -53,7 +53,7 @@ pub fn ensure() -> Result<PathBuf, String> {
     })
 }
 
-fn find_on_path(program: &str) -> Option<PathBuf> {
+pub fn find_on_path(program: &str) -> Option<PathBuf> {
     // Windows has an `npm` beside `npm.cmd`, a shell script it can't run.
     let names = if cfg!(windows) {
         vec![format!("{program}.exe"), format!("{program}.cmd")]

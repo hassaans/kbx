@@ -34,6 +34,33 @@ pub struct Config {
     pub ontology: String,
     /// The search backend.
     pub search: Search,
+    /// How to reach QMD.
+    #[serde(default)]
+    pub qmd: Qmd,
+}
+
+/// The `qmd` key of `kbx.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Qmd {
+    /// The program to run.
+    #[serde(default = "default_qmd_bin")]
+    pub bin: String,
+    /// The QMD collections to search. Empty means QMD's default ones.
+    #[serde(default)]
+    pub collections: Vec<String>,
+}
+
+impl Default for Qmd {
+    fn default() -> Qmd {
+        Qmd {
+            bin: default_qmd_bin(),
+            collections: Vec::new(),
+        }
+    }
+}
+
+fn default_qmd_bin() -> String {
+    "qmd".to_string()
 }
 
 /// A search backend.

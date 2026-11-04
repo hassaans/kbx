@@ -1,5 +1,6 @@
 mod doctor;
 mod qmd;
+mod suggest;
 
 use std::env;
 use std::error::Error;
@@ -95,6 +96,21 @@ enum Command {
         #[command(subcommand)]
         query: GraphQuery,
     },
+    /// Propose missing links and store them as candidates.
+    Suggest {
+        /// Keep only pairs touching this note.
+        #[arg(long)]
+        note: Option<String>,
+        /// Run only these generators, and fail if one can't run.
+        #[arg(long, value_delimiter = ',')]
+        generators: Option<Vec<String>>,
+        /// Who judges the candidates.
+        #[arg(long, value_enum, default_value_t = suggest::Judge::None)]
+        judge: suggest::Judge,
+        /// Print counts and token estimates; leave the database alone.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Check the vault, the index, RAM and qmd, installing qmd if it's missing.
     Doctor,
 }
@@ -137,6 +153,16 @@ fn main() -> ExitCode {
             paths,
         } => run_lint(format, strict, &paths),
         Command::Graph { query } => run_graph(query),
+        Command::Suggest {
+            note,
+            generators,
+            judge: suggest::Judge::None,
+            dry_run,
+        } => suggest::run(suggest::Options {
+            note,
+            generators,
+            dry_run,
+        }),
         Command::Doctor => doctor::run(),
     };
     match result {
