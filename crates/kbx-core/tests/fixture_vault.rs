@@ -37,7 +37,10 @@ fn load() -> (Vault, Vec<String>) {
         match parse_note(relative.clone(), &fs::read_to_string(&file).unwrap()) {
             Ok(note) => notes.push(note),
             Err(ParseError::NoFrontmatter) => plain.push(relative.display().to_string()),
-            Err(_) => assert!(MALFORMED.contains(&relative.to_str().unwrap())),
+            Err(_) => {
+                let path = relative.to_str().unwrap().replace('\\', "/");
+                assert!(MALFORMED.contains(&path.as_str()), "{path}");
+            }
         }
     }
     (Vault::new(notes), plain)
