@@ -2,7 +2,7 @@
 # Decides whether this run publishes, and writes `version` and `publish` to
 # $GITHUB_OUTPUT. Only a v* tag publishes, and never on a dry run. Fails before
 # anything is built if the versions drift, the tag doesn't match them, or a
-# publish run is missing a token.
+# publish run is missing a token or npm refuses it.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -29,6 +29,13 @@ if [[ $publish == true ]]; then
     fi
   done
   [[ $missing == 0 ]] || exit 1
+
+  # Here, because a token that has expired would otherwise only fail after the
+  # GitHub Release is out.
+  if ! NODE_AUTH_TOKEN=$NPM_TOKEN npm whoami >/dev/null; then
+    echo "preflight: npm refused NPM_TOKEN. Replace it under Settings > Secrets and variables > Actions, then re-run this workflow." >&2
+    exit 1
+  fi
 fi
 
 echo "preflight: version $version, publish=$publish"
