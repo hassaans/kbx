@@ -57,6 +57,12 @@ pub struct JudgeConfig {
     /// The `codex-cli` backend.
     #[serde(default)]
     pub codex: JudgeBackend,
+    /// The `ollama` backend.
+    #[serde(default)]
+    pub ollama: JudgeBackend,
+    /// The `llama-server` backend.
+    #[serde(default)]
+    pub llama_server: JudgeBackend,
     /// Folders pinned to one backend, by path from the vault root. Their notes
     /// are never shown to another.
     #[serde(default)]
@@ -69,6 +75,8 @@ impl Default for JudgeConfig {
             order: default_judge_order(),
             claude: JudgeBackend::default(),
             codex: JudgeBackend::default(),
+            ollama: JudgeBackend::default(),
+            llama_server: JudgeBackend::default(),
             overrides: BTreeMap::new(),
         }
     }
@@ -79,6 +87,8 @@ impl Default for JudgeConfig {
 pub struct JudgeBackend {
     /// The model to ask for. Unset means the backend's default.
     pub model: Option<String>,
+    /// Where a local backend listens. Unset means its usual address.
+    pub host: Option<String>,
 }
 
 fn default_judge_order() -> Vec<String> {
@@ -379,6 +389,7 @@ batch = 20
 claude = {{ model = "haiku" }}
 codex  = {{ model = "gpt-6-luna" }}
 ollama = {{ model = "qwen3:14b", host = "http://127.0.0.1:11434" }}
+llama_server = {{ host = "http://127.0.0.1:8080" }}
 
 [judge.overrides]
 "#

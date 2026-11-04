@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use kbx_core::{ConfigError, Graph, IndexState, JudgeConfig, Ontology, Project, index_state};
-use kbx_judge::{Availability, backends};
+use kbx_judge::{Availability, JudgeId, backend};
 use sysinfo::System;
 use tokio::runtime;
 
@@ -39,7 +39,7 @@ type Check = (Status, String);
 pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
     let mut healthy = true;
     let mut report = |name: &str, (status, detail): Check| {
-        println!("{name:<12}{status:<5}{detail}");
+        println!("{name:<14}{status:<5}{detail}");
         healthy &= status != Status::Fail;
     };
 
@@ -135,7 +135,8 @@ fn check_index(project: &Project, ontology: Option<&str>) -> Check {
     }
 }
 
-/// A row per backend, whatever is chosen, then the one that would be.
+/// A row per backend, whatever is chosen and whether or not `judge.order` has
+/// it, then the one that would be chosen.
 fn check_judges(
     config: &JudgeConfig,
     vault: Option<&Path>,
@@ -143,15 +144,27 @@ fn check_judges(
     let runtime = runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
+    let order: Vec<JudgeId> = config
+        .order
+        .iter()
+        .filter_map(|name| JudgeId::parse(name))
+        .collect();
+    let rest = JudgeId::ALL.into_iter().filter(|id| !order.contains(id));
     let mut rows = Vec::new();
     let mut chosen = None;
-    for backend in backends(config, vault) {
+    for id in order.iter().copied().chain(rest) {
+        let backend = backend(id, config, vault);
         let availability = runtime.block_on(backend.available());
         let ready = availability == Availability::Ready;
         let status = if ready { Status::Ok } else { Status::Warn };
-        rows.push((backend.id().to_string(), (status, availability.to_string())));
-        if ready {
-            chosen = chosen.or(Some(backend.id()));
+        // Ollama's depends on the memory free, so it's worth seeing.
+        let detail = match id {
+            JudgeId::Ollama => format!("{availability} ({})", backend.model()),
+            _ => availability.to_string(),
+        };
+        rows.push((id.to_string(), (status, detail)));
+        if ready && order.contains(&id) {
+            chosen = chosen.or(Some(id));
         }
     }
     rows.push((

@@ -61,15 +61,42 @@ pub fn views(
     overrides: &BTreeMap<String, String>,
     judge: JudgeId,
 ) -> rusqlite::Result<Views> {
+    collect(g, vault, candidates, overrides, judge, false)
+}
+
+/// Like [`views`], but only the pairs with a note pinned to `judge`: what falls
+/// to it however the rest of the run is judged.
+pub(crate) fn pinned_views(
+    g: &Graph,
+    vault: &Path,
+    candidates: &[Proposal],
+    overrides: &BTreeMap<String, String>,
+    judge: JudgeId,
+) -> rusqlite::Result<Views> {
+    collect(g, vault, candidates, overrides, judge, true)
+}
+
+fn collect(
+    g: &Graph,
+    vault: &Path,
+    candidates: &[Proposal],
+    overrides: &BTreeMap<String, String>,
+    judge: JudgeId,
+    only_pinned: bool,
+) -> rusqlite::Result<Views> {
     let mut found = Views::default();
     for candidate in candidates {
         let (Some(src), Some(dst)) = (locate(g, &candidate.src)?, locate(g, &candidate.dst)?)
         else {
-            found.unreadable += 1;
+            // Already counted, when this is the second pass over the pairs.
+            found.unreadable += usize::from(!only_pinned);
             continue;
         };
         if pinned_away(&src.0, overrides, judge) || pinned_away(&dst.0, overrides, judge) {
             found.pinned += 1;
+            continue;
+        }
+        if only_pinned && pin(&src.0, overrides).is_none() && pin(&dst.0, overrides).is_none() {
             continue;
         }
         let (Ok(src), Ok(dst)) = (src.read(vault), dst.read(vault)) else {
@@ -118,6 +145,11 @@ fn locate(g: &Graph, id: &str) -> rusqlite::Result<Option<Located>> {
 
 /// Whether the most specific override covering `path` names another backend.
 fn pinned_away(path: &str, overrides: &BTreeMap<String, String>, judge: JudgeId) -> bool {
+    pin(path, overrides).is_some_and(|backend| backend != judge.as_str())
+}
+
+/// What the most specific override covering `path` names.
+fn pin<'a>(path: &str, overrides: &'a BTreeMap<String, String>) -> Option<&'a str> {
     let path = path.replace('\\', "/");
     let covers = |folder: &str| {
         let folder = folder.trim_end_matches('/');
@@ -128,7 +160,7 @@ fn pinned_away(path: &str, overrides: &BTreeMap<String, String>, judge: JudgeId)
         .iter()
         .filter(|(folder, _)| covers(folder))
         .max_by_key(|(folder, _)| folder.trim_end_matches('/').len())
-        .is_some_and(|(_, backend)| backend != judge.as_str())
+        .map(|(_, backend)| backend.as_str())
 }
 
 fn excerpt(text: &str) -> String {

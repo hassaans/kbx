@@ -2,12 +2,13 @@ use std::env;
 use std::path::Path;
 
 use kbx_core::{Graph, JudgeBackend, JudgeConfig};
+use sysinfo::System;
 use tracing::warn;
 
 use crate::verdict::store;
 use crate::{
     Availability, CandidateView, ClaudeCli, CodexCli, Decision, Judge, JudgeContext, JudgeError,
-    JudgeId, ProbeCache, claude, codex,
+    JudgeId, LlamaServer, Ollama, ProbeCache, claude, codex, llama_server, ollama,
 };
 
 /// What [`judge_all`] came to.
@@ -40,6 +41,25 @@ pub fn backend(id: JudgeId, config: &JudgeConfig, vault: Option<&Path>) -> Box<d
             let model = model("KBX_CODEX_MODEL", &config.codex, codex::DEFAULT_MODEL);
             Box::new(CodexCli::new(model, cache))
         }
+        JudgeId::Ollama => {
+            let configured = || config.ollama.model.clone();
+            let default = || ollama::DEFAULT_MODEL.to_string();
+            let model = from_env("KBX_OLLAMA_MODEL").unwrap_or_else(|| {
+                ollama::fit(configured().unwrap_or_else(default), free_memory())
+            });
+            let host = from_env("OLLAMA_HOST").or_else(|| config.ollama.host.clone());
+            Box::new(Ollama::new(model, host.as_deref()))
+        }
+        JudgeId::LlamaServer => {
+            let backend = &config.llama_server;
+            let model = model(
+                "KBX_LLAMA_SERVER_MODEL",
+                backend,
+                llama_server::DEFAULT_MODEL,
+            );
+            let host = from_env("KBX_LLAMA_SERVER_HOST").or_else(|| backend.host.clone());
+            Box::new(LlamaServer::new(model, host.as_deref()))
+        }
     }
 }
 
@@ -49,10 +69,38 @@ pub fn backends(config: &JudgeConfig, vault: Option<&Path>) -> Vec<Box<dyn Judge
     ids.map(|id| backend(id, config, vault)).collect()
 }
 
+/// The backends `[judge.overrides]` names, once each. `none` isn't one: it
+/// keeps a folder from every judge. Any other name this build doesn't know
+/// keeps it from every judge too, which is the safe reading of a typo.
+pub fn pinned_backends(config: &JudgeConfig, vault: Option<&Path>) -> Vec<Box<dyn Judge>> {
+    let mut ids = Vec::new();
+    for name in config.overrides.values() {
+        match JudgeId::parse(name) {
+            Some(id) if !ids.contains(&id) => ids.push(id),
+            None if name != "none" => warn!("judge.overrides names no backend `{name}`"),
+            _ => {}
+        }
+    }
+    ids.into_iter()
+        .map(|id| backend(id, config, vault))
+        .collect()
+}
+
 fn model(variable: &str, config: &JudgeBackend, default: &str) -> String {
-    let set = env::var(variable).ok().filter(|model| !model.is_empty());
-    set.or_else(|| config.model.clone())
+    from_env(variable)
+        .or_else(|| config.model.clone())
         .unwrap_or_else(|| default.to_string())
+}
+
+fn from_env(variable: &str) -> Option<String> {
+    env::var(variable).ok().filter(|value| !value.is_empty())
+}
+
+/// What the machine has free, in bytes, if it can say.
+fn free_memory() -> Option<u64> {
+    let mut system = System::new().ok()?;
+    system.refresh_memory();
+    Some(system.available_memory()).filter(|free| *free > 0)
 }
 
 /// Goes down `backends`, stopping at the first that's ready. Also returns what
