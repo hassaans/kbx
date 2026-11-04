@@ -8,7 +8,7 @@ use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use kbx_core::{Graph, IndexOptions, Project, index_vault, is_note_path};
 use notify::event::{EventKind, ModifyKind};
@@ -44,8 +44,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     println!("watching {}", project.vault.display());
 
     let mut timers = Timers::new(&options);
-    let mut saved: BTreeSet<PathBuf> = BTreeSet::new();
-    let started = Instant::now();
+    let mut saved = BTreeSet::new();
     loop {
         let message = match timers.next() {
             Some(at) => events.recv_timeout(at.saturating_duration_since(Instant::now())),
@@ -53,9 +52,6 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         };
         match message {
             Ok(Ok(batch)) => {
-                for event in &batch {
-                    eprintln!("DIAG {:?} batch {:?} {:?}", started.elapsed(), event.kind, event.paths);
-                }
                 let (paths, rescan) = changed_paths(&project.vault, &batch);
                 if rescan {
                     timers.reconcile_now();
@@ -76,14 +72,17 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         }
 
         if timers.take_index(Instant::now()) {
-            let paths: Vec<PathBuf> = mem::take(&mut saved).into_iter().collect();
-            eprintln!("DIAG {:?} index {:?}", started.elapsed(), paths);
-            match update(&project, paths) {
-                Ok(changed) => timers.after_batch(changed),
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    timers.retry();
-                }
+            // Windows can hold back the events of a burst until it ends, so
+            // the files have the last word on whether the saves have stopped.
+            match since_last_write(&saved).filter(|quiet| *quiet < options.debounce) {
+                Some(quiet) => timers.index_after(Instant::now(), options.debounce - quiet),
+                None => match update(&project, mem::take(&mut saved).into_iter().collect()) {
+                    Ok(changed) => timers.after_batch(changed),
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        timers.retry();
+                    }
+                },
             }
         }
         if timers.take_reconcile() {
@@ -155,7 +154,11 @@ impl Timers {
     /// Every save starts the wait again, so a burst is indexed once it ends,
     /// however long it lasts.
     fn after_save(&mut self, now: Instant) {
-        self.index_at = Some(now + self.debounce);
+        self.index_after(now, self.debounce);
+    }
+
+    fn index_after(&mut self, now: Instant, wait: Duration) {
+        self.index_at = Some(now + wait);
     }
 
     fn take_index(&mut self, now: Instant) -> bool {
@@ -209,6 +212,16 @@ impl Timers {
         }
         due
     }
+}
+
+/// How long ago the most recently written of `paths` was written. A path that
+/// is gone or dated in the future says nothing, so it can't hold up the index.
+fn since_last_write(paths: &BTreeSet<PathBuf>) -> Option<Duration> {
+    let now = SystemTime::now();
+    let written = paths
+        .iter()
+        .filter_map(|path| fs::metadata(path).ok()?.modified().ok());
+    written.filter_map(|at| now.duration_since(at).ok()).min()
 }
 
 /// Indexes `paths`, or the whole vault if there are none, and lints what
@@ -328,6 +341,18 @@ mod tests {
         timers.after_save(start + DEBOUNCE);
         assert!(!timers.take_index(start + DEBOUNCE));
         assert!(timers.take_index(start + DEBOUNCE * 2));
+    }
+
+    #[test]
+    fn a_file_written_just_now_counts_and_a_missing_one_does_not() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let note = dir.path().join("note.md");
+        let gone = BTreeSet::from([dir.path().join("gone.md")]);
+        assert_eq!(since_last_write(&gone), None);
+
+        fs::write(&note, "saved").unwrap();
+        let quiet = since_last_write(&BTreeSet::from([note]));
+        assert!(quiet.is_none_or(|quiet| quiet < Duration::from_secs(60)));
     }
 
     #[test]
