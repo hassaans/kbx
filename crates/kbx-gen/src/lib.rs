@@ -2,7 +2,7 @@
 //!
 //! Each [`Generator`] proposes pairs of unlinked notes from one signal.
 //! [`suggest`] runs them, unions their proposals on the pair, drops linked and
-//! rejected pairs and applies the [`Budget`]; [`store`] writes the result to
+//! suppressed pairs and applies the [`Budget`]; [`store`] writes the result to
 //! the `candidates` table. This crate never prints.
 
 mod alias;
@@ -19,9 +19,10 @@ use kbx_core::{Graph, Ontology};
 use serde_json::Value;
 
 pub use alias::AliasCooccur;
+pub use kbx_core::cid;
 pub use knn::QmdKnn;
 pub use pipeline::{
-    Budget, Proposal, Run, UnknownGenerator, cid, estimate_tokens, generators, store, suggest,
+    Budget, Proposal, Run, UnknownGenerator, estimate_tokens, generators, store, suggest,
 };
 pub use schema::SchemaGap;
 pub use search::{Hit, QmdSearch, Query, Search, SearchError};

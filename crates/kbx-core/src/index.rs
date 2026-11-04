@@ -737,7 +737,7 @@ fn relink(tx: &Transaction<'_>, ontology: &Ontology) -> rusqlite::Result<()> {
     write_edges(tx, &wanted)
 }
 
-fn load_resolver(tx: &Transaction<'_>) -> rusqlite::Result<(Resolver, Vec<String>)> {
+pub(crate) fn load_resolver(tx: &Transaction<'_>) -> rusqlite::Result<(Resolver, Vec<String>)> {
     let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
     let mut statement = tx.prepare("SELECT id, alias FROM aliases")?;
     let mut rows = statement.query([])?;
@@ -845,7 +845,7 @@ fn set_meta(tx: &Transaction<'_>, key: &str, value: &str) -> rusqlite::Result<()
     Ok(())
 }
 
-fn sha256(bytes: &[u8]) -> String {
+pub(crate) fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))

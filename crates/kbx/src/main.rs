@@ -1,6 +1,7 @@
 mod doctor;
 mod hook;
 mod qmd;
+mod review;
 mod suggest;
 mod watch;
 
@@ -136,6 +137,53 @@ enum Command {
         #[command(subcommand)]
         action: HookAction,
     },
+    /// Write candidates to frontmatter: the relation on one note, its inverse
+    /// on the other. Refused if either note changed since `kbx suggest`.
+    Accept {
+        /// The candidates.
+        #[arg(required = true)]
+        cids: Vec<String>,
+        /// The relation, where no judge named one or to overrule it.
+        #[arg(long)]
+        rel: Option<String>,
+        /// Why, kept in the reviews table.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Take candidates out of the queue. Three rejections of a pair suppress
+    /// it from every generator.
+    Reject {
+        /// The candidates.
+        #[arg(required = true)]
+        cids: Vec<String>,
+        /// The relation rejected, if not the one the judge named.
+        #[arg(long)]
+        rel: Option<String>,
+        /// Why, kept in the reviews table.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Put off a decision, leaving candidates in the queue.
+    Defer {
+        /// The candidates.
+        #[arg(required = true)]
+        cids: Vec<String>,
+        /// The relation in question, if not the one the judge named.
+        #[arg(long)]
+        rel: Option<String>,
+        /// Why, kept in the reviews table.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Clear a pair's strikes, so generators can propose it again.
+    Unreject {
+        /// The pairs' cids, which `--list` prints.
+        #[arg(required_unless_present = "list")]
+        cids: Vec<String>,
+        /// Print the suppressed pairs instead.
+        #[arg(long, conflicts_with = "cids")]
+        list: bool,
+    },
     /// Check the vault, the index, RAM and qmd, installing qmd if it's missing.
     Doctor,
 }
@@ -216,6 +264,11 @@ fn main() -> ExitCode {
         Command::Hook {
             action: HookAction::Install { force },
         } => hook::install(force),
+        Command::Accept { cids, rel, reason } => review::accept(&cids, &rel, &reason),
+        Command::Reject { cids, rel, reason } => review::reject(&cids, &rel, &reason),
+        Command::Defer { cids, rel, reason } => review::defer(&cids, &rel, &reason),
+        Command::Unreject { cids, list: false } => review::unreject(&cids),
+        Command::Unreject { list: true, .. } => review::list_suppressed(),
         Command::Doctor => doctor::run(),
     };
     match result {

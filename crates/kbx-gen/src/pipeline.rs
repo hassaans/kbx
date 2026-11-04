@@ -1,10 +1,9 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use kbx_core::Graph;
-use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use kbx_core::{Graph, cid, suppressed_pairs};
+use rusqlite::{Transaction, TransactionBehavior, params};
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 
 use crate::alias::AliasCooccur;
 use crate::knn::QmdKnn;
@@ -71,7 +70,7 @@ pub struct Proposal {
 pub struct Run {
     /// What to keep, best first.
     pub candidates: Vec<Proposal>,
-    /// Pairs dropped for being linked or rejected.
+    /// Pairs dropped for being linked or suppressed by rejections.
     pub dropped: usize,
     /// Pairs the [`Budget`] left out.
     pub over_budget: usize,
@@ -83,20 +82,6 @@ pub struct Run {
 #[derive(Debug, thiserror::Error)]
 #[error("unknown generator {0}; the generators are {list}", list = NAMES.join(", "))]
 pub struct UnknownGenerator(String);
-
-/// The candidate id: the first 32 hex digits of the SHA-256 of the two note
-/// ids, lower one first, joined by a NUL.
-///
-/// It depends on nothing but the pair, so a re-run lands on the same row and
-/// the verdict cache stays valid. The order is fixed because a pair is one
-/// question for the judge whichever way the generators found it; direction
-/// comes from the schema (§3).
-pub fn cid(src: &str, dst: &str) -> String {
-    let (a, b) = ordered(src, dst);
-    let digest = Sha256::digest(format!("{a}\0{b}"));
-    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    hex[..32].to_string()
-}
 
 /// The generators called `names`, or all of them, in the union's order.
 /// `qmd_knn` needs `search`, and without one is left out of "all of them".
@@ -174,11 +159,11 @@ pub fn suggest(
     }
 
     let snapshot = Snapshot::load(g)?;
-    let rejected = rejected(g.connection())?;
+    let suppressed = suppressed_pairs(g.connection())?;
     let found = union.len();
     let mut proposals: Vec<Proposal> = union
         .into_iter()
-        .filter(|(pair, _)| !rejected.contains(pair) && !snapshot.linked(&pair.0, &pair.1))
+        .filter(|(pair, _)| !suppressed.contains(pair) && !snapshot.linked(&pair.0, &pair.1))
         .map(|(_, merged)| merged.proposal())
         .collect();
     let dropped = found - proposals.len();
@@ -250,32 +235,23 @@ fn squash(raw: f64) -> f64 {
     raw / (1.0 + raw)
 }
 
-fn rejected(connection: &Connection) -> rusqlite::Result<HashSet<(String, String)>> {
-    let mut statement =
-        connection.prepare("SELECT src, dst FROM reviews WHERE decision = 'reject'")?;
-    let rows = statement.query_map([], |row| {
-        let (src, dst): (String, String) = (row.get(0)?, row.get(1)?);
-        Ok(ordered(&src, &dst))
-    })?;
-    rows.collect()
-}
-
 /// Writes a run to `candidates`, in one transaction.
 ///
 /// A run can be limited by note or generator, so rows it didn't find stay. A
 /// pair it did find is replaced, keeping its `created_at`. A pair since linked
-/// or rejected, or whose notes are gone, is neither kept nor written.
+/// or suppressed, or whose notes are gone, is neither kept nor written. Each
+/// row records the `content_hash` of both notes, for `kbx accept` to check.
 pub fn store(g: &Graph, run: &Run) -> Result<(), GenError> {
     let connection = g.connection();
     // Immediate, so that what's checked here is still true at the commit.
     let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
     let snapshot = Snapshot::load(g)?;
-    let rejected = rejected(connection)?;
+    let suppressed = suppressed_pairs(connection)?;
     let eligible = |src: &str, dst: &str| {
         snapshot.notes.contains_key(src)
             && snapshot.notes.contains_key(dst)
             && !snapshot.linked(src, dst)
-            && !rejected.contains(&ordered(src, dst))
+            && !suppressed.contains(&ordered(src, dst))
     };
 
     let mut statement = tx.prepare("SELECT cid, src, dst FROM candidates")?;
@@ -296,11 +272,15 @@ pub fn store(g: &Graph, run: &Run) -> Result<(), GenError> {
         let generators = Value::from(candidate.generators.clone()).to_string();
         let features = Value::from(candidate.features.clone()).to_string();
         tx.execute(
-            "INSERT INTO candidates (cid, src, dst, generators, features, score, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO candidates (cid, src, dst, generators, features, score, created_at,
+                 src_hash, dst_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                 (SELECT content_hash FROM files WHERE id = ?2),
+                 (SELECT content_hash FROM files WHERE id = ?3))
              ON CONFLICT(cid) DO UPDATE SET src = excluded.src, dst = excluded.dst,
                  generators = excluded.generators, features = excluded.features,
-                 score = excluded.score",
+                 score = excluded.score, src_hash = excluded.src_hash,
+                 dst_hash = excluded.dst_hash",
             params![
                 candidate.cid,
                 candidate.src,

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use kbx_core::Graph;
+pub(crate) use kbx_core::ordered;
 
 /// A note, as far as the generators need it.
 pub(crate) struct NoteRow {
@@ -101,15 +102,6 @@ impl Snapshot {
     /// The typed degree of a note.
     pub(crate) fn degree(&self, id: &str) -> usize {
         self.neighbors.get(id).map_or(0, BTreeSet::len)
-    }
-}
-
-/// The pair with the lower id first.
-pub(crate) fn ordered(a: &str, b: &str) -> (String, String) {
-    if a <= b {
-        (a.to_string(), b.to_string())
-    } else {
-        (b.to_string(), a.to_string())
     }
 }
 
