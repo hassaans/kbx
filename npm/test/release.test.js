@@ -18,7 +18,7 @@ const PUBLISHERS = { cargo: 'exit 97', curl: 'exit 97', gh: 'exit 97', npm: 'exi
 
 // Puts fake tools on PATH, given as { name: bash body }, and runs a release
 // script with them. Returns the result plus each fake's calls, one per line.
-function run(t, script, args, { tools = {}, env = {}, scripts = SCRIPTS, cwd } = {}) {
+function run(t, script, args, { tools = {}, env = {}, scripts = SCRIPTS, cwd, inheritedPath = process.env.PATH } = {}) {
   const dir = tempDir(t);
   const calls = path.join(dir, 'calls');
   const output = path.join(dir, 'output');
@@ -38,7 +38,7 @@ function run(t, script, args, { tools = {}, env = {}, scripts = SCRIPTS, cwd } =
     encoding: 'utf8',
     env: {
       ...inherited,
-      PATH: `${dir}${path.delimiter}${process.env.PATH}`,
+      PATH: `${dir}${path.delimiter}${inheritedPath}`,
       CALLS: calls,
       GITHUB_OUTPUT: output,
       GH_TOKEN: 'placeholder',
@@ -375,6 +375,231 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
       assert.equal(result.status, 1);
       assert.equal(result.calls.length, 1);
       assert.match(result.stderr, /HTTP 502/);
+    });
+  });
+
+  describe('smoke scripts', () => {
+    const PLATFORM = 'kbx-linux-x64-gnu';
+    const VAULT = path.join(REPO, 'tests', 'fixtures', 'vault');
+    const ROW = 'printf "%-14s%-5s%s\\n"';
+
+    // A published kbx that behaves, with FAKE_* in the environment for the
+    // one way a test wants it to misbehave. npm installs it as `kbx`.
+    const FAKE_KBX = `
+      here=$(dirname "$0")
+      case $1 in
+        --version) echo "kbx \${FAKE_VERSION:-1.2.3}" ;;
+        doctor)
+          [[ $FAKE_DOCTOR != noisy ]] || echo "added 300 packages" >&2
+          if [[ $FAKE_DOCTOR == fails ]]; then ${ROW} qmd fail "not installed"; exit 1; fi
+          if [[ $FAKE_DOCTOR == unhealthy ]]; then ${ROW} qmd ok "$here/qmd"; exit 1; fi
+          if [[ $FAKE_DOCTOR == moves && -e $here/qmd ]]; then ${ROW} qmd ok /elsewhere/qmd; exit 0; fi
+          if [[ $FAKE_DOCTOR != skips ]]; then touch "$here/qmd"; chmod +x "$here/qmd"; fi
+          if [[ -f kbx.toml ]]; then
+            ${ROW} vault ok "$PWD"
+            ${ROW} index "\${FAKE_INDEX_ROW:-ok}" "25 notes, 58 edges, 29 sections, 2 hidden links"
+          fi
+          ${ROW} qmd ok "$here/qmd"
+          ;;
+        init)
+          touch kbx.toml
+          [[ $FAKE_INIT != fails ]] || exit 1
+          ;;
+        index) echo "\${FAKE_INDEXED:-indexed 25, 0 unchanged, removed 0, 2 skipped, 2 failed, 2 hidden links}" ;;
+        lint)
+          echo "\${FAKE_LINT:-12 errors, 1 warning}"
+          exit "\${FAKE_LINT_STATUS:-1}"
+          ;;
+      esac`;
+
+    const FAKE_NPM = `
+      here=$(dirname "$0")
+      case "$1 $2" in
+        'i -g')
+          cp "$here/fake-kbx" "$here/kbx"
+          [[ -z $FAKE_INSTALL_FAILS ]] || exit 1
+          for pkg in \${FAKE_PLATFORMS-${PLATFORM}}; do mkdir -p "$here/root/kbx/node_modules/$pkg"; done
+          ;;
+        'root -g') echo "$here/root" ;;
+        'ls -g') [[ -e $here/qmd ]] ;;
+        *) exit 97 ;;
+      esac`;
+
+    // A developer's machine may well have the real ones, which the script would
+    // rightly refuse.
+    const CLEAN_PATH = process.env.PATH.split(path.delimiter)
+      .filter((folder) => !['kbx', 'qmd'].some((tool) => fs.existsSync(path.join(folder, tool))))
+      .join(path.delimiter);
+
+    function smokeNpm(t, env = {}, tools = {}) {
+      return run(t, 'smoke-npm.sh', ['1.2.3', PLATFORM, VAULT], {
+        tools: { npm: FAKE_NPM, 'fake-kbx': FAKE_KBX, ...tools },
+        env,
+        inheritedPath: CLEAN_PATH,
+      });
+    }
+
+    describe('smoke-npm.sh', () => {
+      it('passes on a good install, and prints both doctor runs', (t) => {
+        const result = smokeNpm(t);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.calls[0], 'npm i -g kbx@1.2.3');
+        assert.equal(result.stdout.match(/^qmd +ok +/gm).length, 3);
+        assert.match(result.stdout, /kbx doctor, first run/);
+        assert.match(result.stdout, /kbx doctor, second run/);
+      });
+
+      it('runs doctor before init, because init would install qmd', (t) => {
+        const result = smokeNpm(t);
+        const order = result.calls.filter((call) => /^fake-kbx (doctor|init)/.test(call));
+        assert.deepEqual(order.slice(0, 3).map((call) => call.split(' ')[1]), ['doctor', 'doctor', 'init']);
+      });
+
+      // Each row: what goes wrong, and the words the job must fail with.
+      const FAILURES = [
+        ['no platform package is installed', { FAKE_PLATFORMS: '' }, /expected one platform package, found 0/],
+        [
+          'two platform packages are installed',
+          { FAKE_PLATFORMS: `${PLATFORM} kbx-darwin-arm64` },
+          /expected one platform package, found 2/,
+        ],
+        ['the wrong platform package is installed', { FAKE_PLATFORMS: 'kbx-darwin-arm64' }, /expected kbx-linux-x64-gnu/],
+        ['kbx reports another version', { FAKE_VERSION: '1.2.2' }, /kbx --version printed kbx 1\.2\.2/],
+        ['the first doctor fails', { FAKE_DOCTOR: 'fails' }, /first doctor exited 1/],
+        ['doctor exits non-zero with qmd ok', { FAKE_DOCTOR: 'unhealthy' }, /first doctor exited 1/],
+        ['the install leaks into doctor\'s output', { FAKE_DOCTOR: 'noisy' }, /first doctor wrote to stderr/],
+        ['doctor says ok but installs nothing', { FAKE_DOCTOR: 'skips' }, /qmd is not on PATH after the first doctor/],
+        ['the second doctor reports another qmd', { FAKE_DOCTOR: 'moves' }, /second doctor found \/elsewhere\/qmd/],
+        ['init fails', { FAKE_INIT: 'fails' }, /kbx init exited 1/],
+        ['index compiles the wrong notes', { FAKE_INDEXED: 'indexed 0, 0 unchanged' }, /kbx index printed/],
+        ['lint finds nothing', { FAKE_LINT: '0 errors, 0 warnings', FAKE_LINT_STATUS: '0' }, /kbx lint exited 0/],
+        ['lint finds other errors', { FAKE_LINT: '11 errors, 1 warning' }, /kbx lint printed/],
+        ['doctor does not see the index', { FAKE_INDEX_ROW: 'warn' }, /doctor in the vault/],
+      ];
+
+      for (const [name, env, message] of FAILURES) {
+        it(`fails when ${name}`, (t) => {
+          const result = smokeNpm(t, env);
+          assert.notEqual(result.status, 0, result.stdout);
+          assert.match(result.stderr, message);
+        });
+      }
+
+      it('fails when the install fails', (t) => {
+        const result = smokeNpm(t, { FAKE_INSTALL_FAILS: '1' });
+        assert.equal(result.status, 1);
+        assert.doesNotMatch(result.stdout, /kbx doctor/);
+      });
+
+      it('fails on a machine that already has kbx', (t) => {
+        const result = smokeNpm(t, {}, { kbx: '' });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /kbx is already on this machine/);
+        assert.equal(result.calls.filter((call) => call.startsWith('npm i')).length, 0);
+      });
+
+      it('fails on a machine that already has qmd', (t) => {
+        const result = smokeNpm(t, {}, { qmd: '' });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /qmd is already on this machine/);
+      });
+    });
+
+    describe('smoke-no-npm.sh', () => {
+      const MESSAGE =
+        'error: qmd is not installed, and installing it needs Node >= 22 and npm, which are not on PATH.';
+
+      // npm pack gives a tarball whose bin/kbx is the given script. The script
+      // sees the PATH that the check left it.
+      function noNpm(t, binary) {
+        const packNpm = `
+          [[ $1 == pack && $2 == ${PLATFORM}@1.2.3 ]] || exit 97
+          mkdir -p package/bin
+          cat > package/bin/kbx <<'BINARY'
+#!/bin/bash
+${binary}
+BINARY
+          chmod +x package/bin/kbx
+          tar -czf out.tgz package
+          rm -r package
+          echo out.tgz`;
+        return run(t, 'smoke-no-npm.sh', ['1.2.3', PLATFORM], { tools: { npm: packNpm } });
+      }
+
+      const ROW_FAIL = `printf 'qmd           fail not installed\\n'`;
+
+      it('passes when doctor fails naming Node >= 22', (t) => {
+        const result = noNpm(t, `${ROW_FAIL}; echo '${MESSAGE}' >&2; exit 1`);
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /Node >= 22/);
+      });
+
+      it('takes every npm and node off the PATH doctor sees', (t) => {
+        const script = `
+          if type -P npm || type -P node; then echo found >&2; exit 0; fi
+          ${ROW_FAIL}; echo '${MESSAGE}' >&2; exit 1`;
+        const result = noNpm(t, script);
+        assert.equal(result.status, 0, result.stderr);
+      });
+
+      it('fails when doctor succeeds', (t) => {
+        const result = noNpm(t, `${ROW_FAIL}; echo '${MESSAGE}' >&2; exit 0`);
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /doctor exited 0/);
+      });
+
+      it('fails when the message does not name Node >= 22', (t) => {
+        const result = noNpm(t, `${ROW_FAIL}; echo 'error: no qmd' >&2; exit 1`);
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /does not name Node >= 22/);
+      });
+
+      it('fails when the qmd row is not a failure', (t) => {
+        const result = noNpm(t, `echo '${MESSAGE}' >&2; exit 1`);
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /no failed qmd row/);
+      });
+    });
+
+    describe('smoke-wait.sh', () => {
+      const FAST = { KBX_SMOKE_POLL_ATTEMPTS: '3', KBX_SMOKE_POLL_SECONDS: '0' };
+
+      it('returns once npm has the version', (t) => {
+        const npm = `[[ $(grep -c '^npm' "$CALLS") -ge 2 ]] && echo 1.2.3 || exit 1`;
+        const result = run(t, 'smoke-wait.sh', ['npm', 'kbx', '1.2.3'], { tools: { npm }, env: FAST });
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(result.calls, ['npm view kbx@1.2.3 version', 'npm view kbx@1.2.3 version']);
+      });
+
+      it('fails when npm never has the version', (t) => {
+        const result = run(t, 'smoke-wait.sh', ['npm', 'kbx', '1.2.3'], {
+          tools: { npm: 'echo 1.2.2' },
+          env: FAST,
+        });
+        assert.equal(result.status, 1);
+        assert.equal(result.calls.length, 3);
+        assert.match(result.stderr, /kbx 1\.2\.3 is not on npm/);
+      });
+
+      it('returns once the crates.io index has the version', (t) => {
+        const curl = `echo '{"name":"kbx","vers":"1.2.3"}'`;
+        const result = run(t, 'smoke-wait.sh', ['crates', 'kbx', '1.2.3'], { tools: { curl }, env: FAST });
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.calls[0], /https:\/\/index\.crates\.io\/3\/k\/kbx/);
+      });
+
+      it('does not mistake another crate version for this one', (t) => {
+        const curl = `echo '{"name":"kbx","vers":"1.2.3-rc.1"}'`;
+        const result = run(t, 'smoke-wait.sh', ['crates', 'kbx', '1.2.3'], { tools: { curl }, env: FAST });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /kbx 1\.2\.3 is not on crates/);
+      });
+
+      it('refuses an unknown registry', (t) => {
+        const result = run(t, 'smoke-wait.sh', ['pypi', 'kbx', '1.2.3'], { env: FAST });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /usage/);
+      });
     });
   });
 });

@@ -67,6 +67,26 @@ gh workflow run release.yml --ref <branch>
 
 A manual run only publishes if it's started on a tag with `dry_run` turned off.
 
+## Check a release
+
+`.github/workflows/smoke.yml` installs a published version on clean runners. On
+Linux, macOS and Windows it installs `kbx@<version>` from npm, checks that exactly
+one platform package came with it, runs `kbx doctor` twice to see qmd installed
+and then found, and runs `kbx init`, `kbx index` and `kbx lint` on a copy of the
+fixture vault. Other jobs check that `kbx doctor` names Node >= 22 when npm isn't
+on `PATH`, and that `cargo install` works on macOS.
+
+Start it by hand after a tagged release:
+
+```sh
+gh workflow run smoke.yml -f version=0.2.0
+```
+
+A tagged release doesn't start it. The Release comes from the workflow's
+`GITHUB_TOKEN`, and GitHub starts no workflows for that. Publishing a Release by
+hand does start it. Each job waits up to 30 minutes for its package to reach the
+registry, so a run can start before the packages are out.
+
 ## When a step fails midway
 
 Every publish step checks what's already out and skips it, so re-running is safe
