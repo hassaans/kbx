@@ -84,6 +84,15 @@ pub enum Direction {
     FromSchema,
 }
 
+/// Which way a relation runs across a pair of notes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    /// From the first note to the second.
+    Forward,
+    /// From the second note to the first.
+    Reverse,
+}
+
 /// What a frontmatter key means: a relation, read forwards or as its inverse.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RelationKey<'a> {
@@ -161,6 +170,21 @@ impl Ontology {
             relation,
             inverted: true,
         })
+    }
+
+    /// Which way `rel` runs between a note of class `a` and one of class `b`,
+    /// from its `domain` and `range`. `None` if it fits neither way, or isn't a
+    /// relation. When it fits both ways, the pair keeps its order.
+    pub fn orient(&self, rel: &str, a: &str, b: &str) -> Option<Orientation> {
+        let relation = self.relations.get(rel)?;
+        let fits = |from, to| admits(&relation.domain, from) && admits(&relation.range, to);
+        if fits(a, b) {
+            Some(Orientation::Forward)
+        } else if fits(b, a) {
+            Some(Orientation::Reverse)
+        } else {
+            None
+        }
     }
 
     fn check(&self) -> Result<(), String> {
