@@ -42,7 +42,8 @@ pub use ollama::Ollama;
 pub use prompt::{JudgeContext, SCHEMA, SYSTEM_PROMPT, prompt_hash};
 pub use route::{Assignment, Routes, route};
 pub use run::{
-    Plan, Selection, Tally, backend, backends, first_ready, judge_all, pending, pinned_backends,
+    Plan, Selection, Tally, backend, backend_with_model, backends, first_ready, judge_all, pending,
+    pinned_backends,
 };
 pub use verdict::{Decision, Verdict};
 
