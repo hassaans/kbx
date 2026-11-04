@@ -241,7 +241,13 @@ fn eval_scores_the_generators_and_changes_nothing() {
 #[test]
 fn eval_takes_no_flags_that_would_write_or_limit() {
     let vault = suggested();
-    for flag in [&["--dry-run"][..], &["--judge", "auto"], &["--budget", "3"]] {
+    for flag in [
+        &["--dry-run"][..],
+        &["--judge", "auto"],
+        &["--budget", "3"],
+        &["--batch", "10"],
+        &["--budget-usd", "1"],
+    ] {
         let args = [&["suggest", "--eval"], flag].concat();
         let output = vault.kbx(&args);
         assert!(!output.status.success(), "{args:?}: {}", stdout(&output));

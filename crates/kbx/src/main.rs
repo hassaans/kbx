@@ -111,8 +111,9 @@ enum Command {
         /// Run only these generators, and fail if one can't run.
         #[arg(long, value_delimiter = ',')]
         generators: Option<Vec<String>>,
-        /// Who judges the candidates.
-        #[arg(long, value_enum, default_value_t = suggest::Judge::None)]
+        /// Who judges the candidates. `auto` sends excerpts of the notes to the
+        /// first logged-in CLI in `judge.order`.
+        #[arg(long, value_enum, default_value_t = suggest::Judge::Auto)]
         judge: suggest::Judge,
         /// Keep at most this many candidates; qmd_knn stops searching there.
         #[arg(long, value_name = "CANDIDATES")]
@@ -121,12 +122,20 @@ enum Command {
         /// editor to show. `kbx sync-stage` takes back what's decided there.
         #[arg(long)]
         stage: bool,
+        /// Pairs per judge call, from 10 to 25. Defaults to `judge.batch`.
+        #[arg(long, value_name = "PAIRS")]
+        batch: Option<usize>,
+        /// Stop judging before this run would spend more than this.
+        #[arg(long, value_name = "USD", value_parser = parse_usd)]
+        budget_usd: Option<f64>,
         /// Print counts and token estimates; leave the database alone.
         #[arg(long)]
         dry_run: bool,
         /// Score each generator's precision and recall against the reviews
         /// table, and change nothing.
-        #[arg(long, conflicts_with_all = ["note", "judge", "budget", "stage", "dry_run"])]
+        #[arg(long, conflicts_with_all = [
+            "note", "judge", "budget", "stage", "batch", "budget_usd", "dry_run",
+        ])]
         eval: bool,
     },
     /// Keep the index current: re-index saved notes and lint them.
@@ -320,6 +329,8 @@ fn main() -> ExitCode {
             judge,
             budget,
             stage,
+            batch,
+            budget_usd,
             dry_run,
             eval,
         } => suggest::run(suggest::Options {
@@ -328,6 +339,8 @@ fn main() -> ExitCode {
             judge,
             budget,
             stage,
+            batch,
+            budget_usd,
             dry_run,
             eval,
         }),
@@ -555,4 +568,12 @@ fn hop(neighbor: &Neighbor) -> String {
         label(&neighbor.node),
         neighbor.origin
     )
+}
+
+/// An amount of money: `NaN` would pass every budget check and spend without limit.
+fn parse_usd(text: &str) -> Result<f64, String> {
+    match text.parse::<f64>() {
+        Ok(usd) if usd.is_finite() && usd >= 0.0 => Ok(usd),
+        _ => Err(format!("`{text}` isn't an amount in USD")),
+    }
 }

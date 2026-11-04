@@ -24,7 +24,8 @@ kbx suggest                # store link candidates from every generator
 kbx suggest --dry-run      # counts and token estimates; the database is left alone
 kbx suggest --note <id> --generators schema_gap,alias_cooccur
 kbx suggest --budget 50    # keep at most 50 candidates
-kbx suggest --judge auto   # also judge them: logged-in claude or codex CLI, else local ollama or llama-server
+kbx suggest --judge none   # stop at the candidates; by default a logged-in claude or codex CLI judges them, else local ollama or llama-server
+kbx suggest --budget-usd 0.50   # stop judging before this run spends more (see docs/judge.md)
 kbx suggest --stage        # also write proposals to `kbx.proposed` for your editor
 kbx sync-stage             # take edits there as decisions; see docs/staging.md
 kbx suggest --eval         # each generator's precision and recall against your reviews

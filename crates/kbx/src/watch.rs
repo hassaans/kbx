@@ -88,6 +88,8 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
                 judge: suggest::Judge::None,
                 stage: false,
                 budget: None,
+                batch: None,
+                budget_usd: None,
                 dry_run: false,
                 eval: false,
             };

@@ -19,7 +19,7 @@ use crate::writer::{Staged, WriteError, add_relation, holds_link, unstage_entrie
 mod queue;
 mod stage;
 
-pub use queue::{Item, Queue, excerpt};
+pub use queue::{Item, JUDGE_ERROR, Queue, excerpt};
 pub use stage::{StageReport, Synced, locked_notes, mark_reviewed, stage, sync_stage, unstage};
 
 /// Rejections of a pair, across all relations, that suppress it from every
