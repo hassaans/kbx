@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 
-use kbx_core::Graph;
+use kbx_core::{Graph, suppressed_pairs};
 use serde_json::json;
 use tracing::warn;
 
@@ -57,6 +57,7 @@ impl Generator for QmdKnn {
         budget: Budget,
     ) -> Result<Vec<Candidate>, GenError> {
         let snapshot = Snapshot::load(g)?;
+        let suppressed = suppressed_pairs(g.connection())?;
         let mut statement = g.connection().prepare(
             "SELECT id, key, start_line, end_line FROM sections ORDER BY id, start_line",
         )?;
@@ -117,6 +118,9 @@ impl Generator for QmdKnn {
                     continue;
                 }
                 let pair = ordered(id, &hit.note);
+                if suppressed.contains(&pair) {
+                    continue;
+                }
                 if best.get(&pair).is_none_or(|b| hit.score > b.score) {
                     let sections = [((*id).clone(), key.clone()), (hit.note, hit.section)];
                     let score = hit.score;

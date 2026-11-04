@@ -293,6 +293,28 @@ fn suggest_refreshes_the_vaults_own_index_before_searching() {
 }
 
 #[test]
+fn a_relative_qmd_bin_is_refreshed_like_one_on_path() {
+    let vault = two_scopes("[]");
+    vault.ok(&["init"]);
+    vault.ok(&["index"]);
+    let tools = vault.root().join("tools");
+    fs::create_dir(&tools).unwrap();
+    fs::rename(vault.path.program("qmd"), tools.join("qmd")).unwrap();
+    let file = vault.root().join("kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(
+        &file,
+        text.replace("bin = \"qmd\"", "bin = \"./tools/qmd\""),
+    )
+    .unwrap();
+    forget_calls(&vault);
+
+    vault.ok(&["suggest"]);
+    assert_eq!(calls_of(&vault, "update").len(), 1, "{:?}", calls(&vault));
+    assert_eq!(calls_of(&vault, "embed").len(), 1, "{:?}", calls(&vault));
+}
+
+#[test]
 fn a_dry_run_and_other_generators_do_not_touch_the_qmd_index() {
     let vault = two_scopes("[]");
     vault.ok(&["init"]);

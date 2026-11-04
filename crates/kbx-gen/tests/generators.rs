@@ -524,6 +524,36 @@ fn a_run_budget_stops_the_searches_once_it_holds_that_many_pairs() {
 }
 
 #[test]
+fn suppressed_pairs_do_not_use_up_a_run_budget() {
+    let indexed = sectioned_vault(30);
+    // The two least linked notes search first, and their hits are suppressed.
+    for n in [16, 17] {
+        indexed
+            .graph
+            .connection()
+            .execute(
+                "INSERT INTO reviews (src, dst, rel, decision, strikes) \
+                 VALUES (?, ?, 'see_also', 'reject', 3)",
+                [id(1), id(n)],
+            )
+            .unwrap();
+    }
+    let search = Rc::new(FakeSearch {
+        hits: vec![hit(1, 0.8)],
+        asked: RefCell::default(),
+    });
+    let budget = Budget {
+        per_run: 1,
+        ..Budget::default()
+    };
+    let found = QmdKnn::new(Box::new(Shared(search.clone())))
+        .run_within(&indexed.graph, &indexed.scope(), budget)
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(search.asked.borrow().len(), 3);
+}
+
+#[test]
 fn qmd_knn_passes_a_search_failure_on() {
     struct Broken;
     impl Search for Broken {

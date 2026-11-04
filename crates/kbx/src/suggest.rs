@@ -7,7 +7,7 @@ use std::fs;
 use std::process::ExitCode;
 
 use clap::ValueEnum;
-use kbx_core::{Graph, IndexState, Ontology, Project, find_on_path, index_state};
+use kbx_core::{Graph, IndexState, Ontology, Project, index_state};
 use kbx_gen::{Budget, QmdSearch, Run, Scope, estimate_tokens, generators, store, suggest};
 use kbx_judge::{
     Availability, JudgeContext, JudgeId, Tally, backend, backends, first_ready, judge_all, views,
@@ -63,7 +63,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     let roots = project.config.qmd.searched();
     let wants_knn = |names: &Vec<String>| names.iter().any(|name| name == "qmd_knn");
     let searching = options.generators.as_ref().is_none_or(wants_knn);
-    let installed = find_on_path(&project.config.qmd.bin).is_some();
+    let installed = qmd::program(&project).is_file();
     if searching
         && installed
         && !roots.is_empty()
