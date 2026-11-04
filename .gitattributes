@@ -3,3 +3,6 @@
 tests/fixtures/** text eol=lf
 schema/** text eol=lf
 crates/kbx-core/assets/** text eol=lf
+# pack.sh runs under bash on every platform, and the shim's shebang ships as is.
+npm/** text eol=lf
+LICENSE text eol=lf

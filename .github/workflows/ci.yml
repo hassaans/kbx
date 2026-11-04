@@ -25,3 +25,11 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: cargo build --package kbx --locked
+      - run: node --test "npm/test/*.test.js"
+        shell: bash
+        env:
+          KBX_BINARY: target/debug/kbx${{ runner.os == 'Windows' && '.exe' || '' }}

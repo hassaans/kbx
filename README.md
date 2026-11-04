@@ -41,6 +41,11 @@ Nothing is published yet, so these commands won't work until the first release.
 npm i -g kbx
 ```
 
+npm installs a prebuilt binary through an optional dependency. There are no
+install scripts, so `--ignore-scripts` works. Prebuilt binaries cover macOS arm64
+and x64, Linux x64 and arm64 with glibc, and Windows x64. Anywhere else, including
+Alpine and other musl systems, use Cargo:
+
 ```sh
 cargo install kbx
 ```
@@ -51,6 +56,15 @@ cargo install kbx
 git clone https://github.com/hassaans/kbx
 cd kbx
 cargo build --workspace
+```
+
+To try the npm packages, pack them from a built binary and run their tests. Change
+`kbx-darwin-arm64` to your platform's package in `npm/`:
+
+```sh
+npm/pack.sh kbx dist
+npm/pack.sh kbx-darwin-arm64 dist target/debug/kbx
+KBX_BINARY=target/debug/kbx node --test "npm/test/*.test.js"
 ```
 
 ## License
