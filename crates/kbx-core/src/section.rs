@@ -293,6 +293,26 @@ fn trailing_block_id(text: &str) -> Option<&str> {
     valid.then_some(id)
 }
 
+/// `path` as a wikilink spells it, one `#` per level. The characters a wikilink
+/// can't hold become spaces, as in Obsidian's `stripHeadingForLink`. `None` for
+/// a path with nothing left to link to.
+pub(crate) fn link_heading_path(path: &[String]) -> Option<String> {
+    let unlinkable = |c: char| matches!(c, ':' | '#' | '|' | '^' | '\\' | '%' | '[' | ']');
+    let mut parts = Vec::new();
+    for heading in path {
+        let words = heading.split(|c: char| c.is_whitespace() || unlinkable(c));
+        let text = words
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if text.is_empty() {
+            return None;
+        }
+        parts.push(text);
+    }
+    (!parts.is_empty()).then(|| parts.join("#"))
+}
+
 /// Lowercases `heading` and joins its runs of letters and digits with `-`.
 fn slug(heading: &str) -> String {
     let lower = heading.to_lowercase();

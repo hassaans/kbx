@@ -3,7 +3,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use kbx_core::{Graph, split_frontmatter};
+use kbx_core::{Graph, section_excerpt, split_frontmatter};
 use kbx_gen::{EXCERPT_TOKENS, Proposal};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
@@ -37,7 +37,8 @@ pub struct NoteView {
     pub class: String,
     /// The note's title.
     pub title: String,
-    /// The start of the body, without the frontmatter.
+    /// The section a section-level pair is about, or else the start of the
+    /// body, without the frontmatter.
     pub excerpt: String,
 }
 
@@ -99,7 +100,9 @@ fn collect(
         if only_pinned && pin(&src.0, overrides).is_none() && pin(&dst.0, overrides).is_none() {
             continue;
         }
-        let (Ok(src), Ok(dst)) = (src.read(vault), dst.read(vault)) else {
+        let src = src.read(g, vault, candidate.src_section.as_deref());
+        let dst = dst.read(g, vault, candidate.dst_section.as_deref());
+        let (Ok(src), Ok(dst)) = (src, dst) else {
             found.unreadable += 1;
             continue;
         };
@@ -117,10 +120,13 @@ fn collect(
 struct Located(String, NoteView);
 
 impl Located {
-    fn read(self, vault: &Path) -> io::Result<NoteView> {
+    /// The note with its excerpt: `section` if there is one, or else its start.
+    fn read(self, g: &Graph, vault: &Path, section: Option<&str>) -> io::Result<NoteView> {
         let text = fs::read_to_string(vault.join(&self.0))?;
+        let cut = section.map(|key| section_excerpt(g.connection(), &text, key));
+        let cut = cut.transpose().map_err(io::Error::other)?.flatten();
         Ok(NoteView {
-            excerpt: excerpt(&text),
+            excerpt: cut.unwrap_or_else(|| excerpt(&text)),
             ..self.1
         })
     }
@@ -224,6 +230,8 @@ mod tests {
             generators: Vec::new(),
             features,
             score: 0.5,
+            src_section: None,
+            dst_section: None,
         };
         assert_eq!(
             why_proposed(&candidate),

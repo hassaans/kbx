@@ -19,7 +19,7 @@ use crate::writer::{Staged, WriteError, add_relation, holds_link, unstage_entrie
 mod queue;
 mod stage;
 
-pub use queue::{Item, Queue, excerpt};
+pub use queue::{Item, Queue, excerpt, excerpt_of, section_excerpt};
 pub use stage::{StageReport, Synced, locked_notes, mark_reviewed, stage, sync_stage, unstage};
 
 /// Rejections of a pair, across all relations, that suppress it from every
@@ -170,6 +170,54 @@ pub fn cid(src: &str, dst: &str) -> String {
     sha256(format!("{a}\0{b}").as_bytes())[..32].to_string()
 }
 
+/// The id of a candidate about two sections: [`cid`] when neither end has one,
+/// and otherwise a digest that covers the section keys as well, so that a verdict
+/// on these sections is never taken for one on others.
+pub fn section_cid(
+    src: &str,
+    dst: &str,
+    src_section: Option<&str>,
+    dst_section: Option<&str>,
+) -> String {
+    if src_section.is_none() && dst_section.is_none() {
+        return cid(src, dst);
+    }
+    let (a, b) = ordered(src, dst);
+    let (first, second) = match a == src {
+        true => (src_section, dst_section),
+        false => (dst_section, src_section),
+    };
+    let (first, second) = (first.unwrap_or(""), second.unwrap_or(""));
+    sha256(format!("{a}\0{b}\0{first}\0{second}").as_bytes())[..32].to_string()
+}
+
+/// A section's anchor as the index knows it: `^block-id`, or the slug path if it
+/// has no block id. `None` if no link can reach it (`docs/sections.md`), which
+/// takes the same rule as [`Note::section_fragment`].
+pub fn section_anchor(connection: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    let block: Option<String> = connection
+        .query_row(
+            "SELECT block_id FROM blocks WHERE section_key = ?
+             ORDER BY start_line, block_id LIMIT 1",
+            [key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(block) = block {
+        return Ok(Some(format!("^{block}")));
+    }
+    connection
+        .query_row(
+            "SELECT s.heading_path FROM sections s
+             WHERE s.key = ? AND s.heading_path <> '' AND NOT EXISTS (
+                 SELECT 1 FROM sections e WHERE e.id = s.id
+                     AND e.heading_path = s.heading_path AND e.start_line < s.start_line)",
+            [key],
+            |row| row.get(0),
+        )
+        .optional()
+}
+
 /// The pair with the lower id first.
 pub fn ordered(a: &str, b: &str) -> (String, String) {
     if a <= b {
@@ -306,9 +354,18 @@ fn write_accepted(
     if writes_inverse && inverse_exclusive {
         to.refuse_second(inverse_key, |t| names(&from.note.id, t))?;
     }
-    let forward = from.with_relation(key.name, &to.note.id, |t| names(&to.note.id, t))?;
+    // Each note points at the section at the other end.
+    let section_of = |file: &Checked| match file.note.id == candidate.src {
+        true => candidate.src_section.as_deref(),
+        false => candidate.dst_section.as_deref(),
+    };
+    let forward = from.with_relation(key.name, &to.link_target(section_of(to)), |t| {
+        names(&to.note.id, t)
+    })?;
     let inverse = match writes_inverse {
-        true => to.with_relation(inverse_key, &from.note.id, |t| names(&from.note.id, t))?,
+        true => to.with_relation(inverse_key, &from.link_target(section_of(from)), |t| {
+            names(&from.note.id, t)
+        })?,
         false => None,
     };
 
@@ -424,24 +481,31 @@ pub fn unreject(g: &Graph, cid: &str) -> Result<Unrejected, ReviewError> {
 
 /// A `candidates` row, as far as a decision needs it.
 struct Candidate {
+    cid: String,
     src: String,
     dst: String,
     src_hash: Option<String>,
     dst_hash: Option<String>,
+    src_section: Option<String>,
+    dst_section: Option<String>,
 }
 
 impl Candidate {
     fn load(connection: &Connection, cid: &str) -> Result<Candidate, ReviewError> {
         connection
             .query_row(
-                "SELECT src, dst, src_hash, dst_hash FROM candidates WHERE cid = ?",
+                "SELECT src, dst, src_hash, dst_hash, src_section, dst_section
+                 FROM candidates WHERE cid = ?",
                 [cid],
                 |row| {
                     Ok(Candidate {
+                        cid: cid.to_string(),
                         src: row.get(0)?,
                         dst: row.get(1)?,
                         src_hash: row.get(2)?,
                         dst_hash: row.get(3)?,
+                        src_section: row.get(4)?,
+                        dst_section: row.get(5)?,
                     })
                 },
             )
@@ -470,10 +534,9 @@ fn decided_rel(
     candidate: &Candidate,
     decision: Decision<'_>,
 ) -> Result<(String, String, String), ReviewError> {
-    let cid = cid(&candidate.src, &candidate.dst);
     let rel = match decision.rel {
         Some(rel) => Some(rel.to_string()),
-        None => judged_rel(connection, &cid)?,
+        None => judged_rel(connection, &candidate.cid)?,
     };
     let (src, dst) = (candidate.src.clone(), candidate.dst.clone());
     let Some(rel) = rel.filter(|rel| rel != NONE) else {
@@ -575,6 +638,24 @@ struct Checked {
 }
 
 impl Checked {
+    /// How a link to this note is written: by id, or by file name and anchor if
+    /// it goes to `section` and a link can reach that. An anchor needs a link
+    /// Obsidian can follow, and it looks notes up by file name.
+    fn link_target(&self, section: Option<&str>) -> String {
+        let fragment = section.and_then(|key| self.note.section_fragment(key));
+        let Some(fragment) = fragment else {
+            return self.note.id.clone();
+        };
+        let stem = self.path.file_stem().and_then(|stem| stem.to_str());
+        let linkable = |stem: &&str| {
+            stem.strip_prefix(self.note.id.as_str())
+                .is_some_and(|rest| rest.starts_with('-'))
+                && !stem.contains(['#', '|', '^', '[', ']'])
+        };
+        let name = stem.filter(linkable).unwrap_or(&self.note.id);
+        format!("{name}#{fragment}")
+    }
+
     fn with_relation(
         &self,
         key: &str,

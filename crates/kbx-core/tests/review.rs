@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use kbx_core::{
     Decision, Graph, IndexOptions, Ontology, ReviewError, STRIKES, accept, cid, defer, index_vault,
-    ordered, parse_note, reject, split_frontmatter, suppressed_pairs, unreject,
+    ordered, parse_note, reject, section_cid, split_frontmatter, suppressed_pairs, unreject,
 };
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -549,4 +549,20 @@ fn an_older_database_gains_the_hash_columns() {
             .unwrap();
         assert_eq!(hash, None);
     }
+}
+
+#[test]
+fn a_section_cid_depends_on_the_sections_at_each_end() {
+    let plain = cid("a", "b");
+    assert_eq!(section_cid("a", "b", None, None), plain);
+
+    let both = section_cid("a", "b", Some("x"), Some("y"));
+    assert_ne!(both, plain);
+    assert_eq!(section_cid("b", "a", Some("y"), Some("x")), both);
+    assert_ne!(section_cid("a", "b", Some("y"), Some("x")), both);
+    assert_ne!(section_cid("a", "b", Some("x"), None), both);
+    assert_ne!(
+        section_cid("a", "b", Some("x"), None),
+        section_cid("a", "b", None, Some("x"))
+    );
 }

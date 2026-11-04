@@ -20,6 +20,8 @@ fn proposal(src: &str, dst: &str, generators: &[&str]) -> Proposal {
         generators: generators.iter().map(|name| name.to_string()).collect(),
         features: Map::new(),
         score: 0.5,
+        src_section: None,
+        dst_section: None,
     }
 }
 

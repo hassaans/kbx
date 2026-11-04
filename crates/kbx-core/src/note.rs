@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde_yaml::{Mapping, Value};
 
 use crate::link::Link;
-use crate::section::{Lines, Section, extract_sections};
+use crate::section::{Lines, Section, extract_sections, link_heading_path};
 
 /// A markdown file with its frontmatter and sections parsed.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +47,30 @@ impl Note {
     /// Every inline `[[link]]` in the body, in file order.
     pub fn mentions(&self) -> impl Iterator<Item = &Link> {
         self.sections.iter().flat_map(|section| &section.mentions)
+    }
+
+    /// What follows the `#` in a wikilink to the section with this key: its
+    /// first `^block-id`, or else its heading path as Obsidian spells one.
+    /// `None` if a link can't reach it, see `docs/sections.md`.
+    pub fn section_fragment(&self, key: &str) -> Option<String> {
+        let at = self
+            .sections
+            .iter()
+            .position(|s| s.key.to_string() == key)?;
+        let (earlier, rest) = self.sections.split_at(at);
+        let section = &rest[0];
+        // An anchor can only mean one block, so the first with an id keeps it.
+        let taken = |id: &str| earlier.iter().flat_map(|s| &s.blocks).any(|b| b.id == id);
+        let mut blocks: Vec<_> = section.blocks.iter().collect();
+        blocks.sort_by_key(|block| block.byte_range.start);
+        if let Some(block) = blocks.into_iter().find(|block| !taken(&block.id)) {
+            return Some(format!("^{}", block.id));
+        }
+        // A heading link only reaches the first of several with the same path.
+        match section.ordinal {
+            0 => link_heading_path(&section.heading_path),
+            _ => None,
+        }
     }
 }
 
