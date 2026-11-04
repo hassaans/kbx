@@ -33,5 +33,9 @@ fi
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
+# Git Bash's pwd is an MSYS path, which native Windows tools can't open.
+if command -v cygpath >/dev/null; then
+  out=$(cygpath -m "$out")
+fi
 tarball=$(cd "$stage" && npm pack --ignore-scripts --pack-destination "$out")
 echo "$out/$tarball"
