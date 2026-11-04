@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use kbx_core::{Graph, IndexOptions, Ontology, index_vault};
 use kbx_gen::{
-    AdamicAdar, AliasCooccur, Candidate, CommonNeighbors, Generator, Hit, QmdKnn, Query, SchemaGap,
-    Scope, Search, SearchError, TwoHopBridge,
+    AdamicAdar, AliasCooccur, Budget, Candidate, CommonNeighbors, Generator, Hit, MAX_SEARCHES,
+    QmdKnn, Query, SchemaGap, Scope, Search, SearchError, TwoHopBridge,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -28,6 +28,7 @@ struct Indexed {
     ontology: Ontology,
     root: std::path::PathBuf,
     _db: TempDir,
+    _notes: Option<TempDir>,
 }
 
 impl Indexed {
@@ -41,11 +42,27 @@ impl Indexed {
             ontology: Ontology::parse(ONTOLOGY).unwrap(),
             root,
             _db: db,
+            _notes: None,
         }
+    }
+
+    /// Indexes the notes written to `dir`, and keeps them.
+    fn written(dir: TempDir) -> Indexed {
+        let mut indexed = Indexed::at(dir.path());
+        indexed._notes = Some(dir);
+        indexed
     }
 
     fn fixture() -> Indexed {
         Indexed::at(Path::new(VAULT))
+    }
+
+    fn scope(&self) -> Scope<'_> {
+        Scope {
+            vault: &self.root,
+            ontology: &self.ontology,
+            note: None,
+        }
     }
 
     fn run(&self, generator: &dyn Generator) -> BTreeMap<(String, String), Candidate> {
@@ -291,7 +308,7 @@ fn alias_cooccur_matches_whole_words_in_any_case_outside_frontmatter() {
     assert_eq!(pairs[&(id(2), id(1))].score, 2.0);
 }
 
-/// Answers each section with `hits`, and remembers what it was asked.
+/// Answers each note with `hits`, and remembers what it was asked.
 struct FakeSearch {
     hits: Vec<Hit>,
     asked: RefCell<Vec<(String, String)>>,
@@ -300,8 +317,8 @@ struct FakeSearch {
 impl Search for FakeSearch {
     fn search(&self, query: &Query<'_>, limit: usize) -> Result<Vec<Hit>, SearchError> {
         assert_eq!(limit, 20);
-        let Query::Section { note, text, .. } = query else {
-            panic!("qmd_knn searches by section");
+        let Query::Note { note, text } = query else {
+            panic!("qmd_knn searches by note");
         };
         self.asked
             .borrow_mut()
@@ -351,7 +368,7 @@ fn qmd_knn_turns_hits_into_pairs_and_keeps_the_best_score() {
 }
 
 #[test]
-fn qmd_knn_searches_every_section_as_one_line_of_its_text() {
+fn qmd_knn_searches_a_note_once_as_one_line_of_its_text() {
     let indexed = Indexed::fixture();
     let scope = Scope {
         vault: &indexed.root,
@@ -373,6 +390,167 @@ fn qmd_knn_searches_every_section_as_one_line_of_its_text() {
         "{asked:?}"
     );
     assert!(!asked[0].1.contains('\n'));
+}
+
+/// `n` notes of two sections each: the first is a hub the others link to, and
+/// the last link nothing, so they are the least linked.
+fn sectioned_vault(n: u32) -> Indexed {
+    let dir = TempDir::new().unwrap();
+    let hub = id(1);
+    for number in 1..=n {
+        let note = id(number);
+        let link = if (2..=n / 2).contains(&number) {
+            format!("depends_on: [\"[[{hub}]]\"]\n")
+        } else {
+            String::new()
+        };
+        fs::write(
+            dir.path().join(format!("{note}.md")),
+            format!(
+                "---\nid: {note}\ntype: Procedure\ntitle: Note {number}\n{link}---\n\
+                 # One\nWords of the first section.\n\n\
+                 # Two\nThe second section is the longer of the two.\n"
+            ),
+        )
+        .unwrap();
+    }
+    Indexed::written(dir)
+}
+
+#[test]
+fn qmd_knn_starts_one_search_per_note_not_per_section() {
+    let indexed = sectioned_vault(6);
+    let scope = indexed.scope();
+    let search = Rc::new(FakeSearch {
+        hits: Vec::new(),
+        asked: RefCell::default(),
+    });
+    QmdKnn::new(Box::new(Shared(search.clone())))
+        .run(&indexed.graph, &scope)
+        .unwrap();
+    let asked = search.asked.borrow();
+    assert_eq!(asked.len(), 6);
+    for (_, text) in asked.iter() {
+        assert!(text.contains("first section"), "{text}");
+        assert!(text.contains("second section"), "{text}");
+    }
+}
+
+#[test]
+fn a_long_section_cannot_crowd_the_others_out_of_a_note_query() {
+    let dir = TempDir::new().unwrap();
+    let note = id(1);
+    let long = "padding ".repeat(1000);
+    fs::write(
+        dir.path().join(format!("{note}.md")),
+        format!(
+            "---\nid: {note}\ntype: Procedure\ntitle: T\n---\n\
+             # One\n{long}\n\n# Two\nThe closing words.\n"
+        ),
+    )
+    .unwrap();
+    let indexed = Indexed::written(dir);
+    let search = Rc::new(FakeSearch {
+        hits: Vec::new(),
+        asked: RefCell::default(),
+    });
+    QmdKnn::new(Box::new(Shared(search.clone())))
+        .run(&indexed.graph, &indexed.scope())
+        .unwrap();
+    let asked = search.asked.borrow();
+    assert!(asked[0].1.chars().count() <= 1001, "{}", asked[0].1.len());
+    assert!(asked[0].1.contains("closing words"), "{}", asked[0].1);
+}
+
+#[test]
+fn a_candidate_names_the_longest_section_of_the_note_that_asked() {
+    let indexed = sectioned_vault(2);
+    let scope = indexed.scope();
+    let search = FakeSearch {
+        hits: vec![hit(2, 0.8)],
+        asked: RefCell::default(),
+    };
+    let found = QmdKnn::new(Box::new(search))
+        .run(&indexed.graph, &scope)
+        .unwrap();
+    let key: String = indexed
+        .graph
+        .connection()
+        .query_row(
+            "SELECT key FROM sections WHERE id = ? AND heading_path = 'two'",
+            [id(1)],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(found[0].features["sections"][id(1)], json!(key));
+}
+
+#[test]
+fn qmd_knn_stops_at_its_hard_cap_taking_the_least_linked_notes_first() {
+    let indexed = sectioned_vault(MAX_SEARCHES as u32 + 20);
+    let search = Rc::new(FakeSearch {
+        hits: Vec::new(),
+        asked: RefCell::default(),
+    });
+    QmdKnn::new(Box::new(Shared(search.clone())))
+        .run(&indexed.graph, &indexed.scope())
+        .unwrap();
+    let asked = search.asked.borrow();
+    assert_eq!(asked.len(), MAX_SEARCHES);
+    assert!(
+        !asked.iter().any(|(note, _)| *note == id(1)),
+        "the hub is the most linked, so it waits"
+    );
+    assert_eq!(asked[0].0, id(61), "the first note with no links");
+}
+
+#[test]
+fn a_run_budget_stops_the_searches_once_it_holds_that_many_pairs() {
+    let indexed = sectioned_vault(30);
+    let search = Rc::new(FakeSearch {
+        hits: vec![hit(1, 0.8)],
+        asked: RefCell::default(),
+    });
+    let budget = Budget {
+        per_run: 3,
+        ..Budget::default()
+    };
+    let knn = QmdKnn::new(Box::new(Shared(search.clone())));
+    let found = knn
+        .run_within(&indexed.graph, &indexed.scope(), budget)
+        .unwrap();
+    assert_eq!(found.len(), 3);
+    assert_eq!(search.asked.borrow().len(), 3);
+}
+
+#[test]
+fn suppressed_pairs_do_not_use_up_a_run_budget() {
+    let indexed = sectioned_vault(30);
+    // The two least linked notes search first, and their hits are suppressed.
+    for n in [16, 17] {
+        indexed
+            .graph
+            .connection()
+            .execute(
+                "INSERT INTO reviews (src, dst, rel, decision, strikes) \
+                 VALUES (?, ?, 'see_also', 'reject', 3)",
+                [id(1), id(n)],
+            )
+            .unwrap();
+    }
+    let search = Rc::new(FakeSearch {
+        hits: vec![hit(1, 0.8)],
+        asked: RefCell::default(),
+    });
+    let budget = Budget {
+        per_run: 1,
+        ..Budget::default()
+    };
+    let found = QmdKnn::new(Box::new(Shared(search.clone())))
+        .run_within(&indexed.graph, &indexed.scope(), budget)
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(search.asked.borrow().len(), 3);
 }
 
 #[test]

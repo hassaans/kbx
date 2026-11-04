@@ -23,7 +23,8 @@ fn working_npm(path: &FakePath) {
         "echo \"$@\" >> \"${0%/*}/npm.log\"\n\
          echo NPM-STDOUT-NOISE\n\
          echo NPM-STDERR-NOISE >&2\n\
-         : > \"${0%/*}/qmd\""
+         echo '#!/bin/sh' > \"${0%/*}/qmd\"\n\
+         /bin/chmod +x \"${0%/*}/qmd\""
     };
     path.tool("node", "");
     path.tool("npm", script);

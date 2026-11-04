@@ -1,22 +1,28 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 
-use kbx_core::Graph;
+use kbx_core::{Graph, suppressed_pairs};
 use serde_json::json;
 use tracing::warn;
 
+use crate::pipeline::Budget;
 use crate::search::{Query, Search};
 use crate::snapshot::{Snapshot, ordered};
 use crate::{Candidate, GenError, Generator, Scope};
 
-/// Hits to ask for per section (§5).
+/// Hits to ask for per note (§5).
 const NEIGHBORS: usize = 20;
 
-/// A query this long says what a section is about; more only slows the search.
+/// A query this long says what a note is about; more only slows the search.
 const QUERY_CHARS: usize = 1000;
 
-/// The topical neighbours of each section, from a [`Search`] backend. Scored
-/// by the best hit between the two notes.
+/// The most searches in one run. A qmd search is a process that loads its
+/// models, so each costs seconds, whatever the candidate budget says.
+pub const MAX_SEARCHES: usize = 100;
+
+/// The topical neighbours of each note, from a [`Search`] backend: one search
+/// per note, the least linked notes first, up to [`MAX_SEARCHES`]. Scored by
+/// the best hit between the two notes.
 pub struct QmdKnn {
     search: Box<dyn Search>,
 }
@@ -40,7 +46,18 @@ impl Generator for QmdKnn {
     }
 
     fn run(&self, g: &Graph, scope: &Scope<'_>) -> Result<Vec<Candidate>, GenError> {
+        self.run_within(g, scope, Budget::default())
+    }
+
+    /// Stops searching once it holds a whole run's worth of pairs.
+    fn run_within(
+        &self,
+        g: &Graph,
+        scope: &Scope<'_>,
+        budget: Budget,
+    ) -> Result<Vec<Candidate>, GenError> {
         let snapshot = Snapshot::load(g)?;
+        let suppressed = suppressed_pairs(g.connection())?;
         let mut statement = g.connection().prepare(
             "SELECT id, key, start_line, end_line FROM sections ORDER BY id, start_line",
         )?;
@@ -54,10 +71,23 @@ impl Generator for QmdKnn {
             sections.entry(id).or_default().push(lines);
         }
 
+        let mut notes: Vec<_> = snapshot
+            .notes
+            .iter()
+            .filter(|(id, _)| scope.note.is_none_or(|wanted| wanted == *id))
+            .collect();
+        notes.sort_by_key(|(id, _)| (snapshot.degree(id), *id));
+
         let mut best: BTreeMap<(String, String), Best> = BTreeMap::new();
-        for (id, note) in &snapshot.notes {
-            if scope.note.is_some_and(|wanted| wanted != id) {
-                continue;
+        let mut searches = 0;
+        for (index, (id, note)) in notes.iter().enumerate() {
+            if best.len() >= budget.per_run {
+                break;
+            }
+            if searches == MAX_SEARCHES {
+                let left = notes.len() - index;
+                warn!("qmd_knn stopped at {MAX_SEARCHES} searches, with {left} notes to go");
+                break;
             }
             let path = scope.vault.join(&note.path);
             let src = match fs::read_to_string(&path) {
@@ -68,27 +98,33 @@ impl Generator for QmdKnn {
                 }
             };
             let lines: Vec<&str> = src.lines().collect();
-            for (key, start, end) in sections.get(id).into_iter().flatten() {
-                let text = section_text(&lines, *start, *end);
-                if text.is_empty() {
+            let texts: Vec<_> = sections
+                .get(*id)
+                .into_iter()
+                .flatten()
+                .map(|(key, start, end)| (key, section_text(&lines, *start, *end)))
+                .filter(|(_, text)| !text.is_empty())
+                .collect();
+            let Some(key) = longest(&texts) else { continue };
+            let text = note_text(&texts);
+            let query = Query::Note {
+                note: id,
+                text: &text,
+            };
+            searches += 1;
+            for hit in self.search.search(&query, NEIGHBORS)? {
+                let known = snapshot.notes.contains_key(&hit.note);
+                if !known || hit.note == **id || snapshot.linked(id, &hit.note) {
                     continue;
                 }
-                let query = Query::Section {
-                    note: id,
-                    key,
-                    text: &text,
-                };
-                for hit in self.search.search(&query, NEIGHBORS)? {
-                    let known = snapshot.notes.contains_key(&hit.note);
-                    if !known || hit.note == *id || snapshot.linked(id, &hit.note) {
-                        continue;
-                    }
-                    let pair = ordered(id, &hit.note);
-                    if best.get(&pair).is_none_or(|b| hit.score > b.score) {
-                        let sections = [(id.clone(), key.clone()), (hit.note, hit.section)];
-                        let score = hit.score;
-                        best.insert(pair, Best { score, sections });
-                    }
+                let pair = ordered(id, &hit.note);
+                if suppressed.contains(&pair) {
+                    continue;
+                }
+                if best.get(&pair).is_none_or(|b| hit.score > b.score) {
+                    let sections = [((*id).clone(), key.clone()), (hit.note, hit.section)];
+                    let score = hit.score;
+                    best.insert(pair, Best { score, sections });
                 }
             }
         }
@@ -104,6 +140,26 @@ impl Generator for QmdKnn {
         });
         Ok(candidates.collect())
     }
+}
+
+/// The key of the section that says the most: the end of a pair on this side,
+/// since a note's search can't tell which of its sections found the hit.
+fn longest<'a>(texts: &[(&'a String, String)]) -> Option<&'a String> {
+    let mut longest = None;
+    for (key, text) in texts {
+        if longest.is_none_or(|(_, length)| text.len() > length) {
+            longest = Some((*key, text.len()));
+        }
+    }
+    longest.map(|(key, _)| key)
+}
+
+/// One query for a note, with an equal share of it for every section.
+fn note_text(texts: &[(&String, String)]) -> String {
+    let share = QUERY_CHARS / texts.len().max(1);
+    let parts = texts.iter().map(|(_, text)| text.chars().take(share));
+    let parts: Vec<String> = parts.map(Iterator::collect).collect();
+    parts.join(" ")
 }
 
 /// Lines `start` to `end`, 1-based and inclusive, as one line of limited size.

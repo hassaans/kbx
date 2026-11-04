@@ -117,6 +117,14 @@ impl Fixture {
         fixture
     }
 
+    /// An empty folder, before `kbx init`, with `path` for its `PATH`.
+    pub fn bare(path: FakePath) -> Fixture {
+        Fixture {
+            dir: TempDir::new().unwrap(),
+            path,
+        }
+    }
+
     pub fn root(&self) -> &Path {
         self.dir.path()
     }

@@ -20,7 +20,7 @@ use serde_json::Value;
 
 pub use alias::AliasCooccur;
 pub use kbx_core::cid;
-pub use knn::QmdKnn;
+pub use knn::{MAX_SEARCHES, QmdKnn};
 pub use pipeline::{
     Budget, EXCERPT_TOKENS, Proposal, Run, UnknownGenerator, estimate_tokens, generators, store,
     suggest,
@@ -40,6 +40,16 @@ pub trait Generator {
     /// already linked. A generator whose direction means something says so
     /// with a `src` in `features`, because the union may keep the other one.
     fn run(&self, g: &Graph, scope: &Scope<'_>) -> Result<Vec<Candidate>, GenError>;
+    /// [`run`](Generator::run), for a generator whose work costs enough that
+    /// it should stop at what the run can keep.
+    fn run_within(
+        &self,
+        g: &Graph,
+        scope: &Scope<'_>,
+        _budget: Budget,
+    ) -> Result<Vec<Candidate>, GenError> {
+        self.run(g, scope)
+    }
 }
 
 /// What a run may look at.
