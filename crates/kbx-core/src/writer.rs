@@ -39,8 +39,15 @@ pub enum WriteError {
 /// mirrors `type` and `tags` into `qmd.metadata`. Returns the whole new file,
 /// or `None` if the link is already there and the mirror is current.
 ///
-/// Only the text between the `---` fences changes.
-pub fn add_relation(src: &str, key: &str, target: &str) -> Result<Option<String>, WriteError> {
+/// `is_target` says whether a link target as written names the same note.
+/// That takes the vault, because `[[b-child]]` is either `b` with a slug or
+/// another note. Only the text between the `---` fences changes.
+pub fn add_relation(
+    src: &str,
+    key: &str,
+    target: &str,
+    is_target: impl Fn(&str) -> bool,
+) -> Result<Option<String>, WriteError> {
     let frontmatter = split_frontmatter(src)?.ok_or(ParseError::NoFrontmatter)?;
     let note = parse_note("", src)?;
     let Value::Mapping(old) = serde_yaml::from_str(frontmatter.yaml).map_err(ParseError::Yaml)?
@@ -50,7 +57,7 @@ pub fn add_relation(src: &str, key: &str, target: &str) -> Result<Option<String>
 
     let mut expected = old.clone();
     let mut yaml = frontmatter.yaml.to_string();
-    if !holds_link(&note, key, target) {
+    if !holds_link(&note, key, is_target) {
         let link = format!("[[{target}]]");
         yaml = append_link(&yaml, key, &link, &note, &old)?;
         expected.insert(key.into(), with_link(old.get(key), &link));
@@ -110,15 +117,10 @@ impl Staged {
     }
 }
 
-/// Whether the key already points at the note, by id or `{id}-slug`.
-pub(crate) fn holds_link(note: &Note, key: &str, target: &str) -> bool {
-    let slugged = format!("{target}-");
-    note.relation(key).is_some_and(|entry| {
-        entry
-            .links
-            .iter()
-            .any(|link| link.target == target || link.target.starts_with(&slugged))
-    })
+/// Whether a link under the key names the note `is_target` picks out.
+pub(crate) fn holds_link(note: &Note, key: &str, is_target: impl Fn(&str) -> bool) -> bool {
+    note.relation(key)
+        .is_some_and(|entry| entry.links.iter().any(|link| is_target(&link.target)))
 }
 
 /// The key's value once `link` is added, for checking the edit against.

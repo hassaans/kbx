@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use tracing::warn;
 
 use crate::graph::Graph;
-use crate::index::sha256;
+use crate::index::{load_resolver, sha256};
 use crate::note::{Note, parse_note};
 use crate::ontology::{NONE, Ontology, admits};
 use crate::writer::{Staged, WriteError, add_relation, holds_link, write_atomic};
@@ -235,17 +235,26 @@ pub fn accept(
         }
     };
 
-    let taken = from.note.relation(key.name).is_some();
-    if key.relation.exclusive && taken && !holds_link(&from.note, key.name, &to.note.id) {
-        return Err(ReviewError::Exclusive {
-            path: from.path.clone(),
-            rel: key.name.to_string(),
-        });
+    let (resolver, ids) = load_resolver(&tx)?;
+    let names = |id: &str, target: &str| {
+        resolver
+            .resolve(target)
+            .is_some_and(|(index, _)| ids[index] == id)
+    };
+    // An inverse is exclusive only if it's the same key, as in a symmetric one.
+    let inverse_key = key.relation.inverse.as_str();
+    let writes_inverse = !key.relation.derived_only;
+    let inverse_exclusive = ontology.lookup(inverse_key).is_some_and(|k| k.exclusive());
+    if key.relation.exclusive {
+        from.refuse_second(key.name, |t| names(&to.note.id, t))?;
     }
-    let forward = from.with_relation(key.name, &to.note.id)?;
-    let inverse = match key.relation.derived_only {
-        true => None,
-        false => to.with_relation(&key.relation.inverse, &from.note.id)?,
+    if writes_inverse && inverse_exclusive {
+        to.refuse_second(inverse_key, |t| names(&from.note.id, t))?;
+    }
+    let forward = from.with_relation(key.name, &to.note.id, |t| names(&to.note.id, t))?;
+    let inverse = match writes_inverse {
+        true => to.with_relation(inverse_key, &from.note.id, |t| names(&from.note.id, t))?,
+        false => None,
     };
 
     record(
@@ -489,9 +498,29 @@ struct Checked {
 }
 
 impl Checked {
-    fn with_relation(&self, key: &str, target: &str) -> Result<Option<String>, ReviewError> {
-        add_relation(&self.text, key, target)
+    fn with_relation(
+        &self,
+        key: &str,
+        target: &str,
+        is_target: impl Fn(&str) -> bool,
+    ) -> Result<Option<String>, ReviewError> {
+        add_relation(&self.text, key, target, is_target)
             .map_err(|error| ReviewError::Write(self.path.clone(), error))
+    }
+
+    /// Refuses a second target for an exclusive key.
+    fn refuse_second(
+        &self,
+        key: &str,
+        is_target: impl Fn(&str) -> bool,
+    ) -> Result<(), ReviewError> {
+        if self.note.relation(key).is_some() && !holds_link(&self.note, key, is_target) {
+            return Err(ReviewError::Exclusive {
+                path: self.path.clone(),
+                rel: key.to_string(),
+            });
+        }
+        Ok(())
     }
 }
 

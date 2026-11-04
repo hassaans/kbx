@@ -8,6 +8,16 @@ use tempfile::TempDir;
 const HEAD: &str = "id: A\ntype: Concept\ntitle: A note\n";
 const MIRROR: &str = "qmd:\n  metadata: {type: Concept, tags: []}\n";
 
+/// Adds a link, with only the target's id and the slugged `B-…` resolving to it.
+fn add(src: &str, key: &str, target: &str) -> Result<Option<String>, WriteError> {
+    add_relation(src, key, target, |link| {
+        link == target
+            || link
+                .strip_prefix(target)
+                .is_some_and(|r| r.starts_with('-'))
+    })
+}
+
 fn note(yaml: &str) -> String {
     format!("---\n{yaml}---\nBody.\n")
 }
@@ -25,7 +35,7 @@ fn outside(src: &str) -> (Vec<u8>, Vec<u8>) {
 /// Adds `[[B]]` to `rel`, requires the bytes outside the fences to stay, and
 /// returns the new frontmatter.
 fn edited(src: &str) -> String {
-    let new = add_relation(src, "rel", "B").unwrap().expect("a change");
+    let new = add(src, "rel", "B").unwrap().expect("a change");
     assert_eq!(outside(src), outside(&new));
     parse_note("n.md", &new).unwrap();
     split_frontmatter(&new).unwrap().unwrap().yaml.to_string()
@@ -118,13 +128,13 @@ fn key_order_and_comments_survive() {
 #[test]
 fn crlf_stays_crlf_and_the_outside_stays_byte_for_byte() {
     let src = "---\r\nid: A\r\ntype: Concept\r\ntitle: T\r\ntags: [x]\r\ndep:\r\n  - \"[[A1]]\"\r\n---\r\nBody\r\nmixed\n";
-    let new = add_relation(src, "dep", "B").unwrap().unwrap();
+    let new = add(src, "dep", "B").unwrap().unwrap();
     assert_eq!(outside(src), outside(&new));
     assert_eq!(
         new,
         "---\r\nid: A\r\ntype: Concept\r\ntitle: T\r\ntags: [x]\r\ndep:\r\n  - \"[[A1]]\"\r\n  - \"[[B]]\"\r\nqmd:\r\n  metadata: {type: Concept, tags: [x]}\r\n---\r\nBody\r\nmixed\n"
     );
-    let added = add_relation(src, "rel", "B").unwrap().unwrap();
+    let added = add(src, "rel", "B").unwrap().unwrap();
     assert_eq!(outside(src), outside(&added));
     let bare_newlines = added.replace("\r\n", "").matches('\n').count();
     assert_eq!(bare_newlines, 1, "only the body's own: {added:?}");
@@ -203,7 +213,7 @@ fn a_flow_qmd_is_written_again_and_loses_its_comment() {
 fn nothing_to_do_returns_none() {
     for link in ["[[B]]", "[[B-some-slug]]", "[[B#heading]]", "[[B|shown]]"] {
         let src = note(&format!("{HEAD}rel: [\"{link}\"]\n{MIRROR}"));
-        assert_eq!(add_relation(&src, "rel", "B").unwrap(), None, "{link}");
+        assert_eq!(add(&src, "rel", "B").unwrap(), None, "{link}");
     }
 }
 
@@ -211,6 +221,14 @@ fn nothing_to_do_returns_none() {
 fn an_existing_link_still_gets_a_stale_mirror_fixed() {
     let src = note(&format!("{HEAD}rel: [\"[[B]]\"]\n"));
     assert_eq!(edited(&src), format!("{HEAD}rel: [\"[[B]]\"]\n{MIRROR}"));
+}
+
+#[test]
+fn what_counts_as_the_target_is_up_to_the_resolver() {
+    let src = note(&format!("{HEAD}rel: [\"[[B-child]]\"]\n{MIRROR}"));
+    let new = add_relation(&src, "rel", "B", |link| link == "B").unwrap();
+    assert!(new.unwrap().contains("rel: [\"[[B-child]]\", \"[[B]]\"]\n"));
+    assert_eq!(add_relation(&src, "rel", "B", |_| true).unwrap(), None);
 }
 
 #[test]
@@ -223,14 +241,14 @@ fn a_prefix_of_an_id_is_not_that_id() {
 fn a_key_holding_something_else_is_refused() {
     for value in ["rel: plain text\n", "rel: [one, two]\n", "rel: 3\n"] {
         let src = note(&format!("{HEAD}{value}"));
-        let error = add_relation(&src, "rel", "B").unwrap_err();
+        let error = add(&src, "rel", "B").unwrap_err();
         assert!(matches!(error, WriteError::NotLinks(_)), "{value}: {error}");
     }
 }
 
 #[test]
 fn a_qmd_that_is_not_a_map_is_refused() {
-    let error = add_relation(&note(&format!("{HEAD}qmd: 5\n")), "rel", "B").unwrap_err();
+    let error = add(&note(&format!("{HEAD}qmd: 5\n")), "rel", "B").unwrap_err();
     assert!(matches!(error, WriteError::QmdNotAMap), "{error}");
 }
 
@@ -244,7 +262,7 @@ fn yaml_the_line_edit_cannot_follow_is_refused_not_rewritten() {
         // A list behind an anchor.
         "id: A\ntype: Concept\ntitle: T\nrel: &links [\"[[A1]]\"]\n",
     ] {
-        let error = add_relation(&note(yaml), "rel", "B").unwrap_err();
+        let error = add(&note(yaml), "rel", "B").unwrap_err();
         assert!(
             matches!(error, WriteError::Unsupported(_)),
             "{yaml}: {error}"
@@ -262,22 +280,22 @@ fn an_edit_that_would_change_another_value_is_refused() {
         parse_note("n.md", &src).unwrap().title,
         "two rel: \"[[Z]]\" lines"
     );
-    let error = add_relation(&src, "rel", "B").unwrap_err();
+    let error = add(&src, "rel", "B").unwrap_err();
     assert!(matches!(error, WriteError::Unsupported(_)), "{error}");
 }
 
 #[test]
 fn a_file_kbx_cannot_read_is_refused() {
-    let error = add_relation("no frontmatter\n", "rel", "B").unwrap_err();
+    let error = add("no frontmatter\n", "rel", "B").unwrap_err();
     assert!(matches!(error, WriteError::Parse(_)), "{error}");
-    let error = add_relation("---\nid: [\n---\n", "rel", "B").unwrap_err();
+    let error = add("---\nid: [\n---\n", "rel", "B").unwrap_err();
     assert!(matches!(error, WriteError::Parse(_)), "{error}");
 }
 
 #[test]
 fn an_odd_target_id_is_quoted_so_it_reads_back() {
     let src = note(HEAD);
-    let new = add_relation(&src, "rel", "a\"b\\c").unwrap().unwrap();
+    let new = add(&src, "rel", "a\"b\\c").unwrap().unwrap();
     let parsed = parse_note("n.md", &new).unwrap();
     assert_eq!(parsed.relation("rel").unwrap().links[0].target, "a\"b\\c");
 }

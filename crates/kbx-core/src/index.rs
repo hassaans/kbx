@@ -737,7 +737,7 @@ fn relink(tx: &Transaction<'_>, ontology: &Ontology) -> rusqlite::Result<()> {
     write_edges(tx, &wanted)
 }
 
-fn load_resolver(tx: &Transaction<'_>) -> rusqlite::Result<(Resolver, Vec<String>)> {
+pub(crate) fn load_resolver(tx: &Transaction<'_>) -> rusqlite::Result<(Resolver, Vec<String>)> {
     let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
     let mut statement = tx.prepare("SELECT id, alias FROM aliases")?;
     let mut rows = statement.query([])?;

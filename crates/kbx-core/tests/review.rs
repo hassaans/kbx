@@ -22,6 +22,7 @@ relations:
   part_of: {inverse: has_part, domain: [any], range: [any], weight: 1.0}
   supersedes: {inverse: superseded_by, domain: [Decision], range: [Decision], weight: 0.8, exclusive: true}
   example_of: {inverse: has_example, domain: [any], range: [any], weight: 0.6, derived_only: true}
+  twin_of: {inverse: twin_of, domain: [any], range: [any], weight: 0.5, symmetric: true, exclusive: true}
 judge:
   vocabulary: [depends_on, see_also, part_of, supersedes, example_of, none]
   direction: from_schema
@@ -235,6 +236,51 @@ fn a_second_target_of_an_exclusive_relation_is_refused() {
     let error = vault.accept(&second, "supersedes").unwrap_err();
     assert!(matches!(error, ReviewError::Exclusive { .. }), "{error}");
     assert_eq!(vault.snapshot(), before);
+}
+
+#[test]
+fn a_symmetric_exclusive_relation_is_checked_on_the_target_too() {
+    let mut vault = Vault::new(["Concept", "Concept", "Concept"]);
+    let taken = "---\nid: b\ntype: Concept\ntitle: T\ntwin_of: [\"[[c]]\"]\n---\n";
+    vault.write("b", taken);
+    vault.index();
+    let cid = vault.candidate("a", "b");
+    let before = vault.snapshot();
+    let error = vault.accept(&cid, "twin_of").unwrap_err();
+    assert!(
+        matches!(&error, ReviewError::Exclusive { path, .. } if path == Path::new("b.md")),
+        "{error}"
+    );
+    assert_eq!(vault.snapshot(), before);
+    assert_eq!(vault.count("SELECT COUNT(*) FROM reviews"), 0);
+}
+
+/// `[[b-child]]` is the note with that id, not `b` with a slug.
+#[test]
+fn a_longer_id_starting_with_the_target_is_another_note() {
+    let mut vault = Vault::new(["Concept", "Concept", "Concept"]);
+    vault.write("c", "---\nid: b-child\ntype: Concept\ntitle: T\n---\n");
+    let linked = "---\nid: a\ntype: Concept\ntitle: T\nsee_also: [\"[[b-child]]\"]\n---\n";
+    vault.write("a", linked);
+    vault.index();
+    let cid = vault.candidate("a", "b");
+    vault.accept(&cid, "see_also").unwrap();
+    assert_eq!(vault.links("a", "see_also"), ["b-child", "b"]);
+    assert_eq!(vault.links("b", "see_also"), ["a"]);
+}
+
+#[test]
+fn a_link_by_slug_or_filename_already_counts() {
+    for target in ["b-a-slug", "B"] {
+        let mut vault = Vault::new(["Concept", "Concept", "Concept"]);
+        let text =
+            format!("---\nid: a\ntype: Concept\ntitle: T\nsee_also: [\"[[{target}]]\"]\n---\n");
+        vault.write("a", &text);
+        vault.index();
+        let cid = vault.candidate("a", "b");
+        vault.accept(&cid, "see_also").unwrap();
+        assert_eq!(vault.links("a", "see_also"), [target]);
+    }
 }
 
 #[test]
