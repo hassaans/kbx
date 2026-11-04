@@ -75,7 +75,11 @@ fn sees_what_a_live_writer_has_committed_to_the_wal() {
 fn handles_a_path_with_uri_characters() {
     let dir = TempDir::new().unwrap();
     // Windows allows no `?` in a filename.
-    let name = if cfg!(windows) { "a b#c%20e" } else { "a b#c?d%20e" };
+    let name = if cfg!(windows) {
+        "a b#c%20e"
+    } else {
+        "a b#c?d%20e"
+    };
     let folder = dir.path().join(name);
     fs::create_dir_all(&folder).unwrap();
     let path = seeded(&folder);
