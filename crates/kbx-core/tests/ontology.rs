@@ -37,11 +37,13 @@ fn the_example_has_no_min_confidence() {
 #[test]
 fn unknown_keys_are_rejected() {
     let typo = EXAMPLE.replace("requires:", "requries:");
+    assert_ne!(typo, EXAMPLE);
     assert!(matches!(
         Ontology::parse(&typo),
         Err(OntologyError::Yaml(_))
     ));
-    let confidence = EXAMPLE.replace("judge:\n", "judge:\n  min_confidence: 0.6\n");
+    let confidence = EXAMPLE.replace("  vocabulary:", "  min_confidence: 0.6\n  vocabulary:");
+    assert_ne!(confidence, EXAMPLE);
     assert!(matches!(
         Ontology::parse(&confidence),
         Err(OntologyError::Yaml(_))

@@ -1,2 +1,4 @@
-# Fixture bytes feed content hashes, so they must match on every platform.
+# These bytes feed content and ontology hashes, so they must match on every
+# platform.
 tests/fixtures/** text eol=lf
+schema/** text eol=lf
