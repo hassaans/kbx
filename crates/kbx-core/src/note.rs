@@ -12,6 +12,8 @@ pub struct Note {
     pub path: PathBuf,
     /// The ULID from `id`.
     pub id: String,
+    /// 1-based line of the `id` key.
+    pub id_line: usize,
     /// The `type` key, which names a class in the ontology.
     pub class: String,
     /// 1-based line of the `type` key.
@@ -109,6 +111,17 @@ pub enum ParseError {
     NestedMap(String),
 }
 
+impl ParseError {
+    /// 1-based line in the file, where the YAML parser gave one. The rest are
+    /// about the frontmatter as a whole, so they point at its opening fence.
+    pub fn line(&self) -> usize {
+        match self {
+            ParseError::Yaml(error) => error.location().map_or(1, |at| at.line()),
+            _ => 1,
+        }
+    }
+}
+
 /// Finds the frontmatter block: a `---` first line, up to the next `---` line.
 /// Returns `None` if the file doesn't open with one. Handles a BOM and CRLF.
 pub fn split_frontmatter(src: &str) -> Result<Option<Frontmatter<'_>>, ParseError> {
@@ -144,7 +157,9 @@ fn is_fence(line: &str) -> bool {
 /// filename links match, so pass it relative to the vault root.
 pub fn parse_note(path: impl Into<PathBuf>, src: &str) -> Result<Note, ParseError> {
     let frontmatter = split_frontmatter(src)?.ok_or(ParseError::NoFrontmatter)?;
-    let mapping = match serde_yaml::from_str(frontmatter.yaml)? {
+    // The YAML starts on line 2, so a blank line makes its errors count lines
+    // of the file.
+    let mapping = match serde_yaml::from_str(&format!("\n{}", frontmatter.yaml))? {
         Value::Mapping(mapping) => mapping,
         Value::Null => Mapping::new(),
         _ => return Err(ParseError::NotAMapping),
@@ -183,6 +198,7 @@ pub fn parse_note(path: impl Into<PathBuf>, src: &str) -> Result<Note, ParseErro
     Ok(Note {
         path: path.into(),
         class: class.ok_or(ParseError::MissingKey("type"))?,
+        id_line: key_line(frontmatter.yaml, "id"),
         class_line: key_line(frontmatter.yaml, "type"),
         title: title.ok_or(ParseError::MissingKey("title"))?,
         id,

@@ -290,3 +290,19 @@ fn only_known_attachment_types_are_dropped_from_embeds() {
     let targets: Vec<_> = note.mentions().map(|l| l.target.as_str()).collect();
     assert_eq!(targets, ["OAuth 2.0", "v1.2 notes.md"]);
 }
+
+#[test]
+fn a_yaml_error_gives_the_line_in_the_file() {
+    let error = parse_note("a.md", "---\nid: 1\ntitle: a: b\n---\n").unwrap_err();
+    assert!(matches!(error, ParseError::Yaml(_)), "{error}");
+    assert_eq!(error.line(), 3);
+    assert!(error.to_string().contains("line 3"), "{error}");
+}
+
+#[test]
+fn an_error_about_the_whole_frontmatter_points_at_its_opening_fence() {
+    let missing = parse_note("a.md", "---\nid: 1\n---\n").unwrap_err();
+    assert_eq!(missing.line(), 1);
+    let open = parse_note("a.md", "---\nid: 1\n").unwrap_err();
+    assert_eq!(open.line(), 1);
+}
