@@ -845,7 +845,7 @@ fn set_meta(tx: &Transaction<'_>, key: &str, value: &str) -> rusqlite::Result<()
     Ok(())
 }
 
-fn sha256(bytes: &[u8]) -> String {
+pub(crate) fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))

@@ -361,6 +361,8 @@ fn the_database_has_the_section_4_schema_in_wal_mode() {
                 "features",
                 "score",
                 "created_at",
+                "src_hash",
+                "dst_hash",
             ],
         ),
         (

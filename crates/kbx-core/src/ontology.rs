@@ -60,6 +60,10 @@ pub struct Relation {
     /// At most one target per note.
     #[serde(default)]
     pub exclusive: bool,
+    /// The inverse lives only in the index: accepting the relation writes
+    /// nothing to the target note, and `kbx index` derives the mirror edge.
+    #[serde(default)]
+    pub derived_only: bool,
 }
 
 /// How the judge is constrained.

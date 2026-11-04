@@ -77,6 +77,8 @@ pub struct Property {
 pub struct Frontmatter<'a> {
     /// The text between the `---` fences.
     pub yaml: &'a str,
+    /// Byte offset of the first byte of `yaml`.
+    pub yaml_start: usize,
     /// Byte offset of the first byte after the closing fence's line.
     pub body_start: usize,
 }
@@ -141,6 +143,7 @@ pub fn split_frontmatter(src: &str) -> Result<Option<Frontmatter<'_>>, ParseErro
             let yaml = &src[yaml_start..offset];
             return Ok(Some(Frontmatter {
                 yaml,
+                yaml_start,
                 body_start: offset + line.len(),
             }));
         }

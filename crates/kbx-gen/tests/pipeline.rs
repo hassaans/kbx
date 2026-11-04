@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use kbx_core::{Graph, IndexOptions, Ontology, index_vault};
+use kbx_core::{Graph, IndexOptions, Ontology, STRIKES, index_vault};
 use kbx_gen::{
     Budget, Candidate, GenError, Generator, Hit, Query, Scope, Search, SearchError, cid,
     estimate_tokens, generators, store, suggest,
@@ -78,14 +78,21 @@ impl Setup {
         }
     }
 
-    fn reject(&self, src: u32, dst: u32) {
+    /// Records `strikes` rejections of the pair under one relation.
+    fn strike(&self, src: u32, dst: u32, rel: &str, strikes: i64) {
         self.graph
             .connection()
             .execute(
-                "INSERT INTO reviews (src, dst, rel, decision) VALUES (?, ?, 'see_also', 'reject')",
-                params![id(src), id(dst)],
+                "INSERT INTO reviews (src, dst, rel, decision, strikes)
+                 VALUES (?, ?, ?, 'reject', ?)",
+                params![id(src), id(dst), rel, strikes],
             )
             .unwrap();
+    }
+
+    /// Rejects the pair often enough to suppress it.
+    fn suppress(&self, src: u32, dst: u32) {
+        self.strike(src, dst, "see_also", STRIKES);
     }
 }
 
@@ -213,9 +220,9 @@ fn a_direction_set_by_another_generator_leaves_evidence_saying_its_own() {
 }
 
 #[test]
-fn linked_and_rejected_pairs_are_dropped_from_either_direction() {
+fn linked_and_suppressed_pairs_are_dropped_from_either_direction() {
     let setup = Setup::new();
-    setup.reject(13, 12);
+    setup.suppress(13, 12);
     let generators = boxed(vec![Fake {
         name: "fake",
         // `…08` depends on `…06`, seen here from the far end.
@@ -232,6 +239,55 @@ fn linked_and_rejected_pairs_are_dropped_from_either_direction() {
     let found: Vec<_> = run.candidates.iter().map(|c| c.src.clone()).collect();
     assert_eq!(found, [id(8)]);
     assert_eq!(run.dropped, 2);
+}
+
+#[test]
+fn strikes_add_up_across_relations_and_directions_before_a_pair_is_dropped() {
+    let setup = Setup::new();
+    let generators = boxed(vec![Fake {
+        name: "fake",
+        pairs: vec![(12, 13, 1.0)],
+    }]);
+    let found = || {
+        let scope = setup.scope(None);
+        let run = suggest(&setup.graph, &generators, &scope, Budget::default());
+        run.unwrap().candidates.len()
+    };
+    setup.strike(12, 13, "see_also", 1);
+    setup.strike(13, 12, "part_of", 1);
+    assert_eq!(found(), 1);
+    setup.strike(12, 13, "none", 1);
+    assert_eq!(found(), 0);
+}
+
+#[test]
+fn store_records_the_content_hash_of_both_notes() {
+    let setup = Setup::new();
+    let generators = boxed(vec![Fake {
+        name: "fake",
+        pairs: vec![(8, 9, 1.0)],
+    }]);
+    let run = suggest(
+        &setup.graph,
+        &generators,
+        &setup.scope(None),
+        Budget::default(),
+    )
+    .unwrap();
+    store(&setup.graph, &run).unwrap();
+    let hashes: (String, String, String, String) = setup
+        .graph
+        .connection()
+        .query_row(
+            "SELECT c.src_hash, s.content_hash, c.dst_hash, d.content_hash FROM candidates c
+             JOIN files s ON s.id = c.src JOIN files d ON d.id = c.dst",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(hashes.0, hashes.1);
+    assert_eq!(hashes.2, hashes.3);
+    assert_ne!(hashes.0, hashes.2);
 }
 
 #[test]
@@ -388,7 +444,7 @@ fn store_writes_provenance_and_a_rerun_keeps_cid_and_created_at() {
 }
 
 #[test]
-fn store_prunes_stored_pairs_that_are_now_rejected() {
+fn store_prunes_stored_pairs_that_are_now_suppressed() {
     let setup = Setup::new();
     let generators = boxed(vec![Fake {
         name: "fake",
@@ -403,7 +459,7 @@ fn store_prunes_stored_pairs_that_are_now_rejected() {
     .unwrap();
     store(&setup.graph, &run).unwrap();
 
-    setup.reject(9, 8);
+    setup.suppress(9, 8);
     let run = suggest(
         &setup.graph,
         &generators,
@@ -417,7 +473,7 @@ fn store_prunes_stored_pairs_that_are_now_rejected() {
 }
 
 #[test]
-fn store_refuses_a_pair_rejected_since_the_run() {
+fn store_refuses_a_pair_suppressed_since_the_run() {
     let setup = Setup::new();
     let generators = boxed(vec![Fake {
         name: "fake",
@@ -430,7 +486,7 @@ fn store_refuses_a_pair_rejected_since_the_run() {
         Budget::default(),
     )
     .unwrap();
-    setup.reject(9, 8);
+    setup.suppress(9, 8);
     store(&setup.graph, &run).unwrap();
     let left: Vec<_> = rows(&setup.graph).into_iter().map(|row| row.1).collect();
     assert_eq!(left, [id(12)]);

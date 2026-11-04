@@ -4,8 +4,10 @@
 //! reads `ontology.yaml`, and a [`Vault`] resolves links between notes and
 //! validates them, producing [`Finding`]s. [`index_vault`] compiles a folder
 //! of notes into a [`Graph`], the SQLite file described by a [`Project`], and
-//! [`lint_vault`] checks one against the ontology. This crate never touches a
-//! model and never prints.
+//! [`lint_vault`] checks one against the ontology. [`accept`], [`reject`],
+//! [`defer`] and [`unreject`] record review decisions, and [`add_relation`]
+//! writes accepted relations to frontmatter. This crate never touches a model
+//! and never prints.
 
 mod config;
 mod graph;
@@ -14,8 +16,10 @@ mod link;
 mod lint;
 mod note;
 mod ontology;
+mod review;
 mod section;
 mod vault;
+mod writer;
 
 pub use config::{
     CONFIG_FILE, Config, ConfigError, EXAMPLE_ONTOLOGY, InitReport, Project, Qmd, Search, init,
@@ -33,5 +37,10 @@ pub use note::{
 pub use ontology::{
     ANY, Class, Direction, Judge, NONE, Ontology, OntologyError, Relation, RelationKey,
 };
+pub use review::{
+    Accepted, Decision, Deferred, Rejected, ReviewError, STRIKES, Unrejected, accept, cid, defer,
+    ordered, reject, suppressed_pairs, unreject,
+};
 pub use section::{Block, Section, section_key};
 pub use vault::{Finding, FindingCode, Resolved, ResolvedVia, Resolver, Severity, Vault};
+pub use writer::{WriteError, add_relation, write_atomic};

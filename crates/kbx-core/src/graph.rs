@@ -11,6 +11,10 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Row};
 /// - `links` holds every link as written, with `dst` NULL while it is hidden
 ///   (§8). `edges` is derived from it, so a link in an unchanged file can
 ///   resolve, or stop resolving, when another file changes.
+///
+/// `candidates` also has `src_hash` and `dst_hash`: each note's `content_hash`
+/// when the pair was generated, which `kbx accept` compares with the file. A
+/// later `kbx index` moves `files.content_hash`, so that can't serve.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, id TEXT UNIQUE, type TEXT, title TEXT,
     content_hash TEXT, fm_hash TEXT, mtime INTEGER, scope TEXT, indexed_at INTEGER);
@@ -29,7 +33,7 @@ CREATE INDEX IF NOT EXISTS aliases_id ON aliases(id);
 CREATE INDEX IF NOT EXISTS sections_id ON sections(id);
 CREATE INDEX IF NOT EXISTS links_src ON links(src);
 CREATE TABLE IF NOT EXISTS candidates (cid TEXT PRIMARY KEY, src TEXT, dst TEXT, generators TEXT,
-    features TEXT, score REAL, created_at INTEGER);
+    features TEXT, score REAL, created_at INTEGER, src_hash TEXT, dst_hash TEXT);
 CREATE TABLE IF NOT EXISTS verdicts (cid TEXT, backend TEXT, model TEXT, prompt_hash TEXT, verdict TEXT,
     rel TEXT, confidence REAL, rationale TEXT, cost_usd REAL, cached_tokens INTEGER,
     created_at INTEGER, PRIMARY KEY(cid, backend, model, prompt_hash));
@@ -90,6 +94,7 @@ impl Graph {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
+        add_candidate_hashes(&conn)?;
         Ok(Graph { conn })
     }
 
@@ -191,6 +196,20 @@ impl Graph {
             hidden: count("SELECT COUNT(*) FROM links WHERE dst IS NULL")?,
         })
     }
+}
+
+/// Upgrades a database from before `src_hash` and `dst_hash`. Its candidates
+/// keep NULL there, so accepting one asks for a new `kbx suggest`.
+fn add_candidate_hashes(conn: &Connection) -> rusqlite::Result<()> {
+    let mut statement = conn.prepare("SELECT name FROM pragma_table_info('candidates')")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let columns = rows.collect::<rusqlite::Result<HashSet<_>>>()?;
+    for column in ["src_hash", "dst_hash"] {
+        if !columns.contains(column) {
+            conn.execute_batch(&format!("ALTER TABLE candidates ADD COLUMN {column} TEXT"))?;
+        }
+    }
+    Ok(())
 }
 
 /// `path` as a `file:` URI, which SQLite needs for its query parameters.
