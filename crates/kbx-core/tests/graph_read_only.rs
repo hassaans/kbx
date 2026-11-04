@@ -74,7 +74,9 @@ fn sees_what_a_live_writer_has_committed_to_the_wal() {
 #[test]
 fn handles_a_path_with_uri_characters() {
     let dir = TempDir::new().unwrap();
-    let folder = dir.path().join("a b#c?d%20e");
+    // Windows allows no `?` in a filename.
+    let name = if cfg!(windows) { "a b#c%20e" } else { "a b#c?d%20e" };
+    let folder = dir.path().join(name);
     fs::create_dir_all(&folder).unwrap();
     let path = seeded(&folder);
     assert_eq!(count(&Graph::open_read_only(&path).unwrap()), 1);
