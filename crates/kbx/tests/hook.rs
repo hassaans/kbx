@@ -324,6 +324,26 @@ fn an_existing_shell_hook_keeps_running_and_the_lint_still_applies() {
 }
 
 #[test]
+fn a_zsh_hook_can_still_find_kbx() {
+    let repo = Repo::new();
+    if repo.command("zsh", &["--version"]).output().is_err() {
+        return;
+    }
+    fs::create_dir_all(repo.hook().parent().unwrap()).unwrap();
+    fs::write(repo.hook(), "#!/usr/bin/env zsh\n").unwrap();
+    repo.installed();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(repo.hook(), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    repo.stage("notes/good.md", &clean());
+
+    assert_committed(&repo, &repo.commit());
+}
+
+#[test]
 fn reinstalling_over_a_merged_hook_keeps_one_block() {
     let repo = Repo::new();
     fs::create_dir_all(repo.hook().parent().unwrap()).unwrap();

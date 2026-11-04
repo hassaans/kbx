@@ -13,7 +13,8 @@ const END: &str = "# <<< kbx <<<";
 
 /// The lint, in a subshell so that it leaves a script it's added to alone.
 /// `@PREFIX@` is the vault's folder in the repository. It reads the files on
-/// disk, so a file staged and then edited is linted as edited.
+/// disk, so a file staged and then edited is linted as edited. Its variables
+/// have to mean nothing to any shell it's merged into: zsh ties `path` to `PATH`.
 const BLOCK: &str = r#"# >>> kbx >>>
 # From `kbx hook install`, which rewrites these lines when run again.
 (
@@ -24,9 +25,9 @@ const BLOCK: &str = r#"# >>> kbx >>>
   fi
   staged=$(git diff --cached --name-only -z --diff-filter=ACMR --relative="$prefix" | tr '\0' '\n')
   set --
-  while IFS= read -r path; do
-    case "$path" in
-      *.[mM][dD]) [ -f "./$prefix$path" ] && set -- "$@" "$path" ;;
+  while IFS= read -r note; do
+    case "$note" in
+      *.[mM][dD]) [ -f "./$prefix$note" ] && set -- "$@" "$note" ;;
     esac
   done <<KBX_STAGED
 $staged

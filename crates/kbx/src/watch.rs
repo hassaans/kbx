@@ -17,7 +17,7 @@ use tracing::warn;
 
 use crate::{LintFormat, lint_project, print_index_report, read_ontology, suggest};
 
-/// How soon a batch that failed is made up for, by reconciling.
+/// How soon to try a whole-vault pass again after something failed.
 const RETRY: Duration = Duration::from_secs(5);
 
 pub struct Options {
@@ -73,8 +73,11 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
 
         if timers.take_reconcile() {
             match update(&project, Vec::new()) {
-                Ok(changed) => timers.after_batch(changed),
-                Err(error) => eprintln!("error: {error}"),
+                Ok(changed) => timers.after_reconcile(changed),
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    timers.retry();
+                }
             }
         }
         if timers.take_suggest() {
@@ -95,6 +98,9 @@ struct Timers {
     reconcile_every: Option<Duration>,
     suggest_after: Option<Duration>,
     reconcile_at: Option<Instant>,
+    /// A whole-vault pass is owed, because events were lost or a run failed.
+    /// Only a pass that succeeds settles it.
+    recover_at: Option<Instant>,
     suggest_at: Option<Instant>,
 }
 
@@ -104,24 +110,31 @@ impl Timers {
             reconcile_every: options.reconcile,
             suggest_after: options.suggest,
             reconcile_at: options.reconcile.map(|every| Instant::now() + every),
+            recover_at: None,
             suggest_at: None,
         }
     }
 
     fn next(&self) -> Option<Instant> {
-        self.reconcile_at.into_iter().chain(self.suggest_at).min()
+        let timers = [self.reconcile_at, self.recover_at, self.suggest_at];
+        timers.into_iter().flatten().min()
     }
 
     fn reconcile_now(&mut self) {
-        self.reconcile_at = Some(Instant::now());
+        self.recover_at = Some(Instant::now());
     }
 
     fn retry(&mut self) {
-        self.reconcile_at = Some(Instant::now() + RETRY);
+        self.recover_at = Some(Instant::now() + RETRY);
     }
 
-    /// A batch just ran, so a reconcile can wait, and if it changed anything
-    /// `suggest` waits for the saves to stop.
+    fn after_reconcile(&mut self, changed: bool) {
+        self.recover_at = None;
+        self.after_batch(changed);
+    }
+
+    /// A batch just ran, so a periodic reconcile can wait, and if it changed
+    /// anything `suggest` waits for the saves to stop.
     fn after_batch(&mut self, changed: bool) {
         self.reconcile_at = self.reconcile_every.map(|every| Instant::now() + every);
         if changed && let Some(after) = self.suggest_after {
@@ -130,9 +143,15 @@ impl Timers {
     }
 
     fn take_reconcile(&mut self) -> bool {
-        let due = self.reconcile_at.is_some_and(|at| at <= Instant::now());
+        let now = Instant::now();
+        let due = [self.reconcile_at, self.recover_at]
+            .into_iter()
+            .flatten()
+            .any(|at| at <= now);
         if due {
-            self.reconcile_at = self.reconcile_every.map(|every| Instant::now() + every);
+            self.reconcile_at = self.reconcile_every.map(|every| now + every);
+            // Until the pass reports back, so that a failure can't fire twice.
+            self.recover_at = None;
         }
         due
     }
@@ -219,5 +238,45 @@ fn is_wanted(vault: &Path, path: &Path, kind: &EventKind) -> bool {
         ),
         Ok(_) => false,
         Err(_) => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn timers(reconcile: Option<Duration>) -> Timers {
+        Timers::new(&Options {
+            debounce: Duration::from_millis(1),
+            reconcile,
+            suggest: None,
+        })
+    }
+
+    #[test]
+    fn a_batch_does_not_cancel_a_rescan() {
+        for every in [None, Some(Duration::from_secs(3600))] {
+            let mut timers = timers(every);
+            timers.reconcile_now();
+            timers.after_batch(true);
+            assert!(timers.take_reconcile());
+        }
+    }
+
+    #[test]
+    fn a_batch_does_not_cancel_a_retry() {
+        let mut timers = timers(None);
+        timers.retry();
+        timers.after_batch(true);
+        assert!(timers.next().is_some());
+    }
+
+    #[test]
+    fn a_reconcile_that_succeeds_settles_what_was_owed() {
+        let mut timers = timers(None);
+        timers.reconcile_now();
+        assert!(timers.take_reconcile());
+        timers.after_reconcile(false);
+        assert_eq!(timers.next(), None);
     }
 }

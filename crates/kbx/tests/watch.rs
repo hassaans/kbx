@@ -341,6 +341,8 @@ fn a_broken_ontology_does_not_stop_the_watch() {
     fs::write(&ontology, good).unwrap();
     vault.write("notes/second.md", &note(101, "Concept", "Fine."));
     watch.wait_until("the second note", || is_indexed(&vault, 101));
+    // Its batch failed and nothing will save it again, so the retry has to.
+    watch.wait_until("the first note", || is_indexed(&vault, 100));
 }
 
 #[test]
