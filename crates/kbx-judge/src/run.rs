@@ -65,7 +65,32 @@ pub struct Tally {
 /// The backend called `id`, set up from `kbx.toml` and the environment. Probes
 /// are cached in the vault at `vault`, if there is one.
 pub fn backend(id: JudgeId, config: &JudgeConfig, vault: Option<&Path>) -> Box<dyn Judge> {
+    build(id, None, config, vault)
+}
+
+/// [`backend`], asking for `model` whatever the environment and `kbx.toml` say
+/// and however little memory is free: comparing models means knowing which one
+/// answered.
+pub fn backend_with_model(
+    id: JudgeId,
+    model: &str,
+    config: &JudgeConfig,
+    vault: Option<&Path>,
+) -> Box<dyn Judge> {
+    build(id, Some(model), config, vault)
+}
+
+fn build(
+    id: JudgeId,
+    named: Option<&str>,
+    config: &JudgeConfig,
+    vault: Option<&Path>,
+) -> Box<dyn Judge> {
     let cache = ProbeCache::new(vault);
+    let model = |variable: &str, backend: &JudgeBackend, default: &str| match named {
+        Some(model) => model.to_string(),
+        None => model(variable, backend, default),
+    };
     match id {
         JudgeId::ClaudeCli => {
             let model = model("KBX_CLAUDE_MODEL", &config.claude, claude::DEFAULT_MODEL);
@@ -80,9 +105,12 @@ pub fn backend(id: JudgeId, config: &JudgeConfig, vault: Option<&Path>) -> Box<d
         JudgeId::Ollama => {
             let configured = || config.ollama.model.clone();
             let default = || ollama::DEFAULT_MODEL.to_string();
-            let model = from_env("KBX_OLLAMA_MODEL").unwrap_or_else(|| {
-                ollama::fit(configured().unwrap_or_else(default), free_memory())
-            });
+            let chosen = named.map(String::from);
+            let model = chosen
+                .or_else(|| from_env("KBX_OLLAMA_MODEL"))
+                .unwrap_or_else(|| {
+                    ollama::fit(configured().unwrap_or_else(default), free_memory())
+                });
             let host = from_env("OLLAMA_HOST").or_else(|| config.ollama.host.clone());
             Box::new(Ollama::new(model, host.as_deref()))
         }

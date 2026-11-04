@@ -59,11 +59,7 @@ pub struct Options {
 
 pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     let project = Project::discover(&env::current_dir()?)?;
-    let size = options.batch.unwrap_or(project.config.judge.batch);
-    if !BATCH_SIZES.contains(&size) {
-        let (least, most) = (BATCH_SIZES.start(), BATCH_SIZES.end());
-        return Err(format!("the batch size must be {least} to {most}, not {size}").into());
-    }
+    let size = batch_size(&project, options.batch)?;
     let yaml = fs::read_to_string(&project.ontology)
         .map_err(|error| format!("{}: {error}", project.ontology.display()))?;
     let ontology = Ontology::parse(&yaml)?;
@@ -146,6 +142,16 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Pairs per judge call: `batch`, else `judge.batch`.
+pub fn batch_size(project: &Project, batch: Option<usize>) -> Result<usize, Box<dyn Error>> {
+    let size = batch.unwrap_or(project.config.judge.batch);
+    if !BATCH_SIZES.contains(&size) {
+        let (least, most) = (BATCH_SIZES.start(), BATCH_SIZES.end());
+        return Err(format!("the batch size must be {least} to {most}, not {size}").into());
+    }
+    Ok(size)
 }
 
 /// Writes the run's candidates to `kbx.proposed`, after the judge so that they

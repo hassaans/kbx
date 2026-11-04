@@ -41,6 +41,7 @@ kbx unreject --list        # the suppressed pairs; `kbx unreject <cid>` lifts on
 kbx export edges --jsonl   # the edges table, one JSON object per line
 kbx export reviews --jsonl # the reviews table; `kbx import reviews --jsonl` reads it back
 kbx export rdf             # the graph as Turtle; see docs/export.md
+kbx bakeoff                # score judge models against labels; see docs/judge-bakeoff.md
 kbx doctor                 # check the vault, the index, RAM, the judges, qmd and its collections
 kbx doctor --fix           # create the qmd collections that are missing
 ```

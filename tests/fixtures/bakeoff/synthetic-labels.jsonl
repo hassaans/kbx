@@ -1,0 +1,7 @@
+{"src":"01KBX000000000000000000002","dst":"01KBX000000000000000000003","rel":"depends_on","decision":"accept","reason":null,"strikes":0,"decided_at":1700000000}
+{"src":"01KBX000000000000000000002","dst":"01KBX000000000000000000004","rel":"depends_on","decision":"accept","reason":null,"strikes":0,"decided_at":1700000001}
+{"src":"01KBX000000000000000000005","dst":"01KBX000000000000000000001","rel":"part_of","decision":"accept","reason":null,"strikes":0,"decided_at":1700000002}
+{"src":"01KBX000000000000000000006","dst":"01KBX000000000000000000014","rel":"none","decision":"reject","reason":"unrelated","strikes":1,"decided_at":1700000003}
+{"src":"01KBX000000000000000000007","dst":"01KBX000000000000000000015","rel":"none","decision":"reject","reason":null,"strikes":1,"decided_at":1700000004}
+{"src":"01KBX000000000000000000006","dst":"01KBX000000000000000000016","rel":"see_also","decision":"reject","reason":null,"strikes":1,"decided_at":1700000005}
+{"src":"01KBX000000000000000000014","dst":"01KBX000000000000000000015","rel":"none","decision":"defer","reason":null,"strikes":0,"decided_at":1700000006}

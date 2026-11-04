@@ -1,0 +1,21 @@
+# The ontology for a mirror of ~/HQ (see mirror-hq.py). The example ontology's
+# relations, without its domains and ranges: its classes aren't HQ's, and a
+# person labelling a pair shouldn't be refused a relation.
+version: 1
+classes:
+  Company: {description: "A business or organisation."}
+  Concept: {description: "A definable idea or term."}
+  Person:  {description: "A named individual."}
+  Project: {description: "A piece of work with an outcome."}
+  Tool:    {description: "A tool or technology."}
+  Product: {description: "Something a company sells."}
+relations:
+  part_of:     {inverse: has_part,       domain: [any], range: [any], weight: 1.0, transitive: true}
+  depends_on:  {inverse: required_by,    domain: [any], range: [any], weight: 0.9}
+  implements:  {inverse: implemented_by, domain: [any], range: [any], weight: 0.8}
+  contradicts: {inverse: contradicts,    domain: [any], range: [any], weight: 0.7, symmetric: true}
+  example_of:  {inverse: has_example,    domain: [any], range: [any], weight: 0.6}
+  see_also:    {inverse: see_also,       domain: [any], range: [any], weight: 0.3, symmetric: true}
+judge:
+  vocabulary: [part_of, depends_on, implements, contradicts, example_of, see_also, none]
+  direction: from_schema

@@ -1,3 +1,4 @@
+mod bakeoff;
 mod doctor;
 mod export;
 mod hook;
@@ -137,6 +138,51 @@ enum Command {
             "note", "judge", "budget", "stage", "batch", "budget_usd", "dry_run",
         ])]
         eval: bool,
+    },
+    /// Score judge backends and models against human labels, or prepare the
+    /// pairs to label. See docs/judge-bakeoff.md.
+    Bakeoff {
+        /// Choose pairs to label and print them as JSON Lines. Changes nothing.
+        #[arg(long, conflicts_with_all = [
+            "enqueue", "labels", "doc", "models", "batch", "budget_usd",
+        ])]
+        prepare: bool,
+        /// Add the pairs in FILE to the candidates, for `kbx review` to show.
+        #[arg(long, value_name = "FILE", conflicts_with_all = [
+            "labels", "doc", "models", "batch", "budget_usd",
+        ])]
+        enqueue: Option<PathBuf>,
+        /// The labelled pairs: `kbx export reviews --jsonl`, or a filled-in
+        /// `--prepare` file.
+        #[arg(long, value_name = "FILE", default_value = bakeoff::LABELS)]
+        labels: PathBuf,
+        /// The Markdown file to write the results into, between its markers.
+        #[arg(long, value_name = "FILE", default_value = bakeoff::DOC)]
+        doc: PathBuf,
+        /// What to compare. A backend alone means the model it would normally
+        /// use. Defaults to the §14 line-up. Excerpts go to each of these.
+        #[arg(long, value_name = "BACKEND[:MODEL]", value_delimiter = ',')]
+        models: Option<Vec<String>>,
+        /// Pairs per judge call, from 10 to 25. Defaults to `judge.batch`.
+        #[arg(long, value_name = "PAIRS")]
+        batch: Option<usize>,
+        /// Stop judging before this run would spend more than this, across all
+        /// the models.
+        #[arg(long, value_name = "USD", value_parser = parse_usd)]
+        budget_usd: Option<f64>,
+        /// With --prepare, how many pairs to choose.
+        #[arg(long, default_value_t = 100, requires = "prepare")]
+        pairs: usize,
+        /// With --prepare, write to this file and not to stdout.
+        #[arg(long, value_name = "FILE", requires = "prepare")]
+        out: Option<PathBuf>,
+        /// With --prepare, replace each excerpt with a stand-in that quotes
+        /// nothing, for a file that gets published.
+        #[arg(long, requires = "prepare")]
+        synthetic: bool,
+        /// With --prepare, run only these generators.
+        #[arg(long, value_delimiter = ',', requires = "prepare")]
+        generators: Option<Vec<String>>,
     },
     /// Keep the index current: re-index saved notes and lint them.
     Watch {
@@ -343,6 +389,37 @@ fn main() -> ExitCode {
             budget_usd,
             dry_run,
             eval,
+        }),
+        Command::Bakeoff {
+            prepare: true,
+            pairs,
+            out,
+            synthetic,
+            generators,
+            ..
+        } => bakeoff::prepare(bakeoff::Preparing {
+            pairs,
+            out,
+            synthetic,
+            generators,
+        }),
+        Command::Bakeoff {
+            enqueue: Some(file),
+            ..
+        } => bakeoff::enqueue(&file),
+        Command::Bakeoff {
+            labels,
+            doc,
+            models,
+            batch,
+            budget_usd,
+            ..
+        } => bakeoff::run(bakeoff::Options {
+            labels,
+            doc,
+            models,
+            batch,
+            budget_usd,
         }),
         Command::Watch {
             suggest,
