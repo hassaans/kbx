@@ -1,0 +1,216 @@
+name: Release
+
+# A v* tag builds, tests and publishes. Everything else is a dry run, which does
+# all of that except publish: a pull request that touches the release tooling,
+# or a manual run. See docs/releasing.md.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/scripts/**
+      - npm/pack.sh
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and pack, but skip the publish steps
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.preflight.outputs.version }}
+      publish: ${{ steps.preflight.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - id: preflight
+        run: .github/scripts/preflight.sh
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: preflight
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            package: kbx-darwin-arm64
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            package: kbx-darwin-x64
+          # The oldest Ubuntu runners, because a binary needs at least the glibc
+          # it was built against.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            package: kbx-linux-x64-gnu
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            package: kbx-linux-arm64-gnu
+          # A static CRT, because a clean Windows has no VCRUNTIME140.dll.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            package: kbx-win32-x64-msvc
+            extension: .exe
+            rustflags: -C target-feature=+crt-static
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: cargo build --release --package kbx --locked --target ${{ matrix.target }}
+      - run: cargo test --release --workspace --locked --target ${{ matrix.target }}
+      - run: node --test "npm/test/*.test.js"
+        shell: bash
+        env:
+          KBX_BINARY: target/${{ matrix.target }}/release/kbx${{ matrix.extension }}
+      - run: |
+          mkdir staged
+          cp "target/${{ matrix.target }}/release/kbx${{ matrix.extension }}" \
+            "staged/${{ matrix.package }}${{ matrix.extension }}"
+        shell: bash
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.package }}
+          path: staged/*
+          if-no-files-found: error
+
+  # On Linux, so the tarballs keep the binaries' exec bit.
+  pack:
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binary-*
+          path: binaries
+          merge-multiple: true
+      - name: Pack the six npm packages
+        run: |
+          for binary in binaries/*; do
+            npm/pack.sh "$(basename "$binary" .exe)" dist "$binary"
+          done
+          npm/pack.sh kbx dist
+      - name: Run the binary from its tarball
+        run: |
+          mkdir smoke
+          tar -xzf "dist/kbx-linux-x64-gnu-$VERSION.tgz" -C smoke
+          smoke/package/bin/kbx --version
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-tarballs
+          path: dist/*.tgz
+          if-no-files-found: error
+
+  # Catches a crate that can't be published before npm goes out, because npm
+  # versions can't be taken back.
+  package-crates:
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo package --workspace --locked
+
+  github-release:
+    needs: [preflight, build, pack, package-crates]
+    if: needs.preflight.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binary-*
+          path: binaries
+          merge-multiple: true
+      - run: .github/scripts/publish-github.sh "$GITHUB_REF_NAME" binaries/*
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  npm-publish:
+    needs: [preflight, github-release]
+    if: needs.preflight.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-tarballs
+          path: dist
+      - name: Publish the platform packages, then the shim
+        run: |
+          for pkg in kbx-darwin-arm64 kbx-darwin-x64 kbx-linux-x64-gnu kbx-linux-arm64-gnu kbx-win32-x64-msvc kbx; do
+            .github/scripts/publish-npm.sh "$pkg" "$VERSION" "dist/$pkg-$VERSION.tgz"
+          done
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  cargo-publish:
+    needs: [preflight, npm-publish]
+    if: needs.preflight.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish the crates in dependency order
+        run: |
+          for crate in kbx-core kbx-gen kbx-judge kbx; do
+            .github/scripts/publish-crate.sh "$crate" "$VERSION"
+          done
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
