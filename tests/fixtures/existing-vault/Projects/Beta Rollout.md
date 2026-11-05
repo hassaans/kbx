@@ -8,3 +8,5 @@ cssclasses: wide  # keep this comment
 
 Follows the alpha launch plan. Reuses the [[Health Check]] and what the
 [[Retro Notes]] say.
+
+Ship it by the [[Runbooks/Deploy Checklist.md]] too.

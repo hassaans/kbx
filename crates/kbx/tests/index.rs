@@ -995,6 +995,25 @@ fn a_hidden_link_surfaces_when_its_target_appears_and_hides_when_it_goes() {
 }
 
 #[test]
+fn a_partial_path_link_hides_while_a_second_note_also_matches() {
+    let vault = Vault::fixture();
+    let linker = note(90, "Linker", "", "See [[shared/plan]].");
+    vault.write("scratch/linker.md", &linker);
+    vault.write("scratch/x/shared/plan.md", &note(91, "Plan", "", ""));
+    vault.ok(&["index"]);
+    assert!(vault.has_edge(&id(90), &id(91), "mentions", "inline"));
+
+    let second = "scratch/y/shared/plan.md";
+    vault.write(second, &note(92, "Plan", "", ""));
+    vault.ok(&["index"]);
+    assert_eq!(vault.edges_from(&id(90)), []);
+
+    fs::remove_file(vault.path(second)).unwrap();
+    vault.ok(&["index"]);
+    assert!(vault.has_edge(&id(90), &id(91), "mentions", "inline"));
+}
+
+#[test]
 fn renaming_a_file_keeps_links_by_id_and_hides_links_by_filename() {
     let vault = Vault::fixture();
     vault.ok(&["index"]);
