@@ -231,12 +231,16 @@ impl Timers {
 /// or dated further ahead says nothing, so it can't hold up the index.
 fn since_last_write(paths: &BTreeSet<PathBuf>, window: Duration) -> Option<Duration> {
     let now = SystemTime::now();
+    if env::var_os("KBX_DIAG_WIDEN").is_some() {
+        std::thread::sleep(Duration::from_millis(60));
+    }
+    let unfixed = env::var_os("KBX_DIAG_UNFIXED").is_some();
     let written = paths
         .iter()
         .filter_map(|path| fs::metadata(path).ok()?.modified().ok());
     let quiet = |at: SystemTime| match now.duration_since(at) {
         Ok(quiet) => Some(quiet),
-        Err(ahead) if ahead.duration() < window => Some(Duration::ZERO),
+        Err(ahead) if !unfixed && ahead.duration() < window => Some(Duration::ZERO),
         Err(_) => None,
     };
     written.filter_map(quiet).min()
