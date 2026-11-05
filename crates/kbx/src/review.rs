@@ -89,7 +89,7 @@ impl Session {
         let queue = Queue::load(&self.graph, &self.ontology)?;
         Ok(match self.writes_notes() {
             true => queue,
-            false => queue.without_accepted(),
+            false => queue.without_accepted(&accepted_relations(self.graph.connection())?),
         })
     }
 

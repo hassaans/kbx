@@ -10,8 +10,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde_json::{Map, Value};
 
 use super::{
-    Accepted, Decision, Deferred, OnDisk, Preview, Rejected, ReviewError, accept, accept_unwritten,
-    defer, judged_rel, ordered, reject, runs_forward, section_anchor,
+    Accepted, AcceptedRelation, Decision, Deferred, OnDisk, Preview, Rejected, ReviewError, accept,
+    accept_unwritten, defer, judged_rel, ordered, reject, runs_forward, section_anchor,
 };
 use crate::graph::{Graph, has_accepted_rel, has_candidate_sections};
 use crate::note::split_frontmatter;
@@ -174,10 +174,13 @@ impl Queue {
     }
 
     /// The queue with nothing left to do on an acceptance: without
-    /// `[write] frontmatter` it's all there will be, so such a candidate is
-    /// decided and leaves the queue.
-    pub fn without_accepted(mut self) -> Queue {
-        self.items.retain(|item| !item.unwritten);
+    /// `[write] frontmatter` it's all there will be, so a candidate `held` in
+    /// `.kbx/` is decided and leaves the queue. One accepted before there was
+    /// anywhere to hold it stays, for accepting again to put it there.
+    pub fn without_accepted(mut self, held: &[AcceptedRelation]) -> Queue {
+        let held: HashSet<&str> = held.iter().map(|relation| relation.cid.as_str()).collect();
+        self.items
+            .retain(|item| !item.unwritten || !held.contains(item.cid.as_str()));
         self
     }
 

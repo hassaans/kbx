@@ -123,8 +123,9 @@ checked against the index: a note that has changed and been indexed since is fin
 and one edited since `kbx index` refuses the write. `kbx accept --no-write` shows
 the diff against the note as it is.
 
-With the setting off, `kbx review` leaves these candidates out of the queue. With
-it on, it keeps them in their place by score, with
+With the setting off, `kbx review` leaves these candidates out of the queue. A
+decision from `--no-write` in a build from before this table stays in the queue
+until you accept it again, which puts it in `.kbx/`. With the setting on, it keeps them in their place by score, with
 `accepted, not written: a writes it` in the header. So `a` there writes it, as any
 `a` writes to your notes then: `--no-write` has no key.
 

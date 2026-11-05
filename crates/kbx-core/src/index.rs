@@ -929,7 +929,8 @@ fn relink(tx: &Transaction<'_>, ontology: &Ontology) -> rusqlite::Result<()> {
 /// Adds the relations accepted in `.kbx/` to the frontmatter's. A note that
 /// states one, from either end, wins: its row goes, and from then on the note
 /// is all there is to the relation, so taking the link out takes the relation
-/// out. One with a note missing from the index waits there and has no edge.
+/// out. Its candidate goes too, or that decision would hide the pair if it's
+/// proposed again. One with a note missing from the index waits there and has no edge.
 fn fold_accepted(
     tx: &Transaction<'_>,
     wanted: &mut BTreeMap<EdgeKey, EdgeRow>,
@@ -948,6 +949,11 @@ fn fold_accepted(
         let backward = mirror(ontology, &rel)
             .map(|name| (dst.clone(), src.clone(), name.to_string(), FRONTMATTER));
         if wanted.contains_key(&forward) || backward.is_some_and(|key| wanted.contains_key(&key)) {
+            tx.execute(
+                "DELETE FROM candidates WHERE cid IN
+                     (SELECT cid FROM accepted WHERE src = ?1 AND dst = ?2 AND rel = ?3)",
+                [&src, &dst, &rel],
+            )?;
             tx.execute(
                 "DELETE FROM accepted WHERE src = ? AND dst = ? AND rel = ?",
                 [&src, &dst, &rel],

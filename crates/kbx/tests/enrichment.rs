@@ -755,3 +755,64 @@ fn sync_stage_clears_the_lines_of_what_was_decided_with_the_setting_off() {
         "writing it takes the line"
     );
 }
+
+#[test]
+fn a_pair_a_note_took_over_can_be_proposed_again_once_the_link_is_gone() {
+    let vault = small();
+    candidate(&vault, "c1", "a", "b");
+    vault.ok(&["accept", "c1", "--rel", "see_also"]);
+    let plain = note(&vault, "a");
+    let linked = plain.replace("title: a\n", "title: a\nsee_also: [\"[[b]]\"]\n");
+    vault.write("notes/a.md", &linked);
+    vault.ok(&["index"]);
+
+    let decided: i64 = db(&vault)
+        .query_row(
+            "SELECT COUNT(*) FROM candidates WHERE accepted_rel IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(decided, 0, "no decision left to hide the pair");
+}
+
+#[test]
+fn turning_section_anchors_off_keeps_the_relation_at_note_level_and_withdrawable() {
+    let vault = small();
+    candidate(&vault, "c1", "a", "b");
+    vault.ok(&["accept", "c1", "--rel", "see_also"]);
+    let db = db(&vault);
+    db.execute("UPDATE candidates SET dst_section = 'gone'", [])
+        .unwrap();
+    db.execute("UPDATE accepted SET dst_section = 'gone'", [])
+        .unwrap();
+
+    vault.ok(&SUGGEST);
+    assert_eq!(edges(&vault), see_also());
+    let sections = |table: &str| -> i64 {
+        let sql = format!("SELECT COUNT(*) FROM {table} WHERE dst_section IS NOT NULL");
+        db.query_row(&sql, [], |row| row.get(0)).unwrap()
+    };
+    assert_eq!(sections("candidates"), 0, "no anchor is written after it");
+    assert_eq!(sections("accepted"), 0, "no anchor is written after it");
+
+    vault.ok(&["reject", "c1"]);
+    assert!(accepted_json(&vault).is_empty());
+    assert!(edges(&vault).is_empty());
+}
+
+#[test]
+fn a_decision_from_before_the_accepted_table_stays_in_the_queue_until_accepted() {
+    let vault = small();
+    candidate(&vault, "c1", "a", "b");
+    db(&vault)
+        .execute("UPDATE candidates SET accepted_rel = 'see_also'", [])
+        .unwrap();
+
+    assert!(vault.ok(&["review", "--json"]).contains("c1"));
+
+    vault.ok(&["accept", "c1"]);
+    assert_eq!(accepted_json(&vault).len(), 1);
+    assert_eq!(edges(&vault), see_also());
+    assert_eq!(vault.ok(&["review", "--json"]).trim(), "[]");
+}

@@ -365,7 +365,10 @@ impl App {
             count.push_str(&format!("  ({hidden} hidden, already rejected)"));
         }
         if item.unwritten {
-            count.push_str("  accepted, not written: a writes it");
+            count.push_str(match self.session.writes_notes() {
+                true => "  accepted, not written: a writes it",
+                false => "  accepted, not written: a keeps it in .kbx",
+            });
         }
         if self.held > 0 {
             count.push_str(&format!("  ({} accepted in .kbx)", self.held));
