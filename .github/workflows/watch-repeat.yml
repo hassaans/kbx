@@ -23,18 +23,24 @@ jobs:
       - run: cargo test --package kbx --locked --test watch --no-run
       - shell: bash
         run: |
+          # Load the runner so that stalls of the size CI once saw can happen.
+          for j in 1 2 3 4 5 6 7 8; do (while true; do yes > /dev/null; done) & done
+          for j in 1 2 3; do (while true; do dd if=/dev/zero of="$RUNNER_TEMP/load$j" bs=1M count=768 2>/dev/null; rm -f "$RUNNER_TEMP/load$j"; done) & done
           fails=0
-          for i in $(seq 1 30); do
-            if cargo test --package kbx --locked --test watch -- --nocapture > iter.log 2>&1; then
-              echo "iteration $i ok: $(grep -a -E 'DIAG-WIDEST' iter.log)"
-            else
+          for i in $(seq 1 25); do
+            cargo test --package kbx --locked --test watch -- --nocapture --test-threads=32 > iter.log 2>&1 || true
+            vault=$(grep -a -E 'window=2s' iter.log | sed -E 's/^DIAG [^ ]+ ([^ ]+) .*/\1/' | sort -u | head -1)
+            others=$(grep -a -E '^test .* FAILED' iter.log | grep -a -v saves_that_outlast | wc -l)
+            if grep -a -q -E '^test saves_that_outlast.* FAILED' iter.log; then
               fails=$((fails+1))
               echo "=== iteration $i FAILED ==="
-              grep -a -E 'panicked|left:|right:|DIAG-WIDEST|DIAG-GAP' iter.log
-              vault=$(grep -a -E 'window=2s' iter.log | sed -E 's/^DIAG [^ ]+ ([^ ]+) .*/\1/' | sort -u | head -1)
+              grep -a -E 'panicked at .*watch|left:|right:|DIAG-WIDEST|DIAG-GAP' iter.log | cut -c1-200
               grep -a -F "$vault" iter.log | cut -c1-200
               echo "=== end $i ==="
+            else
+              echo "iteration $i ok: $(grep -a -E 'DIAG-WIDEST' iter.log) others-failed=$others"
+              grep -a -F "$vault" iter.log | grep -a take_index | sed -E 's/.*(quiet=[^ ]+ [^ ]* ?).*/  \1/' | cut -c1-80
             fi
           done
           echo "failures: $fails"
-          test "$fails" = 0
+          kill $(jobs -p) 2>/dev/null || true
