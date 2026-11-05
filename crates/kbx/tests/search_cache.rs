@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use common::{FakePath, Fixture, id, stderr};
+use common::{FakePath, Fixture, id, stderr, stdout};
 use rusqlite::Connection;
 
 const STATUS: &str = "\
@@ -329,6 +329,189 @@ fn a_damaged_cache_is_replaced() {
 
     suggest(&vault);
     assert_eq!(embedding_calls(&vault), 0);
+}
+
+/// What `qmd status` says of an index with `pending` documents of `total`
+/// waiting, `vectors` chunks in.
+fn status_with(total: usize, vectors: usize, pending: usize) -> String {
+    let counts = format!(
+        "  Total:    {total} files indexed\n  Vectors:  {vectors} embedded\n  \
+         Pending:  {pending} need embedding (run 'qmd embed')\n"
+    );
+    let plain = "  Total:    2 files indexed\n  Vectors:  2 embedded\n";
+    assert!(STATUS.contains(plain));
+    STATUS.replace(plain, &counts)
+}
+
+fn set_status(vault: &Fixture, status: &str) {
+    fs::write(vault.path.dir().join("status"), status).unwrap();
+}
+
+#[test]
+fn a_large_pending_embed_is_estimated_and_not_waited_for() {
+    let vault = vault();
+    set_status(&vault, &status_with(80_000, 0, 80_000));
+
+    let output = vault.kbx(&["suggest", "--judge", "none"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let log = stderr(&output);
+    assert!(log.contains("80000 documents"), "{log}");
+    assert!(log.contains("3.6 hours"), "{log}");
+    assert!(log.contains("kbx suggest --embed wait"), "{log}");
+    assert!(log.contains("embed`"), "{log}");
+    assert_eq!(count(&vault, "embed"), 0);
+    assert_eq!(
+        count(&vault, "update"),
+        1,
+        "keywords still have to be current"
+    );
+    assert_eq!(count(&vault, "query"), 2);
+    let said = stdout(&output);
+    assert!(said.contains("vectors: 0 of 80000 documents"), "{said}");
+    assert_eq!(knn_pairs(&vault).len(), 1, "keyword results still count");
+}
+
+#[test]
+fn the_estimate_uses_the_chunks_per_document_so_far() {
+    let vault = vault();
+    set_status(&vault, &status_with(80_000, 200_000, 40_000));
+
+    let output = vault.kbx(&["suggest", "--judge", "none"]);
+    let log = stderr(&output);
+    assert!(log.contains("about 200000 chunks"), "{log}");
+    assert!(log.contains("2.8 hours"), "{log}");
+    let said = stdout(&output);
+    assert!(
+        said.contains("vectors: 40000 of 80000 documents (50%)"),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_small_pending_embed_still_runs_and_says_how_to_skip_it() {
+    let vault = vault();
+    set_status(&vault, &status_with(100, 90, 10));
+
+    let output = vault.kbx(&["suggest", "--judge", "none"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let log = stderr(&output);
+    assert!(log.contains("embedding 10 documents"), "{log}");
+    assert!(log.contains("--embed skip"), "{log}");
+    assert_eq!(count(&vault, "embed"), 1);
+}
+
+#[test]
+fn nothing_pending_says_nothing_about_embedding() {
+    let vault = vault();
+    let output = vault.kbx(&["suggest", "--judge", "none"]);
+    let log = stderr(&output);
+    assert!(!log.contains("embed"), "{log}");
+    assert!(stdout(&output).contains("vectors: 2 of 2 documents\n"));
+}
+
+#[test]
+fn embed_wait_waits_however_long_it_will_take() {
+    let vault = vault();
+    set_status(&vault, &status_with(80_000, 0, 80_000));
+
+    let output = vault.kbx(&["suggest", "--judge", "none", "--embed", "wait"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let log = stderr(&output);
+    assert!(log.contains("embedding 80000 documents"), "{log}");
+    assert!(log.contains("--embed skip"), "{log}");
+    assert_eq!(count(&vault, "embed"), 1);
+}
+
+#[test]
+fn embed_skip_leaves_even_a_small_embed() {
+    let vault = vault();
+    set_status(&vault, &status_with(100, 90, 10));
+
+    let output = vault.kbx(&["suggest", "--judge", "none", "--embed", "skip"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stderr(&output).contains("10 documents"));
+    assert_eq!(count(&vault, "embed"), 0);
+    assert_eq!(count(&vault, "update"), 1);
+    assert_eq!(count(&vault, "query"), 2);
+}
+
+#[test]
+fn embed_skip_runs_no_embed_when_qmd_says_nothing_of_its_index() {
+    let vault = vault();
+    fs::remove_file(vault.path.dir().join("status")).unwrap();
+    vault.ok(&["suggest", "--judge", "none", "--embed", "skip"]);
+    assert_eq!(count(&vault, "embed"), 0);
+}
+
+#[test]
+fn what_a_half_embedded_index_finds_is_not_kept() {
+    let vault = vault();
+    set_status(&vault, &status_with(80_000, 0, 80_000));
+    suggest(&vault);
+    forget_calls(&vault);
+
+    suggest(&vault);
+    assert_eq!(count(&vault, "update"), 1);
+    assert_eq!(count(&vault, "embed"), 0);
+    assert_eq!(count(&vault, "query"), 2, "nothing was cached");
+
+    // Finished by hand: the cache takes over from here.
+    set_status(&vault, STATUS);
+    suggest(&vault);
+    forget_calls(&vault);
+    suggest(&vault);
+    assert_eq!(embedding_calls(&vault), 0);
+}
+
+#[test]
+fn embed_skip_on_a_complete_index_keeps_the_cache() {
+    let vault = vault();
+    let skip = ["suggest", "--judge", "none", "--embed", "skip"];
+    vault.ok(&skip);
+    assert_eq!(count(&vault, "embed"), 0);
+    forget_calls(&vault);
+
+    vault.ok(&skip);
+    assert_eq!(embedding_calls(&vault), 0);
+}
+
+#[test]
+fn a_named_index_is_never_embedded_or_estimated() {
+    let vault = vault();
+    let config = fs::read_to_string(vault.root().join(".kbx/kbx.toml")).unwrap();
+    let named = config.replace(
+        "qmd = { bin = \"qmd\",",
+        "qmd = { index = \"shared\", bin = \"qmd\",",
+    );
+    assert_ne!(named, config);
+    vault.write(".kbx/kbx.toml", &named);
+    set_status(&vault, &status_with(80_000, 0, 80_000));
+
+    let output = vault.kbx(&["suggest", "--judge", "none"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!stderr(&output).contains("80000"), "{}", stderr(&output));
+    assert!(stdout(&output).contains("vectors: 0 of 80000 documents"));
+    assert_eq!(count(&vault, "embed"), 0);
+}
+
+#[test]
+fn a_dry_run_reports_the_vectors_and_refreshes_nothing() {
+    let vault = vault();
+    set_status(&vault, &status_with(80_000, 0, 80_000));
+    let output = vault.kbx(&["suggest", "--judge", "none", "--dry-run"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("vectors: 0 of 80000 documents"));
+    assert_eq!(count(&vault, "update"), 0);
+    assert_eq!(count(&vault, "embed"), 0);
+}
+
+#[test]
+fn a_run_that_changes_nothing_has_no_use_for_embed() {
+    let vault = vault();
+    for mode in ["--dry-run", "--eval"] {
+        let output = vault.kbx(&["suggest", mode, "--embed", "skip"]);
+        assert!(!output.status.success(), "{mode}");
+    }
 }
 
 /// Every file under `dir` and its bytes.

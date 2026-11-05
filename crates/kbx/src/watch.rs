@@ -16,6 +16,7 @@ use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebouncedEvent, Debouncer, RecommendedCache, new_debouncer};
 use tracing::warn;
 
+use crate::embedding::Embed;
 use crate::{LintFormat, lint_project, print_index_report, read_ontology, suggest};
 
 /// How soon to try a whole-vault pass again after something failed.
@@ -106,6 +107,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
                 generators: None,
                 // Never on a timer: judging spends money on every save.
                 judge: suggest::Judge::None,
+                embed: Embed::Auto,
                 stage: false,
                 budget: None,
                 batch: None,

@@ -371,7 +371,7 @@ kbx init [--ontology path] [--search builtin|qmd]   create .kbx/, kbx.toml, exam
 kbx index [--full] [paths…]          compile frontmatter → graph.sqlite (incremental by content hash)
 kbx lint  [--format json]            validate against ontology
 kbx suggest [--note id] [--generators a,b] [--judge auto|claude-cli|codex-cli|ollama|llama-server|none]
-            [--batch 20] [--budget N] [--budget-usd X] [--stage] [--dry-run]
+            [--batch 20] [--budget N] [--budget-usd X] [--embed auto|wait|skip] [--stage] [--dry-run]
 kbx review [--json]                  queue UI
 kbx accept|reject|defer <cid>… [--reason]
 kbx graph  neighbors|path|stats      ad-hoc queries

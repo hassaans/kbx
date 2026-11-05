@@ -158,6 +158,130 @@ fn vectors_arrive_once_the_model_does() {
     assert_eq!(missing, 0);
 }
 
+/// Vectors the index holds, and rows without one.
+fn vectors(vault: &Fixture) -> (i64, i64) {
+    let connection = Connection::open(vault.root().join(INDEX)).unwrap();
+    let count = |query: &str| connection.query_row(query, [], |row| row.get(0)).unwrap();
+    (
+        count("SELECT count(*) FROM texts WHERE vector IS NOT NULL"),
+        count("SELECT count(*) FROM texts WHERE vector IS NULL"),
+    )
+}
+
+/// As [`offline`], with every embed counting as a large one.
+fn offline_and_large(vault: &Fixture, args: &[&str]) -> std::process::Output {
+    let home = vault.root().join(".home");
+    let home = home.to_str().unwrap();
+    let env = [
+        ("KBX_EMBED_AUTO_MINUTES", "0"),
+        ("KBX_MODEL_URL", CLOSED_PORT),
+        ("HOME", home),
+        ("XDG_CACHE_HOME", home),
+        ("LOCALAPPDATA", home),
+    ];
+    vault.kbx_with(args, &env)
+}
+
+#[test]
+fn a_small_embed_runs_and_says_how_to_skip_it() {
+    let vault = vault(FakePath::empty());
+    let output = with_model(&vault, &KNN);
+    let log = stderr(&output);
+    assert!(output.status.success(), "{log}");
+    assert!(log.contains("embedding "), "{log}");
+    assert!(log.contains("--embed skip"), "{log}");
+    let (embedded, missing) = vectors(&vault);
+    assert_eq!(missing, 0);
+    let said = stdout(&output);
+    let all = format!("vectors: {embedded} of {embedded} sections\n");
+    assert!(said.contains(&all), "{said}");
+}
+
+#[test]
+fn a_large_embed_is_estimated_and_not_waited_for() {
+    let vault = vault(FakePath::empty());
+    let output = offline_and_large(&vault, &KNN);
+    let log = stderr(&output);
+    assert!(output.status.success(), "{log}");
+    assert!(log.contains("sections have no vector yet"), "{log}");
+    assert!(log.contains("kbx suggest --embed wait"), "{log}");
+    assert!(!log.contains("downloading"), "no model is needed: {log}");
+    assert!(!log.contains("keyword alone"), "nothing went wrong: {log}");
+    let (embedded, missing) = vectors(&vault);
+    assert_eq!(embedded, 0);
+    assert!(missing > 0);
+    assert!(from_knn(&vault) > 0, "keyword results still count");
+    let said = stdout(&output);
+    assert!(
+        said.contains(&format!("vectors: 0 of {missing} sections")),
+        "{said}"
+    );
+}
+
+#[test]
+fn embed_skip_leaves_even_a_small_embed() {
+    let vault = vault(FakePath::empty());
+    let args = ["suggest", "--judge", "none", "--embed", "skip"];
+    let output = offline(&vault, &args);
+    let log = stderr(&output);
+    assert!(output.status.success(), "{log}");
+    assert!(log.contains("sections have no vector yet"), "{log}");
+    assert!(!log.contains("downloading"), "{log}");
+    assert_eq!(vectors(&vault).0, 0);
+}
+
+#[test]
+fn embed_wait_waits_however_long_it_will_take() {
+    let vault = vault(FakePath::empty());
+    let home = vault.root().join(".home");
+    let home = home.to_str().unwrap();
+    let env = [
+        ("KBX_EMBED_AUTO_MINUTES", "0"),
+        ("KBX_MODEL_DIR", TINY_MODEL),
+        ("KBX_MODEL_URL", CLOSED_PORT),
+        ("HOME", home),
+        ("XDG_CACHE_HOME", home),
+    ];
+    let args = ["suggest", "--judge", "none", "--embed", "wait"];
+    let output = vault.kbx_with(&args, &env);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(vectors(&vault).1, 0);
+}
+
+#[test]
+fn a_skipped_embed_searches_the_vectors_that_exist() {
+    let vault = vault(FakePath::empty());
+    assert!(with_model(&vault, &KNN).status.success());
+    let (embedded, _) = vectors(&vault);
+
+    let id = common::id(900);
+    let note = format!("---\nid: {id}\ntype: Concept\ntitle: New\n---\n\nA new section.\n");
+    vault.write("new-note.md", &note);
+    vault.ok(&["index"]);
+    let output = offline_and_large(&vault, &KNN);
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let (kept, missing) = vectors(&vault);
+    assert_eq!(kept, embedded);
+    assert!(missing > 0);
+    let said = stdout(&output);
+    let line = format!("vectors: {embedded} of {} sections", embedded + missing);
+    assert!(said.contains(&line), "{said}");
+    assert!(said.contains("by keyword"), "{said}");
+}
+
+#[test]
+fn a_dry_run_reports_the_vectors_of_the_index_there_is() {
+    let vault = vault(FakePath::empty());
+    assert!(with_model(&vault, &KNN).status.success());
+    let (embedded, _) = vectors(&vault);
+    let output = with_model(&vault, &["suggest", "--judge", "none", "--dry-run"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let said = stdout(&output);
+    let line = format!("vectors: {embedded} of {embedded} sections");
+    assert!(said.contains(&line), "{said}");
+}
+
 #[test]
 fn a_dry_run_writes_no_index_and_says_what_is_missing() {
     let vault = vault(FakePath::empty());

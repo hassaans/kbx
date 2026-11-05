@@ -24,6 +24,7 @@ use kbx_judge::{
 use tokio::runtime;
 use tracing::warn;
 
+use crate::embedding::{Coverage, Embed, Engine};
 use crate::{builtin, qmd};
 
 /// Pairs per judge call (§6.3). Below this, start-up and the prefix dominate
@@ -58,6 +59,7 @@ pub struct Options {
     pub stage: bool,
     pub batch: Option<usize>,
     pub budget_usd: Option<f64>,
+    pub embed: Embed,
     pub dry_run: bool,
     pub eval: bool,
 }
@@ -108,17 +110,22 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     if let Some(reason) = idle {
         println!("skipped the search: {reason}");
     }
-    let search = match (idle, project.config.backend()) {
-        (None, SearchBackend::Qmd) => Some(qmd_backend(&project, &graph, searching, read_only)?),
-        (None, SearchBackend::Builtin) => {
-            Some(builtin::backend(&project, &graph, searching, read_only)?)
+    let embed = options.embed;
+    let backend = match (idle, project.config.backend()) {
+        (None, SearchBackend::Qmd) => {
+            Some(qmd_backend(&project, &graph, searching, read_only, embed)?)
         }
+        (None, SearchBackend::Builtin) => Some(builtin::backend(
+            &project, &graph, searching, read_only, embed,
+        )?),
         (Some(_), SearchBackend::Builtin) if !read_only => {
             builtin::forget(&project, &graph)?;
             None
         }
         (Some(_), _) => None,
     };
+    let (search, coverage) = backend.unzip();
+    let coverage = coverage.flatten();
     let chosen = generators(options.generators.as_deref(), search)?;
     let scope = Scope {
         vault: &project.vault,
@@ -151,6 +158,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
             println!("would store {} candidates", run.candidates.len());
         }
         print_counts(&run);
+        coverage.iter().for_each(Coverage::print);
         print_batches(
             options.judge,
             &project,
@@ -172,6 +180,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
             println!("{} candidates", run.candidates.len());
         }
         print_counts(&run);
+        coverage.iter().for_each(Coverage::print);
         let plan = Plan {
             size,
             budget_usd: options.budget_usd,
@@ -255,22 +264,28 @@ fn nothing_to_search(
     Ok(Some("no note is in a searched folder"))
 }
 
-/// QMD, with what it found kept in the search cache where that can be trusted.
+/// QMD, with what it found kept in the search cache where that can be trusted,
+/// and how much of its index has vectors, if it says.
 fn qmd_backend(
     project: &Project,
     graph: &Graph,
     searching: bool,
     read_only: bool,
-) -> Result<Box<dyn Search>, Box<dyn Error>> {
+    embed: Embed,
+) -> Result<Engine, Box<dyn Error>> {
     let roots = project.searched(&project.exclusions()?);
     let usable = searching && qmd::program(project).is_file() && !roots.is_empty();
-    let status = usable.then(|| qmd::status(project)).flatten();
+    let mut status = usable.then(|| qmd::status(project)).flatten();
     let mut cache = status
         .as_ref()
         .and_then(|status| search_cache(project, status, read_only));
     // What a half-built index finds shouldn't outlive this run.
-    if usable && !read_only && !refresh(project, graph, status.as_ref(), cache.as_ref()) {
-        cache = None;
+    if usable && !read_only {
+        let (current, now) = refresh(project, graph, status, cache.as_ref(), embed);
+        status = now;
+        if !current {
+            cache = None;
+        }
     }
     let qmd_search = QmdSearch::new(
         qmd::program(project),
@@ -278,13 +293,14 @@ fn qmd_backend(
         roots.clone(),
         graph,
     )?;
-    Ok(match cache {
+    let search: Box<dyn Search> = match cache {
         Some(cache) => {
             let inner = Box::new(qmd_search);
             Box::new(cache.around(inner, graph, &project.qmd_index(), &roots)?)
         }
         None => Box::new(qmd_search),
-    })
+    };
+    Ok((search, status.as_ref().and_then(qmd::Status::coverage)))
 }
 
 /// Pairs per judge call: `batch`, else `judge.batch`.
@@ -314,32 +330,53 @@ fn search_cache(project: &Project, status: &qmd::Status, read_only: bool) -> Opt
         .ok()
 }
 
-/// Runs `qmd update` and `qmd embed`, unless the cache knows they have nothing
-/// to do, and says whether qmd is up to date. A refresh is recorded only once
-/// it has worked, with what qmd says after it.
+/// Runs `qmd update`, then `qmd embed` if `embed` says to, unless the cache
+/// knows they have nothing to do. Says whether qmd is up to date, which an
+/// index left with something to embed isn't, and what qmd reports now. A
+/// refresh is recorded only once it has worked, with what qmd says after it.
 fn refresh(
     project: &Project,
     graph: &Graph,
-    status: Option<&qmd::Status>,
+    status: Option<qmd::Status>,
     cache: Option<&SearchCache>,
-) -> bool {
+    embed: Embed,
+) -> (bool, Option<qmd::Status>) {
     let stamp = |status: &qmd::Status| vault_state(graph, &status.index).ok();
-    if let (Some(cache), Some(state)) = (cache, status.and_then(stamp))
+    if let (Some(cache), Some(state)) = (cache, status.as_ref().and_then(stamp))
         && cache.is_refreshed(&state)
     {
-        return true;
+        return (true, status);
     }
-    if let Err(error) = qmd::refresh(project) {
-        eprintln!("warning: the qmd index may be out of date: {error}");
-        return false;
+    let failed = |error: String| eprintln!("warning: the qmd index may be out of date: {error}");
+    if let Err(error) = qmd::update(project) {
+        failed(error);
+        return (false, status);
+    }
+    // Only now does qmd know what the vault's new notes add to its backlog. A
+    // qmd that said nothing before won't start now.
+    let mut status = status.and_then(|_| qmd::status(project));
+    let named = project.config.qmd.index.is_some();
+    let backlog = status.as_ref().and_then(qmd::Status::backlog);
+    let embedding = embed.waits_for(backlog.as_ref().map(|backlog| backlog.seconds));
+    if let Some(backlog) = backlog.as_ref().filter(|b| b.count > 0 && !named) {
+        backlog.announce(embedding, &qmd::embed_by_hand(project));
+    }
+    if embedding {
+        if let Err(error) = qmd::embed(project) {
+            failed(error);
+            return (false, status);
+        }
+        status = status.and_then(|_| qmd::status(project));
+    } else if !named && backlog.is_none_or(|backlog| backlog.count > 0) {
+        return (false, status);
     }
     if let Some(cache) = cache
-        && let Some(state) = qmd::status(project).as_ref().and_then(stamp)
+        && let Some(state) = status.as_ref().and_then(stamp)
         && let Err(error) = cache.mark_refreshed(&state)
     {
         warn!("the search cache: {error}");
     }
-    true
+    (true, status)
 }
 
 /// Writes the run's candidates to `kbx.proposed`, after the judge so that they
