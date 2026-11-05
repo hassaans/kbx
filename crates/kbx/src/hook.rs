@@ -53,10 +53,10 @@ running in a terminal, does the same with a debounce."#;
 
 pub fn install(force: bool) -> Result<ExitCode, Box<dyn Error>> {
     let project = Project::discover(&env::current_dir()?)?;
-    // The hook runs kbx from the vault root, so kbx.toml has to be found there.
+    // The hook runs kbx from the vault root, so the config has to be found there.
     if !Project::discover(&project.vault).is_ok_and(|found| found.vault == project.vault) {
         return Err(format!(
-            "the hook runs in {}, where no kbx.toml leads back to this vault",
+            "the hook runs in {}, where no config file leads back to this vault",
             project.vault.display()
         )
         .into());

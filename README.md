@@ -10,6 +10,7 @@ against the ontology and answers questions about it:
 
 ```sh
 kbx init                   # create .kbx/, kbx.toml and the example ontology
+kbx init --in-kbx          # the same with .kbx/kbx.toml, leaving the vault's root alone
 kbx index                  # compile changed notes into .kbx/graph.sqlite
 kbx index --full           # rebuild, ignoring the stored hashes
 kbx index notes/a.md       # limit the run to some files and folders
@@ -35,6 +36,7 @@ kbx hook install           # lint staged notes on commit; prints an Obsidian rec
 kbx review                 # go through the candidates: a / r / d / e / s / q
 kbx review --json          # the same queue for editors and agents
 kbx accept <cid>… --rel see_also   # write relations and inverses to frontmatter
+kbx accept <cid>… --no-write       # record the decision, print the diff, touch no note
 kbx reject <cid>… --reason "…"     # three rejections of a pair suppress it
 kbx defer <cid>…           # put a decision off
 kbx unreject --list        # the suppressed pairs; `kbx unreject <cid>` lifts one
@@ -51,6 +53,49 @@ after `git add` is linted as edited.
 
 Every lint finding is an error except `link.unstable`, a link by filename rather
 than id. That's a warning, because it's how most Obsidian vaults link.
+
+### What kbx writes, and where
+
+Everything kbx keeps for a vault is under `.kbx/`: the database, the ontology
+`kbx init` starts you with, the search index and the caches. To keep the rest of
+a shared or synced vault exactly as it is, put the config in there too:
+
+```sh
+kbx init --in-kbx
+```
+
+kbx looks for `.kbx/kbx.toml` first, then `kbx.toml`, in the current folder and
+then each parent. If one folder has both it stops with an error naming them, and
+you keep one. The file reads the same in either place, so you can move an existing
+`kbx.toml` into `.kbx/` as it is: a relative `vault` still starts at the folder
+holding `.kbx/`. `kbx doctor` prints which file is in use.
+
+With that, `kbx index`, `kbx suggest` and `kbx accept --no-write` change nothing
+outside `.kbx/`. Nothing below happens unless you run the command beside it, and
+neither `kbx watch` nor `kbx watch --suggest` runs any of them.
+
+| Path | Written by |
+|---|---|
+| `kbx.toml` at the vault root | `kbx init` without `--in-kbx`. `kbx init --search qmd` and `kbx doctor --fix` also rewrite its qmd collections, in whichever file is in use. |
+| Notes: relations, inverses and the `qmd.metadata` mirror | `kbx accept` without `--no-write`, `a` in `kbx review`, and `kbx sync-stage` for a link you moved under a relation key |
+| Notes: `kbx.proposed` | `kbx suggest --stage` adds lines. `kbx sync-stage`, `kbx accept`, `kbx reject`, and `a` and `r` in `kbx review` take out the lines of what they decide. |
+| Notes: `kbx.reviewed` | `kbx sync-stage --mark-reviewed` |
+| `.kbx-*.tmp` beside a note | Any of the three rows above, for the moment before the rename over the note |
+| `pre-commit` in the repository's hooks folder, usually `.git/hooks/` | `kbx hook install` |
+| The file named by `--doc`, by default `docs/judge-bakeoff.md` from where you run it | `kbx bakeoff`, between its markers |
+| The file named by `--out` | `kbx bakeoff --prepare --out` |
+
+`kbx suggest --stage` writes into your notes, so it doesn't belong in a run that
+has to leave them alone. See [Staged proposals](docs/staging.md).
+
+Outside the vault:
+
+| Path | Written by |
+|---|---|
+| `kbx/models/` in the user's cache folder, or `KBX_MODEL_DIR` | `kbx suggest` on the built-in engine, which downloads its model once |
+| qmd's own index and config, such as `~/.cache/qmd/` and `~/.config/qmd/`, which hold the text of your notes | On QMD: `kbx init`, `kbx doctor --fix` and `kbx suggest` |
+| qmd itself, in npm's global folder | On QMD: `kbx init` and `kbx doctor`, if it's missing |
+| A temporary folder, removed afterwards | `kbx suggest` and `kbx bakeoff`, when a judge CLI runs |
 
 ### Search
 

@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use kbx_core::{
-    Finding, Graph, IndexOptions, IndexReport, Neighbor, Node, Project, Search, Severity,
-    index_vault, init, lint_vault,
+    ConfigLocation, Finding, Graph, IndexOptions, IndexReport, Neighbor, Node, Project, Search,
+    Severity, index_vault, init, lint_vault,
 };
 use serde_json::json;
 use tracing_subscriber::EnvFilter;
@@ -99,6 +99,10 @@ enum Command {
         /// The search backend of a new vault.
         #[arg(long, value_enum)]
         search: Option<SearchChoice>,
+        /// Put kbx.toml in .kbx/, so that nothing is added to the vault's root
+        /// but that folder.
+        #[arg(long)]
+        in_kbx: bool,
     },
     /// Compile the vault into .kbx/graph.sqlite, by content hash.
     Index {
@@ -235,7 +239,8 @@ enum Command {
         json: bool,
     },
     /// Write candidates to frontmatter: the relation on one note, its inverse
-    /// on the other. Refused if either note changed since `kbx suggest`.
+    /// on the other. Refused if either note changed since `kbx suggest`. A
+    /// candidate accepted with --no-write is written by accepting it again.
     Accept {
         /// The candidates.
         #[arg(required = true)]
@@ -246,6 +251,10 @@ enum Command {
         /// Why, kept in the reviews table.
         #[arg(long)]
         reason: Option<String>,
+        /// Record the decision and print a diff of what would be written to
+        /// each note, without touching one.
+        #[arg(long)]
+        no_write: bool,
     },
     /// Take candidates out of the queue. Three rejections of a pair suppress
     /// it from every generator.
@@ -379,7 +388,17 @@ fn main() -> ExitCode {
     }
 
     let result = match cli.command {
-        Command::Init { ontology, search } => run_init(ontology, search.map(Search::from)),
+        Command::Init {
+            ontology,
+            search,
+            in_kbx,
+        } => {
+            let location = match in_kbx {
+                true => ConfigLocation::KbxFolder,
+                false => ConfigLocation::Root,
+            };
+            run_init(ontology, search.map(Search::from), location)
+        }
         Command::Index { full, paths } => run_index(IndexOptions {
             full,
             paths,
@@ -457,7 +476,15 @@ fn main() -> ExitCode {
             action: HookAction::Install { force },
         } => hook::install(force),
         Command::Review { json } => review::run(json),
-        Command::Accept { cids, rel, reason } => review::accept(&cids, &rel, &reason),
+        Command::Accept {
+            cids,
+            rel,
+            reason,
+            no_write: false,
+        } => review::accept(&cids, &rel, &reason),
+        Command::Accept {
+            cids, rel, reason, ..
+        } => review::accept_unwritten(&cids, &rel, &reason),
         Command::Reject { cids, rel, reason } => review::reject(&cids, &rel, &reason),
         Command::Defer { cids, rel, reason } => review::defer(&cids, &rel, &reason),
         Command::Unreject { cids, list: false } => review::unreject(&cids),
@@ -482,11 +509,18 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_init(ontology: Option<PathBuf>, search: Option<Search>) -> Result<ExitCode, Box<dyn Error>> {
+fn run_init(
+    ontology: Option<PathBuf>,
+    search: Option<Search>,
+    location: ConfigLocation,
+) -> Result<ExitCode, Box<dyn Error>> {
     let dir = env::current_dir()?;
-    let report = init(&dir, ontology.as_deref(), search.unwrap_or(Search::Builtin))?;
+    let backend = search.unwrap_or(Search::Builtin);
+    let report = init(&dir, ontology.as_deref(), backend, location)?;
+    let mut project = Project::discover(&dir)?;
     if report.config {
-        println!("created kbx.toml");
+        let file = project.config_file.strip_prefix(&dir)?;
+        println!("created {}", file.display());
     }
     for (folder, why) in &report.skipped {
         println!("skipped {folder}: {why}");
@@ -494,7 +528,6 @@ fn run_init(ontology: Option<PathBuf>, search: Option<Search>) -> Result<ExitCod
     if report.ontology {
         println!("created .kbx/ontology.yaml");
     }
-    let mut project = Project::load(&dir.join(kbx_core::CONFIG_FILE))?;
     let backend = project.config.backend();
     if search.is_some_and(|wanted| wanted != backend) {
         let file = project.config_file.display();

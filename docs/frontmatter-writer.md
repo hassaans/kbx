@@ -1,7 +1,9 @@
 # The frontmatter writer
 
-`kbx accept` is the one command that changes your notes. This page says what it
-writes, what it refuses, and where it can lose a comment.
+`kbx accept` writes accepted relations to your notes. This page says what it
+writes, what it refuses, and where it can lose a comment. To see all that without
+a note changing, use [`kbx accept --no-write`](review.md#accepting-without-writing).
+The README lists [everything kbx can write](../README.md#what-kbx-writes-and-where).
 
 ## What changes
 

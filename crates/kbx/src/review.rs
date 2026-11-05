@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use kbx_core::{
-    Decision, Graph, IndexError, IndexOptions, IndexState, Item, Ontology, Project, Queue,
+    Decision, Graph, IndexError, IndexOptions, IndexState, Item, Ontology, Preview, Project, Queue,
     ReviewError, STRIKES, cid, index_state, index_vault, suppressed_pairs,
 };
 use serde_json::{Value, json};
@@ -137,6 +137,10 @@ fn item_json(item: &Item) -> Value {
         "verdict": item.verdict,
         "rationale": item.rationale,
     });
+    // Only where it's so, as with the anchors below.
+    if item.unwritten {
+        json["accepted_unwritten"] = json!(true);
+    }
     // Only where there are any, so a note-level item reads as it always has.
     for (key, anchor) in [
         ("src_anchor", &item.src_anchor),
@@ -195,6 +199,47 @@ pub fn accept(
         Ok(())
     });
     session.reindex(&written)?;
+    Ok(code)
+}
+
+/// `kbx accept --no-write`. The diffs come last, one per note, with everything
+/// the run accepted in them. Only a terminal gets them cleaned up: note text can
+/// hold escape sequences, and piped output has to stay exact.
+pub fn accept_unwritten(
+    cids: &[String],
+    rel: &Option<String>,
+    reason: &Option<String>,
+) -> Result<ExitCode, Box<dyn Error>> {
+    let session = Session::open()?;
+    let mut preview = Preview::default();
+    let code = each(cids, |cid| {
+        let accepted = kbx_core::accept_unwritten(
+            &session.graph,
+            &session.project.vault,
+            &session.ontology,
+            cid,
+            decision(rel, reason),
+            &mut preview,
+        )?;
+        println!(
+            "accepted {cid}, not written: {} -{}-> {}",
+            accepted.src, accepted.rel, accepted.dst
+        );
+        let key = session.ontology.lookup(&accepted.rel);
+        if key.is_some_and(|key| key.relation.derived_only) {
+            println!("  its inverse is derived by `kbx index`, so only one note would change");
+        }
+        Ok(())
+    });
+    if preview.is_empty() {
+        println!("no note would change");
+    }
+    for diff in preview.diffs() {
+        match stdout().is_terminal() {
+            true => print!("{}", tui::plain(&diff)),
+            false => print!("{diff}"),
+        }
+    }
     Ok(code)
 }
 

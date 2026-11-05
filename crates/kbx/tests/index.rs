@@ -365,6 +365,7 @@ fn the_database_has_the_section_4_schema_in_wal_mode() {
                 "dst_hash",
                 "src_section",
                 "dst_section",
+                "accepted_rel",
             ],
         ),
         (

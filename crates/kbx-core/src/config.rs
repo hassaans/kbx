@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,9 @@ pub const CONFIG_FILE: &str = "kbx.toml";
 /// crate.
 pub const EXAMPLE_ONTOLOGY: &str = include_str!("../assets/ontology.example.yaml");
 
+/// The folder kbx keeps its own files in, at the vault root.
+const KBX_DIR: &str = ".kbx";
+
 const DEFAULT_ONTOLOGY: &str = ".kbx/ontology.yaml";
 const GRAPH_FILE: &str = ".kbx/graph.sqlite";
 
@@ -30,7 +34,8 @@ const GRAPH_FILE: &str = ".kbx/graph.sqlite";
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Config {
     /// The vault root. `~` is the home folder, and a relative path starts at
-    /// the folder holding `kbx.toml`.
+    /// the folder holding `kbx.toml`, or at the one holding `.kbx/` if the file
+    /// is in there.
     pub vault: String,
     /// The top-level folders that are ACL scopes.
     #[serde(default)]
@@ -291,6 +296,24 @@ pub struct Project {
     pub graph: PathBuf,
 }
 
+/// Where [`init`] puts a new `kbx.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigLocation {
+    /// `kbx.toml`, next to the notes.
+    Root,
+    /// `.kbx/kbx.toml`, which leaves the vault's root as it was.
+    KbxFolder,
+}
+
+impl ConfigLocation {
+    fn path(self, dir: &Path) -> PathBuf {
+        match self {
+            ConfigLocation::Root => dir.join(CONFIG_FILE),
+            ConfigLocation::KbxFolder => dir.join(KBX_DIR).join(CONFIG_FILE),
+        }
+    }
+}
+
 /// What [`init`] created, as opposed to found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitReport {
@@ -306,8 +329,17 @@ pub struct InitReport {
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     /// No `kbx.toml` here or above.
-    #[error("no {CONFIG_FILE} here or in any parent folder; run `kbx init`")]
+    #[error(
+        "no {CONFIG_FILE} or {KBX_DIR}/{CONFIG_FILE} here or in any parent folder; run `kbx init`"
+    )]
     NotInitialised,
+    /// A folder has both config files, and neither can be said to win.
+    #[error("two config files: {0} and {1}; keep one")]
+    TwoConfigs(PathBuf, PathBuf),
+    /// `kbx init --in-kbx` found a `kbx.toml` at the root, and a second would
+    /// be [`ConfigError::TwoConfigs`].
+    #[error("{0} already exists; move it to {KBX_DIR}/{CONFIG_FILE} instead")]
+    ConfigAtRoot(PathBuf),
     /// `--ontology` was passed but a `kbx.toml` already says which one to use.
     #[error("{CONFIG_FILE} already exists; edit its `ontology` key instead")]
     AlreadyInitialised,
@@ -332,14 +364,17 @@ pub enum ConfigError {
 }
 
 impl Project {
-    /// Finds `kbx.toml` in `start` or the nearest parent folder that has one.
+    /// Finds the config file of `start` or the nearest parent folder that has
+    /// one. `.kbx/` itself is passed over: what's in it belongs to its parent,
+    /// which also has to be checked for a second file.
     pub fn discover(start: &Path) -> Result<Project, ConfigError> {
-        let config = start
-            .ancestors()
-            .map(|dir| dir.join(CONFIG_FILE))
-            .find(|path| path.is_file())
-            .ok_or(ConfigError::NotInitialised)?;
-        Project::load(&config)
+        let vaults = start.ancestors();
+        for dir in vaults.filter(|dir| dir.file_name() != Some(OsStr::new(KBX_DIR))) {
+            if let Some(config) = config_in(dir)? {
+                return Project::load(&config);
+            }
+        }
+        Err(ConfigError::NotInitialised)
     }
 
     /// Reads a `kbx.toml`.
@@ -347,8 +382,7 @@ impl Project {
         let text = fs::read_to_string(path).map_err(|e| ConfigError::Io(path.into(), e))?;
         let config: Config =
             toml::from_str(&text).map_err(|e| ConfigError::Toml(path.into(), e))?;
-        let base = path.parent().unwrap_or(Path::new("."));
-        let vault = base.join(expand_home(&config.vault));
+        let vault = config_base(path).join(expand_home(&config.vault));
         let vault = canonical_path(&vault).map_err(|e| ConfigError::Io(vault, e))?;
         Ok(Project {
             ontology: vault.join(expand_home(&config.ontology)),
@@ -421,6 +455,28 @@ impl Project {
     }
 }
 
+/// The config file of `dir`: `.kbx/kbx.toml`, or else `kbx.toml`.
+fn config_in(dir: &Path) -> Result<Option<PathBuf>, ConfigError> {
+    let inside = ConfigLocation::KbxFolder.path(dir);
+    let root = ConfigLocation::Root.path(dir);
+    match (inside.is_file(), root.is_file()) {
+        (true, true) => Err(ConfigError::TwoConfigs(inside, root)),
+        (true, false) => Ok(Some(inside)),
+        (false, true) => Ok(Some(root)),
+        (false, false) => Ok(None),
+    }
+}
+
+/// The folder a config file's relative paths start at. The file means the same
+/// in `.kbx/` as at the root, so moving it there takes no edit.
+fn config_base(path: &Path) -> &Path {
+    let folder = path.parent().unwrap_or(Path::new("."));
+    match folder.file_name() == Some(OsStr::new(KBX_DIR)) {
+        true => folder.parent().unwrap_or(folder),
+        false => folder,
+    }
+}
+
 fn name_list(names: &[String]) -> Array {
     names.iter().map(String::as_str).collect()
 }
@@ -436,14 +492,21 @@ fn root_table(roots: &BTreeMap<String, String>) -> InlineTable {
 /// Sets up `dir` as a vault: `.kbx/`, `kbx.toml`, the ontology and the
 /// database. Never overwrites a file, so running it again changes nothing.
 /// `ontology` is used where it is, relative to `dir`, rather than copied, and
-/// `search` is what a new `kbx.toml` says.
+/// `search` is what a new `kbx.toml` says. `location` says where a new one goes:
+/// one already in `.kbx/` is used whatever it says.
 pub fn init(
     dir: &Path,
     ontology: Option<&Path>,
     search: Search,
+    location: ConfigLocation,
 ) -> Result<InitReport, ConfigError> {
-    let config_path = dir.join(CONFIG_FILE);
-    let exists = config_path.is_file();
+    let found = config_in(dir)?;
+    let root = ConfigLocation::Root.path(dir);
+    if location == ConfigLocation::KbxFolder && found.as_ref() == Some(&root) {
+        return Err(ConfigError::ConfigAtRoot(root));
+    }
+    let exists = found.is_some();
+    let config_path = found.unwrap_or_else(|| location.path(dir));
     if exists && ontology.is_some() {
         return Err(ConfigError::AlreadyInitialised);
     }
@@ -453,7 +516,7 @@ pub fn init(
         Ontology::parse(&yaml).map_err(|e| ConfigError::Ontology(full, e))?;
     }
 
-    let kbx_dir = dir.join(".kbx");
+    let kbx_dir = dir.join(KBX_DIR);
     fs::create_dir_all(&kbx_dir).map_err(|e| ConfigError::Io(kbx_dir, e))?;
     let mut report = InitReport {
         config: false,

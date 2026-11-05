@@ -192,6 +192,14 @@ impl Fixture {
         fixture
     }
 
+    /// A copy of the fixture vault after `kbx init --in-kbx`.
+    pub fn in_kbx() -> Fixture {
+        let fixture = Fixture::bare(FakePath::with_qmd());
+        copy_dir(Path::new(FIXTURE), fixture.root());
+        fixture.ok(&["init", "--in-kbx"]);
+        fixture
+    }
+
     /// An empty folder, before `kbx init`, with `path` for its `PATH`.
     pub fn bare(path: FakePath) -> Fixture {
         Fixture {

@@ -1,13 +1,14 @@
 //! Review decisions (§7): the `reviews` table, strikes, and acceptance, which
 //! is what writes relations to notes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use similar::TextDiff;
 use tracing::warn;
 
 use crate::graph::Graph;
@@ -48,6 +49,49 @@ pub struct Accepted {
     pub rel: String,
     /// Files changed, relative to the vault. Empty if both already said so.
     pub written: Vec<PathBuf>,
+}
+
+/// What [`accept_unwritten`] would write, note by note. Each note starts from
+/// what's on disk, and every candidate previewed goes on top of the ones before,
+/// as accepting them in that order would.
+#[derive(Debug, Default)]
+pub struct Preview {
+    /// By path from the vault: the file as it is, and as it would be.
+    notes: BTreeMap<PathBuf, (String, String)>,
+}
+
+impl Preview {
+    /// Whether no note would change.
+    pub fn is_empty(&self) -> bool {
+        self.notes.is_empty()
+    }
+
+    /// A unified diff per note, by path. Lines keep their own endings, so a
+    /// diff applied to the file gives exactly what accepting would write.
+    pub fn diffs(&self) -> Vec<String> {
+        let diff = |(path, (before, after)): (&PathBuf, &(String, String))| {
+            let path = path.to_string_lossy();
+            let lines = TextDiff::from_lines(before.as_str(), after.as_str());
+            let (old, new) = (format!("a/{path}"), format!("b/{path}"));
+            lines.unified_diff().header(&old, &new).to_string()
+        };
+        self.notes.iter().map(diff).collect()
+    }
+
+    /// `file` as the candidates before this one left it.
+    fn over(&self, mut file: Checked) -> Result<Checked, ReviewError> {
+        if let Some((_, after)) = self.notes.get(&file.path) {
+            file.note = parse_note(&file.path, after)
+                .map_err(|error| ReviewError::Write(file.path.clone(), error.into()))?;
+            file.text = after.clone();
+        }
+        Ok(file)
+    }
+
+    fn add(&mut self, file: &Checked, after: String) {
+        let entry = (file.text.clone(), String::new());
+        self.notes.entry(file.path.clone()).or_insert(entry).1 = after;
+    }
 }
 
 /// What [`reject`] recorded.
@@ -260,12 +304,37 @@ pub fn accept(
     cid: &str,
     decision: Decision<'_>,
 ) -> Result<Accepted, ReviewError> {
+    accept_with(g, vault, ontology, cid, decision, None)
+}
+
+/// Records an acceptance with [`accept`]'s checks and adds what it would write
+/// to `preview`, leaving every note alone. The candidate stays, marked as
+/// accepted: its hashes go on being followed, and [`accept`] writes it later,
+/// under this relation unless told otherwise. [`reject`] and [`defer`] take the
+/// decision back.
+pub fn accept_unwritten(
+    g: &Graph,
+    vault: &Path,
+    ontology: &Ontology,
+    cid: &str,
+    decision: Decision<'_>,
+    preview: &mut Preview,
+) -> Result<Accepted, ReviewError> {
+    accept_with(g, vault, ontology, cid, decision, Some(preview))
+}
+
+fn accept_with(
+    g: &Graph,
+    vault: &Path,
+    ontology: &Ontology,
+    cid: &str,
+    decision: Decision<'_>,
+    preview: Option<&mut Preview>,
+) -> Result<Accepted, ReviewError> {
     let tx = Transaction::new_unchecked(&g.conn, TransactionBehavior::Immediate)?;
     let candidate = Candidate::load(&tx, cid)?;
-    let rel = match decision.rel {
-        Some(rel) => rel.to_string(),
-        None => judged_rel(&tx, cid)?.ok_or_else(|| ReviewError::NoRelation(cid.to_string()))?,
-    };
+    let rel = standing_rel(&tx, &candidate, decision)?
+        .ok_or_else(|| ReviewError::NoRelation(cid.to_string()))?;
     let accepted = write_accepted(
         &tx,
         vault,
@@ -276,6 +345,7 @@ pub fn accept(
             rel: &rel,
             reason: decision.reason,
             as_written: false,
+            preview,
         },
     )?;
     tx.commit()?;
@@ -289,6 +359,8 @@ struct Accepting<'a> {
     /// The relation already reads from the candidate's `src`, because a person
     /// put it there, so the schema can refuse that but not turn it around.
     as_written: bool,
+    /// Where to put the changes instead of in the notes, if anywhere.
+    preview: Option<&'a mut Preview>,
 }
 
 /// The writes and rows of an acceptance, up to the commit. The rename comes
@@ -312,6 +384,10 @@ fn write_accepted(
         .ok_or_else(|| ReviewError::TargetUnavailable(candidate.dst.clone()))?;
     let first = first.checked(candidate.src_hash.as_deref())?;
     let second = second.checked(candidate.dst_hash.as_deref())?;
+    let (first, second) = match &accepting.preview {
+        Some(preview) => (preview.over(first)?, preview.over(second)?),
+        None => (first, second),
+    };
 
     let fit = runs_forward(&key, &first.note.class, &second.note.class);
     if accepting.as_written && fit == Some(key.inverted) {
@@ -367,14 +443,21 @@ fn write_accepted(
         false => None,
     };
 
-    record(
-        tx,
-        (&from.note.id, &to.note.id, key.name),
-        "accept",
-        accepting.reason,
-        0,
-    )?;
-    tx.execute("DELETE FROM candidates WHERE cid = ?", [cid])?;
+    // Writing what was already accepted is not a new decision, so its reason
+    // and date stand unless this one gives a reason of its own.
+    let decided = candidate.accepted_rel.as_deref() == Some(key.name);
+    if !decided {
+        withdraw(tx, candidate)?;
+    }
+    if !decided || accepting.reason.is_some() {
+        record(
+            tx,
+            (&from.note.id, &to.note.id, key.name),
+            "accept",
+            accepting.reason,
+            0,
+        )?;
+    }
     let holder = stage::holder(tx, cid)?;
     let mut changes = Vec::new();
     for (file, text) in [(from, forward), (to, inverse)] {
@@ -383,17 +466,32 @@ fn write_accepted(
             false => text,
         };
         if let Some(text) = text {
-            stage::follow(tx, &file.note.id, &file.hash, &text)?;
             changes.push((file, text));
         }
     }
-    tx.execute("DELETE FROM staged WHERE cid = ?", [cid])?;
-    replace_all(vault, &changes)?;
+    let mut written = Vec::new();
+    if let Some(preview) = accepting.preview {
+        tx.execute(
+            "UPDATE candidates SET accepted_rel = ?1 WHERE cid = ?2",
+            params![key.name, cid],
+        )?;
+        for (file, text) in changes {
+            preview.add(file, text);
+        }
+    } else {
+        tx.execute("DELETE FROM candidates WHERE cid = ?", [cid])?;
+        for (file, text) in &changes {
+            stage::follow(tx, &file.note.id, &file.hash, text)?;
+        }
+        tx.execute("DELETE FROM staged WHERE cid = ?", [cid])?;
+        replace_all(vault, &changes)?;
+        written.extend(changes.iter().map(|(f, _)| f.path.clone()));
+    }
     Ok(Accepted {
         src: from.note.id.clone(),
         dst: to.note.id.clone(),
         rel: key.name.to_string(),
-        written: changes.iter().map(|(f, _)| f.path.clone()).collect(),
+        written,
     })
 }
 
@@ -426,6 +524,7 @@ pub fn reject(
     let tx = Transaction::new_unchecked(&g.conn, TransactionBehavior::Immediate)?;
     let candidate = Candidate::load(&tx, cid)?;
     let (src, dst, rel) = decided_rel(&tx, ontology, &candidate, decision)?;
+    withdraw(&tx, &candidate)?;
     record(&tx, (&src, &dst, &rel), "reject", decision.reason, 1)?;
     tx.execute("DELETE FROM candidates WHERE cid = ?", [cid])?;
     let strikes = strike_totals(&tx)?
@@ -452,6 +551,7 @@ pub fn defer(
     let tx = Transaction::new_unchecked(&g.conn, TransactionBehavior::Immediate)?;
     let candidate = Candidate::load(&tx, cid)?;
     let (src, dst, rel) = decided_rel(&tx, ontology, &candidate, decision)?;
+    withdraw(&tx, &candidate)?;
     record(&tx, (&src, &dst, &rel), "defer", decision.reason, 0)?;
     tx.commit()?;
     Ok(Deferred { src, dst, rel })
@@ -486,13 +586,15 @@ struct Candidate {
     dst_hash: Option<String>,
     src_section: Option<String>,
     dst_section: Option<String>,
+    /// The relation [`accept_unwritten`] recorded, not yet in any note.
+    accepted_rel: Option<String>,
 }
 
 impl Candidate {
     fn load(connection: &Connection, cid: &str) -> Result<Candidate, ReviewError> {
         connection
             .query_row(
-                "SELECT src, dst, src_hash, dst_hash, src_section, dst_section
+                "SELECT src, dst, src_hash, dst_hash, src_section, dst_section, accepted_rel
                  FROM candidates WHERE cid = ?",
                 [cid],
                 |row| {
@@ -504,6 +606,7 @@ impl Candidate {
                         dst_hash: row.get(3)?,
                         src_section: row.get(4)?,
                         dst_section: row.get(5)?,
+                        accepted_rel: row.get(6)?,
                     })
                 },
             )
@@ -524,6 +627,38 @@ fn judged_rel(connection: &Connection, cid: &str) -> rusqlite::Result<Option<Str
         .optional()
 }
 
+/// The relation a decision is about: the one it names, or else the one already
+/// accepted without writing, or else the judge's.
+fn standing_rel(
+    connection: &Connection,
+    candidate: &Candidate,
+    decision: Decision<'_>,
+) -> rusqlite::Result<Option<String>> {
+    let named = decision.rel.map(String::from);
+    match named.or_else(|| candidate.accepted_rel.clone()) {
+        Some(rel) => Ok(Some(rel)),
+        None => judged_rel(connection, &candidate.cid),
+    }
+}
+
+/// Takes back an acceptance that was never written, whose row would otherwise
+/// stand in `reviews` for a link no note has. A row with strikes keeps them.
+fn withdraw(tx: &Transaction<'_>, candidate: &Candidate) -> rusqlite::Result<()> {
+    let Some(rel) = &candidate.accepted_rel else {
+        return Ok(());
+    };
+    tx.execute(
+        "DELETE FROM reviews WHERE rel = ?1 AND decision = 'accept' AND strikes = 0
+             AND ((src = ?2 AND dst = ?3) OR (src = ?3 AND dst = ?2))",
+        params![rel, candidate.src, candidate.dst],
+    )?;
+    tx.execute(
+        "UPDATE candidates SET accepted_rel = NULL WHERE cid = ?",
+        [&candidate.cid],
+    )?;
+    Ok(())
+}
+
 /// The `(src, dst, rel)` of a rejection or deferral, which needn't name a
 /// relation: with `--judge none` there may be nothing to say but "not this".
 fn decided_rel(
@@ -532,10 +667,7 @@ fn decided_rel(
     candidate: &Candidate,
     decision: Decision<'_>,
 ) -> Result<(String, String, String), ReviewError> {
-    let rel = match decision.rel {
-        Some(rel) => Some(rel.to_string()),
-        None => judged_rel(connection, &candidate.cid)?,
-    };
+    let rel = standing_rel(connection, candidate, decision)?;
     let (src, dst) = (candidate.src.clone(), candidate.dst.clone());
     let Some(rel) = rel.filter(|rel| rel != NONE) else {
         return Ok((src, dst, NONE.to_string()));

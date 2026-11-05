@@ -352,6 +352,9 @@ impl App {
             let hidden = self.queue.hidden();
             count.push_str(&format!("  ({hidden} hidden, already rejected)"));
         }
+        if item.unwritten {
+            count.push_str("  accepted, not written: a writes it");
+        }
         let ontology = &self.session.ontology;
         let rel = item.rel.as_deref();
         let name = rel.map(|rel| ontology.lookup(rel).map_or(rel, |key| key.name));
@@ -457,7 +460,7 @@ fn why_paragraph(item: &Item) -> Paragraph<'_> {
 
 /// Note text as the terminal may show it. A note can come from anyone with
 /// access to the vault, and escape sequences must not reach the screen.
-fn plain(text: &str) -> String {
+pub(crate) fn plain(text: &str) -> String {
     let spaced = text.replace('\t', "    ");
     spaced
         .chars()
@@ -499,7 +502,8 @@ mod tests {
     fn session() -> (TempDir, Session) {
         let dir = TempDir::new().unwrap();
         copy_dir(Path::new(FIXTURE), dir.path());
-        init(dir.path(), None, kbx_core::Search::Builtin).unwrap();
+        let location = kbx_core::ConfigLocation::Root;
+        init(dir.path(), None, kbx_core::Search::Builtin, location).unwrap();
         let project = Project::discover(dir.path()).unwrap();
         let yaml = fs::read_to_string(&project.ontology).unwrap();
         let mut graph = Graph::open(&project.graph).unwrap();
