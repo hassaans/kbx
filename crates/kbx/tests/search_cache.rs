@@ -55,7 +55,7 @@ fn vault() -> Fixture {
     let vault = Fixture::bare(fake_qmd());
     vault.write(&note_path(1), &note(1, "Token buckets."));
     vault.write(&note_path(2), &note(2, "Rate limits."));
-    vault.ok(&["init"]);
+    vault.ok(&["init", "--search", "qmd"]);
     vault.ok(&["index"]);
     let hit = format!(
         "[{{\"score\":0.75,\"file\":\"qmd://team-b/{}.md\",\"line\":6}}]",

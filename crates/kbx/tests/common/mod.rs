@@ -188,7 +188,7 @@ impl Fixture {
             path: FakePath::with_qmd(),
         };
         copy_dir(Path::new(FIXTURE), fixture.root());
-        fixture.ok(&["init"]);
+        fixture.ok(&["init", "--search", "qmd"]);
         fixture
     }
 

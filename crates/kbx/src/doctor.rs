@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use kbx_core::{
     ConfigError, Graph, IndexState, JudgeConfig, Ontology, Project, Search, index_state,
 };
+use kbx_gen::MODEL;
 use kbx_judge::{Availability, JudgeId, backend};
 use sysinfo::System;
 use tokio::runtime;
@@ -73,10 +74,13 @@ pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
         report(&name, check);
     }
 
-    // Last, so that its report is the end of the output. The built-in engine
-    // has no use for qmd, so a vault on it is neither failed for it nor given it.
-    let on_builtin = |project: &Project| project.config.search == Search::Builtin;
-    if !found.as_ref().is_ok_and(on_builtin) {
+    // Last, so that its report is the end of the output. Only a vault on QMD
+    // has anything to do with qmd: it's Node, and nothing else needs it.
+    let backend = found
+        .as_ref()
+        .map_or(Search::Builtin, |p| p.config.backend());
+    report("search", check_search(found.as_ref().ok(), backend));
+    if backend == Search::Qmd {
         match qmd::ensure() {
             Ok(path) => {
                 report("qmd", (Status::Ok, path.display().to_string()));
@@ -184,6 +188,21 @@ fn check_judges(
         },
     ));
     Ok(rows)
+}
+
+/// Which backend is active, and for the built-in engine where its model stands.
+fn check_search(project: Option<&Project>, backend: Search) -> Check {
+    let chosen = project.is_some_and(|project| project.config.search.is_some());
+    let detail = match backend {
+        Search::Qmd if chosen => "qmd".to_string(),
+        Search::Qmd => "qmd, as kbx.toml lists qmd collections and sets no `search`".to_string(),
+        Search::Builtin if MODEL.is_present() => "builtin, model ready".to_string(),
+        Search::Builtin => format!(
+            "builtin; `kbx suggest` downloads its model ({} MB) once",
+            MODEL.megabytes
+        ),
+    };
+    (Status::Ok, detail)
 }
 
 /// Missing collections stop `qmd_knn` alone, so they are worth a warning.

@@ -11,9 +11,10 @@ below; the project's fixed decisions override it where they differ:
   `kbx-linux-arm64-gnu`, `kbx-windows-x64` (not `@kbx/cli-*`); hand-written
   GitHub Actions, no cargo-dist, no Homebrew, no postinstall. npm refuses the
   name `kbx` as too similar to existing packages (see docs/releasing.md).
-- Search: QMD (`@tobilu/qmd`) is the v0 backend, installed silently when
-  missing, and stays a supported option for good; a built-in engine becomes
-  the default later. `kbx.toml` carries `search = "qmd"`.
+- Search: the built-in engine is the default, and `kbx init` writes
+  `search = "builtin"`. QMD (`@tobilu/qmd`) was the v0 backend and stays a
+  supported option for good: with `search = "qmd"` it's installed silently when
+  missing. See `docs/search-engine.md`.
 - Correction: §5 used to say `qmd query --filter`. No qmd release has that
   flag, and qmd ignores flags it doesn't know, so it would limit nothing.
   Searches use `-c <collection>`.
@@ -33,7 +34,9 @@ below; the project's fixed decisions override it where they differ:
   in `.kbx/search-cache.sqlite`. QMD keeps the vectors, and kbx doesn't read or
   write its index. §5's process budget gains one or two `qmd status` calls.
 - `search = "builtin"` selects kbx's own engine, in `.kbx/search-index.sqlite`, for
-  the same `qmd_knn` generator. See `docs/search-engine.md`.
+  the same `qmd_knn` generator. With no `search` key, a `kbx.toml` listing qmd
+  collections stays on QMD and any other gets the built-in engine. See
+  `docs/search-engine.md`.
 
 ---
 
@@ -338,7 +341,7 @@ Read-only by default; `mcp.allow_resolve = true` is the only write path and it s
 ## 10. CLI surface
 
 ```
-kbx init [--ontology path]           create .kbx/, kbx.toml, example ontology; detect qmd; one qmd collection per scope
+kbx init [--ontology path] [--search builtin|qmd]   create .kbx/, kbx.toml, example ontology; with qmd, detect it and make one collection per scope
 kbx index [--full] [paths…]          compile frontmatter → graph.sqlite (incremental by content hash)
 kbx lint  [--format json]            validate against ontology
 kbx suggest [--note id] [--generators a,b] [--judge auto|claude-cli|codex-cli|ollama|llama-server|none]
@@ -349,7 +352,7 @@ kbx graph  neighbors|path|stats      ad-hoc queries
 kbx export edges|reviews|rdf         JSONL / Turtle (via ontology → predicate map)
 kbx mcp                              stdio server
 kbx watch
-kbx doctor [--fix]                   backends, qmd, collections, models, RAM, index health; --fix creates missing collections
+kbx doctor [--fix]                   backends, search, models, RAM, index health; on qmd also collections, which --fix creates
 ```
 
 `kbx.toml`:

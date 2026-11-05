@@ -36,8 +36,10 @@ pub struct Config {
     pub scopes: Vec<String>,
     /// The ontology file. A relative path starts at the vault root.
     pub ontology: String,
-    /// The search backend.
-    pub search: Search,
+    /// The search backend. Use [`backend`](Config::backend), which says what
+    /// a file without this key means.
+    #[serde(default)]
+    pub search: Option<Search>,
     /// How to reach QMD.
     #[serde(default)]
     pub qmd: Qmd,
@@ -47,6 +49,19 @@ pub struct Config {
     /// What accepting writes.
     #[serde(default)]
     pub write: WriteConfig,
+}
+
+impl Config {
+    /// The search backend in use. `kbx init` always writes the key, so a file
+    /// without one was written by hand: if it lists qmd collections it was set
+    /// up for QMD, and stays there. Anything else gets the built-in engine.
+    pub fn backend(&self) -> Search {
+        let for_qmd = !self.qmd.collections.is_empty() || !self.qmd.roots.is_empty();
+        self.search.unwrap_or(match for_qmd {
+            true => Search::Qmd,
+            false => Search::Builtin,
+        })
+    }
 }
 
 /// The `[write]` table of `kbx.toml`.
@@ -377,8 +392,13 @@ fn root_table(roots: &BTreeMap<String, String>) -> InlineTable {
 
 /// Sets up `dir` as a vault: `.kbx/`, `kbx.toml`, the ontology and the
 /// database. Never overwrites a file, so running it again changes nothing.
-/// `ontology` is used where it is, relative to `dir`, rather than copied.
-pub fn init(dir: &Path, ontology: Option<&Path>) -> Result<InitReport, ConfigError> {
+/// `ontology` is used where it is, relative to `dir`, rather than copied, and
+/// `search` is what a new `kbx.toml` says.
+pub fn init(
+    dir: &Path,
+    ontology: Option<&Path>,
+    search: Search,
+) -> Result<InitReport, ConfigError> {
     let config_path = dir.join(CONFIG_FILE);
     let exists = config_path.is_file();
     if exists && ontology.is_some() {
@@ -398,7 +418,7 @@ pub fn init(dir: &Path, ontology: Option<&Path>) -> Result<InitReport, ConfigErr
     };
     if !exists {
         let name = ontology.map_or(DEFAULT_ONTOLOGY.into(), |path| path.to_string_lossy());
-        let text = config_text(&name, &top_level_folders(dir)?);
+        let text = config_text(&name, &top_level_folders(dir)?, search);
         fs::write(&config_path, text).map_err(|e| ConfigError::Io(config_path.clone(), e))?;
         report.config = true;
 
@@ -416,17 +436,21 @@ pub fn init(dir: &Path, ontology: Option<&Path>) -> Result<InitReport, ConfigErr
 
 /// The §10 layout. Written by hand to keep its order and spacing, which
 /// `toml` serialization would lose.
-fn config_text(ontology: &str, scopes: &[String]) -> String {
+fn config_text(ontology: &str, scopes: &[String], search: Search) -> String {
     let qmd = Qmd::default().with_scopes(scopes);
     let collections = name_list(&qmd.collections);
     let roots = root_table(&qmd.roots);
     let scopes = Value::from(scopes.to_vec());
     let ontology = Value::from(ontology);
+    let search = match search {
+        Search::Qmd => "qmd",
+        Search::Builtin => "builtin",
+    };
     format!(
         r#"vault = "."
 scopes = {scopes}  # top-level folders = ACL scopes
 ontology = {ontology}
-search = "qmd"
+search = "{search}"  # or "qmd" or "builtin"
 qmd = {{ bin = "qmd", collections = {collections}, roots = {roots} }}
 
 [judge]

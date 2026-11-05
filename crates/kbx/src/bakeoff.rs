@@ -723,7 +723,7 @@ pub fn prepare(options: Preparing) -> Result<ExitCode, Box<dyn Error>> {
     let project = Project::discover(&env::current_dir()?)?;
     let (yaml, ontology) = read_ontology(&project)?;
     let graph = open_index(&project, &yaml)?;
-    let search: Box<dyn Search> = match project.config.search {
+    let search: Box<dyn Search> = match project.config.backend() {
         SearchBackend::Qmd => Box::new(QmdSearch::new(
             qmd::program(&project),
             project.qmd_index(),

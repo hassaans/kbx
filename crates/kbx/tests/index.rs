@@ -46,14 +46,14 @@ impl Vault {
     fn fixture() -> Vault {
         let vault = Vault::empty();
         copy_dir(Path::new(FIXTURE), vault.root());
-        vault.ok(&["init"]);
+        vault.ok(&["init", "--search", "qmd"]);
         vault
     }
 
     /// A folder with only `kbx init` run in it.
     fn initialised() -> Vault {
         let vault = Vault::empty();
-        vault.ok(&["init"]);
+        vault.ok(&["init", "--search", "qmd"]);
         vault
     }
 
@@ -197,7 +197,7 @@ fn init_creates_the_config_the_example_ontology_and_the_database() {
     fs::create_dir(vault.path("team-y")).unwrap();
     fs::create_dir(vault.path("team-x")).unwrap();
     fs::create_dir(vault.path(".obsidian")).unwrap();
-    vault.ok(&["init"]);
+    vault.ok(&["init", "--search", "qmd"]);
 
     let text = fs::read_to_string(vault.path("kbx.toml")).unwrap();
     let config: toml::Table = text.parse().unwrap();
@@ -272,7 +272,7 @@ fn init_leaves_an_existing_config_and_ontology_alone() {
     let vault = Vault::initialised();
     vault.append("kbx.toml", "# mine\n");
     vault.append(".kbx/ontology.yaml", "# mine\n");
-    vault.ok(&["init"]);
+    vault.ok(&["init", "--search", "qmd"]);
     let config = fs::read_to_string(vault.path("kbx.toml")).unwrap();
     assert!(config.ends_with("# mine\n"));
     let ontology = fs::read_to_string(vault.path(".kbx/ontology.yaml")).unwrap();

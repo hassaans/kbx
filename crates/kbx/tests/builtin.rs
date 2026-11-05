@@ -1,6 +1,7 @@
 //! `search = "builtin"`, on the tiny fixed model in `tests/fixtures/tiny-model`.
 //! Its weights are random, so these check the wiring, not what it finds. What
-//! it finds is measured in docs/search-engine.md.
+//! it finds is measured in docs/search-engine.md. Also what `kbx init` and `kbx
+//! doctor` do with the built-in default.
 
 mod common;
 
@@ -16,19 +17,13 @@ const TINY_MODEL: &str = concat!(
 );
 const INDEX: &str = ".kbx/search-index.sqlite";
 
-/// The fixture vault with `path` for `PATH`, set to the built-in engine. `kbx
-/// init` needs qmd until the built-in engine is the default, so it gets one
-/// that's gone again before the test begins.
+/// The fixture vault as a new user gets it, with `path` for `PATH`.
 fn vault(path: FakePath) -> Fixture {
-    let vault = Fixture::bare(FakePath::with_qmd());
+    let vault = Fixture::bare(path);
     copy_dir(Path::new(FIXTURE), vault.root());
     vault.ok(&["init"]);
-    let config = vault.root().join("kbx.toml");
-    let text = fs::read_to_string(&config).unwrap();
-    let text = text.replace("search = \"qmd\"", "search = \"builtin\"");
-    fs::write(config, text).unwrap();
     vault.ok(&["index"]);
-    vault.with_path(path)
+    vault
 }
 
 fn generators(vault: &Fixture) -> Vec<String> {
@@ -174,13 +169,126 @@ fn a_generator_list_without_knn_builds_no_index() {
 }
 
 #[test]
-fn doctor_leaves_qmd_alone_on_the_builtin_engine() {
+fn init_writes_builtin_and_runs_neither_npm_nor_qmd() {
+    let path = FakePath::empty();
+    let calls = path.dir().join("calls");
+    let log = format!("echo called >> \"{}\"", calls.display());
+    path.tool("npm", &log);
+    path.tool("node", &log);
+    let vault = Fixture::bare(path);
+    let out = vault.ok(&["init"]);
+    let config = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    assert!(config.contains("search = \"builtin\""), "{config}");
+    assert!(out.contains("built-in engine"), "{out}");
+    assert!(!out.contains("found qmd"), "{out}");
+    assert!(!calls.exists());
+}
+
+#[test]
+fn doctor_installs_nothing_with_the_builtin_default() {
+    let path = FakePath::empty();
+    let calls = path.dir().join("calls");
+    let log = format!("echo called >> \"{}\"", calls.display());
+    path.tool("npm", &log);
+    path.tool("node", &log);
+    let vault = vault(path);
+
+    let output = offline(&vault, &["doctor"]);
+    let text = stdout(&output);
+    assert!(output.status.success(), "{text}{}", stderr(&output));
+    assert_eq!(stderr(&output), "");
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("search") && l.contains("builtin")),
+        "{text}"
+    );
+    assert!(!text.lines().any(|l| l.starts_with("qmd ")), "{text}");
+    assert!(!calls.exists());
+}
+
+#[test]
+fn doctor_outside_a_vault_installs_nothing() {
     let path = FakePath::empty();
     let calls = path.dir().join("calls");
     path.tool("npm", &format!("echo called >> \"{}\"", calls.display()));
-    let vault = vault(path);
+    let dir = tempfile::TempDir::new().unwrap();
+    let output = path.kbx(dir.path(), &["doctor"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!calls.exists());
+}
+
+#[test]
+fn doctor_says_when_the_model_is_ready() {
+    let vault = vault(FakePath::empty());
+    let output = with_model(&vault, &["doctor"]);
+    assert!(
+        stdout(&output).contains("builtin, model ready"),
+        "{}",
+        stdout(&output)
+    );
+}
+
+/// `kbx.toml` of `body`, without the line `search = …` of `kbx init`.
+fn without_search_key(vault: &Fixture, qmd_line: Option<&str>) {
+    let file = vault.root().join("kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    let kept = text
+        .lines()
+        .filter(|line| !line.starts_with("search = ") && !line.starts_with("qmd = "));
+    let mut kept: Vec<&str> = kept.collect();
+    if let Some(line) = qmd_line {
+        kept.insert(0, line);
+    }
+    fs::write(file, kept.join("\n") + "\n").unwrap();
+}
+
+#[test]
+fn a_file_with_no_search_key_and_no_collections_gets_the_builtin_engine() {
+    let vault = vault(FakePath::empty());
+    without_search_key(&vault, None);
     let output = offline(&vault, &["doctor"]);
     assert!(output.status.success(), "{}", stderr(&output));
-    assert!(!stdout(&output).lines().any(|line| line.starts_with("qmd ")));
-    assert!(!calls.exists());
+    assert!(stdout(&output).contains("builtin"), "{}", stdout(&output));
+}
+
+#[test]
+fn a_file_with_no_search_key_keeps_the_collections_it_lists() {
+    let vault = vault(FakePath::with_qmd());
+    let line = r#"qmd = { bin = "qmd", collections = ["notes"], roots = { notes = "." } }"#;
+    without_search_key(&vault, Some(line));
+    let text = vault.ok(&["doctor"]);
+    assert!(
+        text.contains("qmd, as kbx.toml lists qmd collections"),
+        "{text}"
+    );
+    assert!(text.lines().any(|line| line.starts_with("qmd ")), "{text}");
+}
+
+#[test]
+fn a_vault_written_with_search_qmd_stays_on_qmd() {
+    let path = FakePath::with_qmd();
+    let vault = Fixture::bare(path);
+    copy_dir(Path::new(FIXTURE), vault.root());
+    vault.ok(&["init", "--search", "qmd"]);
+    let config = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    assert!(config.contains("search = \"qmd\""), "{config}");
+    let text = vault.ok(&["doctor"]);
+    assert!(
+        text.lines().any(|line| line.starts_with("collections")),
+        "{text}"
+    );
+}
+
+#[test]
+fn init_refuses_to_contradict_a_vaults_backend() {
+    let vault = vault(FakePath::with_qmd());
+    let output = vault.kbx(&["init", "--search", "qmd"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("already chooses"),
+        "{}",
+        stderr(&output)
+    );
+    vault.ok(&["init", "--search", "builtin"]);
+    vault.ok(&["init"]);
 }
