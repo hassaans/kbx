@@ -89,6 +89,15 @@ run init 'kbx init' init
 [[ $status == 0 ]] || fail "kbx init exited $status"
 [[ -f kbx.toml ]] || fail "kbx init made no kbx.toml"
 
+# Each top-level folder is a scope. Init only warns when qmd refuses a collection.
+scopes=0
+for folder in "$vault"/*/; do
+  scope=$(basename "$folder")
+  scopes=$((scopes + 1))
+  grep -qxF "created qmd collection $scope" "$home/init.out" ||
+    fail "kbx init created no qmd collection for $scope"
+done
+
 run index 'kbx index' index
 [[ $status == 0 ]] || fail "kbx index exited $status"
 expected='indexed 25, 0 unchanged, removed 0, 2 skipped, 2 failed, 2 hidden links'
@@ -104,3 +113,5 @@ run doctor-3 'kbx doctor, in the vault' doctor
 [[ $status == 0 ]] || fail "doctor in the vault exited $status"
 grep -Eq '^vault +ok ' "$home/doctor-3.out" || fail "doctor in the vault did not find it"
 grep -Eq '^index +ok +25 notes' "$home/doctor-3.out" || fail "doctor in the vault did not report the index"
+grep -Eq "^collections +ok +$scopes in index " "$home/doctor-3.out" ||
+  fail "doctor in the vault did not report $scopes collections"

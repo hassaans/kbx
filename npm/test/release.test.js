@@ -400,10 +400,15 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
             ${ROW} index "\${FAKE_INDEX_ROW:-ok}" "25 notes, 58 edges, 29 sections, 2 hidden links"
           fi
           ${ROW} qmd ok "$here/qmd"
+          [[ ! -f kbx.toml ]] || ${ROW} collections "\${FAKE_COLLECTIONS_ROW:-ok}" "\${FAKE_COLLECTIONS:-4} in index kbx-abc"
           ;;
         init)
           touch kbx.toml
           [[ $FAKE_INIT != fails ]] || exit 1
+          if [[ $FAKE_INIT == warns ]]; then echo "warning: qmd collections not created" >&2; exit 0; fi
+          for scope in decisions engineering lint operations; do
+            [[ $scope == "$FAKE_INIT_SKIPS" ]] || echo "created qmd collection $scope"
+          done
           ;;
         index) echo "\${FAKE_INDEXED:-indexed 25, 0 unchanged, removed 0, 2 skipped, 2 failed, 2 hidden links}" ;;
         lint)
@@ -478,6 +483,10 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
         ['doctor says ok but installs nothing', { FAKE_DOCTOR: 'skips' }, /qmd is not on PATH after the first doctor/],
         ['the second doctor reports another qmd', { FAKE_DOCTOR: 'moves' }, /second doctor found \/elsewhere\/qmd/],
         ['init fails', { FAKE_INIT: 'fails' }, /kbx init exited 1/],
+        ['init only warns about collections', { FAKE_INIT: 'warns' }, /no qmd collection for decisions/],
+        ['init misses one scope', { FAKE_INIT_SKIPS: 'lint' }, /no qmd collection for lint/],
+        ['doctor warns about collections', { FAKE_COLLECTIONS_ROW: 'warn' }, /did not report 4 collections/],
+        ['doctor counts other collections', { FAKE_COLLECTIONS: '3' }, /did not report 4 collections/],
         ['index compiles the wrong notes', { FAKE_INDEXED: 'indexed 0, 0 unchanged' }, /kbx index printed/],
         ['lint finds nothing', { FAKE_LINT: '0 errors, 0 warnings', FAKE_LINT_STATUS: '0' }, /kbx lint exited 0/],
         ['lint finds other errors', { FAKE_LINT: '11 errors, 1 warning' }, /kbx lint printed/],
