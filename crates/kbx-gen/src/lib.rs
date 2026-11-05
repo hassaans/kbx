@@ -8,7 +8,9 @@
 //! `reviews`. This crate never prints.
 
 mod alias;
+mod builtin;
 mod cache;
+mod embed;
 mod eval;
 mod knn;
 mod pipeline;
@@ -26,7 +28,12 @@ use kbx_core::{Graph, Ontology};
 use serde_json::Value;
 
 pub use alias::AliasCooccur;
+pub use builtin::{BuiltinSearch, SearchIndex, SyncError, Synced};
 pub use cache::{CachedSearch, SearchCache, vault_state};
+pub use embed::{
+    BertEmbedder, EmbedError, Embedder, MODEL, MODEL_DIR_VAR, MODEL_URL_VAR, Model, ModelFile,
+    Pooling, download,
+};
 pub use eval::{Evaluation, Score, evaluate, score};
 pub use kbx_core::cid;
 pub use knn::{MAX_SEARCHES, QmdKnn};

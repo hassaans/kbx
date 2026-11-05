@@ -9,7 +9,8 @@ use std::process::ExitCode;
 
 use clap::ValueEnum;
 use kbx_core::{
-    Graph, IndexOptions, IndexState, JudgeConfig, Ontology, Project, index_state, index_vault,
+    Graph, IndexOptions, IndexState, JudgeConfig, Ontology, Project, Search as SearchBackend,
+    index_state, index_vault,
 };
 use kbx_gen::{
     Budget, Evaluation, QmdSearch, Run, Scope, Search, SearchCache, estimate_tokens, evaluate,
@@ -22,7 +23,7 @@ use kbx_judge::{
 use tokio::runtime;
 use tracing::warn;
 
-use crate::qmd;
+use crate::{builtin, qmd};
 
 /// Pairs per judge call (§6.3). Below this, start-up and the prefix dominate
 /// what a call costs; above it, one failure loses more.
@@ -81,30 +82,11 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         crate::find_node(&graph, id)?;
     }
 
-    let roots = project.config.qmd.searched();
     let wants_knn = |names: &Vec<String>| names.iter().any(|name| name == "qmd_knn");
     let searching = options.generators.as_ref().is_none_or(wants_knn);
-    let usable = searching && qmd::program(&project).is_file() && !roots.is_empty();
-    let status = usable.then(|| qmd::status(&project)).flatten();
-    let mut cache = status
-        .as_ref()
-        .and_then(|status| search_cache(&project, status, read_only));
-    // What a half-built index finds shouldn't outlive this run.
-    if usable && !read_only && !refresh(&project, &graph, status.as_ref(), cache.as_ref()) {
-        cache = None;
-    }
-    let qmd_search = QmdSearch::new(
-        qmd::program(&project),
-        project.qmd_index(),
-        roots.clone(),
-        &graph,
-    )?;
-    let search: Box<dyn Search> = match cache {
-        Some(cache) => {
-            let inner = Box::new(qmd_search);
-            Box::new(cache.around(inner, &graph, &project.qmd_index(), &roots)?)
-        }
-        None => Box::new(qmd_search),
+    let search = match project.config.search {
+        SearchBackend::Qmd => qmd_backend(&project, &graph, searching, read_only)?,
+        SearchBackend::Builtin => builtin::backend(&project, &graph, searching, read_only)?,
     };
     let chosen = generators(options.generators.as_deref(), Some(search))?;
     let scope = Scope {
@@ -157,6 +139,38 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// QMD, with what it found kept in the search cache where that can be trusted.
+fn qmd_backend(
+    project: &Project,
+    graph: &Graph,
+    searching: bool,
+    read_only: bool,
+) -> Result<Box<dyn Search>, Box<dyn Error>> {
+    let roots = project.config.qmd.searched();
+    let usable = searching && qmd::program(project).is_file() && !roots.is_empty();
+    let status = usable.then(|| qmd::status(project)).flatten();
+    let mut cache = status
+        .as_ref()
+        .and_then(|status| search_cache(project, status, read_only));
+    // What a half-built index finds shouldn't outlive this run.
+    if usable && !read_only && !refresh(project, graph, status.as_ref(), cache.as_ref()) {
+        cache = None;
+    }
+    let qmd_search = QmdSearch::new(
+        qmd::program(project),
+        project.qmd_index(),
+        roots.clone(),
+        graph,
+    )?;
+    Ok(match cache {
+        Some(cache) => {
+            let inner = Box::new(qmd_search);
+            Box::new(cache.around(inner, graph, &project.qmd_index(), &roots)?)
+        }
+        None => Box::new(qmd_search),
+    })
 }
 
 /// Pairs per judge call: `batch`, else `judge.batch`.

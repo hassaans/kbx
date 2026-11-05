@@ -437,3 +437,44 @@ fn budget_limits_the_candidates_and_the_searches() {
     assert_eq!(calls_of(&vault, "query").len(), 5);
     assert_eq!(candidate_count(&vault), 5);
 }
+
+/// `search = "qmd"` is the path it always was: the same commands in the same
+/// order, and nothing of the built-in engine's.
+#[test]
+fn search_qmd_shells_out_exactly_as_before() {
+    let path = FakePath::empty();
+    let calls = path.dir().join("calls");
+    path.tool(
+        "qmd",
+        &format!(
+            r#"echo "$*" >> "{}"
+case "$3" in
+query) echo '[]' ;;
+esac"#,
+            calls.display()
+        ),
+    );
+    let vault = Fixture::bare(path);
+    vault.write(
+        "team-a/one.md",
+        "---\nid: 01KBX000000000000000000001\ntype: Concept\ntitle: One\n---\n# One\n\nWords.\n",
+    );
+    vault.ok(&["init"]);
+    vault.ok(&["index"]);
+    fs::remove_file(&calls).unwrap();
+
+    vault.ok(&["suggest", "--judge", "none", "--generators", "qmd_knn"]);
+
+    let log = fs::read_to_string(&calls).unwrap();
+    let index = log.lines().next().unwrap().split(' ').nth(1).unwrap();
+    let expected = [
+        "status",
+        "update",
+        "embed",
+        "query --json -n 20 -c team-a -- # One Words.",
+    ]
+    .map(|call| format!("--index {index} {call}"));
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines, expected, "{log}");
+    assert!(!vault.root().join(".kbx/search-index.sqlite").exists());
+}

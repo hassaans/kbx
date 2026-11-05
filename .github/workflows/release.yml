@@ -11,6 +11,8 @@ on:
       - .github/workflows/release.yml
       - .github/scripts/**
       - npm/pack.sh
+      - Cargo.lock
+      - '**/Cargo.toml'
   workflow_dispatch:
     inputs:
       dry_run:

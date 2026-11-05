@@ -67,6 +67,11 @@ search afresh; [docs/embedding-cache.md](docs/embedding-cache.md) has the detail
 Set `qmd.index` to use an index of your own; kbx then searches it but leaves updating
 it to you.
 
+`search = "builtin"` in `kbx.toml` uses kbx's own engine instead, with no Node and no
+qmd: BM25 and a local embedding model, kept in `.kbx/search-index.sqlite`. It
+downloads the model on first use, and with no network it searches by keyword and
+says so. [docs/search-engine.md](docs/search-engine.md) has the details.
+
 Logs go to stderr. Set `KBX_LOG=debug` to see each file that's skipped, and pass
 `--log json` to get one JSON object per line.
 

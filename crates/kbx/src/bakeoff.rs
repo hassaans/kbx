@@ -16,10 +16,11 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use kbx_core::{
-    Graph, IndexState, JUDGE_ERROR, NONE, Ontology, Project, cid, index_state, ordered, section_cid,
+    Graph, IndexState, JUDGE_ERROR, NONE, Ontology, Project, Search as SearchBackend, cid,
+    index_state, ordered, section_cid,
 };
 use kbx_gen::{
-    Budget, Proposal, QmdSearch, Run, Scope, generators, place_sections, store, suggest,
+    Budget, Proposal, QmdSearch, Run, Scope, Search, generators, place_sections, store, suggest,
 };
 use kbx_judge::{
     CandidateView, Judge, JudgeContext, JudgeId, NoteView, Plan, backend, backend_with_model,
@@ -30,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use tokio::runtime;
 use tracing::warn;
 
-use crate::{qmd, suggest as suggesting};
+use crate::{builtin, qmd, suggest as suggesting};
 
 /// Where `--labels` looks by default.
 pub const LABELS: &str = "tests/fixtures/bakeoff/labels.jsonl";
@@ -722,13 +723,16 @@ pub fn prepare(options: Preparing) -> Result<ExitCode, Box<dyn Error>> {
     let project = Project::discover(&env::current_dir()?)?;
     let (yaml, ontology) = read_ontology(&project)?;
     let graph = open_index(&project, &yaml)?;
-    let search = QmdSearch::new(
-        qmd::program(&project),
-        project.qmd_index(),
-        project.config.qmd.searched(),
-        &graph,
-    )?;
-    let chosen = generators(options.generators.as_deref(), Some(Box::new(search)))?;
+    let search: Box<dyn Search> = match project.config.search {
+        SearchBackend::Qmd => Box::new(QmdSearch::new(
+            qmd::program(&project),
+            project.qmd_index(),
+            project.config.qmd.searched(),
+            &graph,
+        )?),
+        SearchBackend::Builtin => builtin::backend(&project, &graph, true, true)?,
+    };
+    let chosen = generators(options.generators.as_deref(), Some(search))?;
     let scope = Scope {
         vault: &project.vault,
         ontology: &ontology,

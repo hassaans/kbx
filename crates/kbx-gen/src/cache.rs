@@ -172,7 +172,7 @@ pub fn vault_state(g: &Graph, reported: &str) -> rusqlite::Result<String> {
     Ok(hex(&digest.finalize()))
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 

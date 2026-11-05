@@ -242,6 +242,8 @@ fn default_qmd_bin() -> String {
 pub enum Search {
     /// QMD, shelled out to.
     Qmd,
+    /// BM25 and a local embedding model, inside kbx.
+    Builtin,
 }
 
 /// A `kbx.toml` with its paths worked out.

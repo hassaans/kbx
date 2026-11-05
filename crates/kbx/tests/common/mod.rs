@@ -200,6 +200,11 @@ impl Fixture {
         }
     }
 
+    /// This vault with `path` for its `PATH` from now on.
+    pub fn with_path(self, path: FakePath) -> Fixture {
+        Fixture { path, ..self }
+    }
+
     pub fn root(&self) -> &Path {
         self.dir.path()
     }

@@ -32,6 +32,8 @@ below; the project's fixed decisions override it where they differ:
   the measured cost is `qmd query`, not embedding, so kbx caches search results
   in `.kbx/search-cache.sqlite`. QMD keeps the vectors, and kbx doesn't read or
   write its index. §5's process budget gains one or two `qmd status` calls.
+- `search = "builtin"` selects kbx's own engine, in `.kbx/search-index.sqlite`, for
+  the same `qmd_knn` generator. See `docs/search-engine.md`.
 
 ---
 
@@ -195,7 +197,7 @@ Candidates from all generators are unioned on `(src, dst)`; `generators` records
 | `two_hop_bridge` | A→X←B where A,B unlinked; weighted by relation weights | the "both depend on the same concept" case |
 | `schema_gap` | node violates `requires` (e.g. Procedure without `depends_on`); candidates = nodes whose class is in the relation's `range`, same scope, ranked by other signals | uses the ontology as a hypothesis generator |
 | `alias_cooccur` | FTS hit of another note's `title`/`aliases` in this note's body with no link | exact, free, style-independent |
-| `qmd_knn` | `qmd --index <vault index> query --json -n 20 -c <collection>` per note, least linked first, at most 100 per run; HyDE sub-queries optional | topical neighbours; the hit side is section-level |
+| `qmd_knn` | `qmd --index <vault index> query --json -n 20 -c <collection>` per note, least linked first, at most 100 per run; HyDE sub-queries optional. With `search = "builtin"`, the same loop over kbx's own index (`docs/search-engine.md`) | topical neighbours; the hit side is section-level |
 | `type_pair_prior` (optional) | learned from `reviews`: P(rel \| type(src), type(dst)) | cheap, improves over time |
 
 Hub damping: any node with degree > p99 is downweighted in `adamic_adar` and excluded as a `two_hop_bridge` intermediary unless the relation is `part_of`.
