@@ -34,17 +34,16 @@ Finding codes:
   rel.domain       the note's class is outside the domain of a relation it holds
   schema.gap       a relation the note's class requires is missing or empty
   rel.cardinality  an exclusive relation has more than one target
-  link.unstable    a link resolves by filename, not id (warning)
+  link.unstable    a link resolves by filename to a note with its own id (warning)
   link.unresolved  a link resolves to no note, or to more than one
-  note.invalid     a file with frontmatter can't be read as a note, so `kbx index`
-                   leaves it out
+  note.invalid     a file can't be read as a note, so `kbx index` leaves it out
   id.duplicate     several files claim one id; the lowest path keeps it, and links
                    and `kbx graph` go there
 
 Every code is an error except link.unstable, a warning. Only errors make kbx lint
 exit 1; --strict promotes warnings to errors.
 
-Plain markdown without frontmatter is not a note.
+Plain markdown is a note too: kbx infers the id, type and title a note leaves out.
 Paths in the output are relative to the vault root.";
 
 /// Turn a markdown vault into a typed knowledge graph.
@@ -566,20 +565,29 @@ fn run_index(options: IndexOptions) -> Result<ExitCode, Box<dyn Error>> {
     let ontology = read_ontology(&project)?;
     let mut graph = Graph::open(&project.graph)?;
     let exclusions = project.exclusions()?;
-    let report = index_vault(&mut graph, &project.vault, &ontology, &exclusions, &options)?;
+    let defaults = project.config.type_defaults();
+    let report = index_vault(
+        &mut graph,
+        &project.vault,
+        &ontology,
+        &exclusions,
+        &defaults,
+        &options,
+    )?;
     print_index_report(&report);
     Ok(ExitCode::SUCCESS)
 }
 
 fn print_index_report(report: &IndexReport) {
     println!(
-        "indexed {}, {} unchanged, removed {}, {} skipped, {} failed, {} hidden links",
+        "indexed {}, {} unchanged, removed {}, {} skipped, {} failed, {} hidden links, {} inferred",
         report.indexed,
         report.unchanged,
         report.removed,
         report.skipped,
         report.failed,
-        report.hidden
+        report.hidden,
+        report.inferred
     );
 }
 
@@ -600,7 +608,8 @@ fn lint_project(
 ) -> Result<ExitCode, Box<dyn Error>> {
     let ontology = read_ontology(project)?;
     let exclusions = project.exclusions()?;
-    let findings = lint_vault(&project.vault, &ontology, &exclusions, paths)?;
+    let defaults = project.config.type_defaults();
+    let findings = lint_vault(&project.vault, &ontology, &exclusions, &defaults, paths)?;
     let severity = |finding: &Finding| match finding.code.severity() {
         Severity::Warning if strict => Severity::Error,
         severity => severity,

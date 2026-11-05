@@ -113,20 +113,21 @@ fn read_sections(g: &Graph, vault: &Path, id: &str) -> rusqlite::Result<Sections
             row.get(0)
         })
         .optional()?;
-    let Some(path) = path.map(|path| vault.join(path)) else {
+    let Some(path) = path else {
         return Ok(Vec::new());
     };
-    let text = match fs::read_to_string(&path) {
+    let text = match fs::read_to_string(vault.join(&path)) {
         Ok(text) => text,
         Err(error) => {
-            warn!("{}: {error}", path.display());
+            warn!("{path}: {error}");
             return Ok(Vec::new());
         }
     };
+    // From the vault root, as the index had it: an inferred id comes from this.
     let note = match parse_note(&path, &text) {
         Ok(note) => note,
         Err(error) => {
-            warn!("{}: {error}", path.display());
+            warn!("{path}: {error}");
             return Ok(Vec::new());
         }
     };

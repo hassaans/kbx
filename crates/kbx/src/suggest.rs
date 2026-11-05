@@ -74,7 +74,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     } else {
         Graph::open(&project.graph)?
     };
-    match index_state(&graph, &yaml)? {
+    match index_state(&graph, &yaml, &project.config.type_defaults())? {
         IndexState::Unbuilt => return Err("the vault has no index yet; run `kbx index`".into()),
         IndexState::Stale => warn!("the index is out of date; run `kbx index`"),
         IndexState::Current => {}
@@ -195,6 +195,7 @@ fn forget_excluded(
             &project.vault,
             yaml,
             exclusions,
+            &project.config.type_defaults(),
             &IndexOptions::default(),
         )?;
     }
@@ -340,6 +341,12 @@ fn stage(
         report.staged,
         report.written.len()
     );
+    if report.inferred > 0 {
+        println!(
+            "left {} notes with inferred keys alone; their candidates are in `kbx review`",
+            report.inferred
+        );
+    }
     for (note, error) in &report.refused {
         eprintln!("error: {note}: {error}");
     }
@@ -353,7 +360,15 @@ fn stage(
             ..IndexOptions::default()
         };
         let exclusions = project.exclusions()?;
-        index_vault(graph, &project.vault, yaml, &exclusions, &options)?;
+        let defaults = project.config.type_defaults();
+        index_vault(
+            graph,
+            &project.vault,
+            yaml,
+            &exclusions,
+            &defaults,
+            &options,
+        )?;
     }
     Ok(match report.refused.is_empty() {
         true => ExitCode::SUCCESS,

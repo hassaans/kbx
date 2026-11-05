@@ -461,7 +461,7 @@ fn answers(
 /// Opens the index for reading, as `kbx suggest --dry-run` does.
 fn open_index(project: &Project, yaml: &str) -> Result<Graph, Box<dyn Error>> {
     let graph = Graph::open_read_only(&project.graph)?;
-    match index_state(&graph, yaml)? {
+    match index_state(&graph, yaml, &project.config.type_defaults())? {
         IndexState::Unbuilt => return Err("the vault has no index yet; run `kbx index`".into()),
         IndexState::Stale => warn!("the index is out of date; run `kbx index`"),
         IndexState::Current => {}

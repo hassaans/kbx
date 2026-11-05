@@ -12,7 +12,8 @@ use tracing::{debug, warn};
 
 use crate::exclude::{ExcludeError, Exclusions};
 use crate::graph::Graph;
-use crate::note::{Note, ParseError, parse_note, split_frontmatter};
+use crate::infer::TypeDefaults;
+use crate::note::{Note, parse_note_with, split_frontmatter};
 use crate::ontology::{Ontology, OntologyError};
 use crate::path::{canonical_path, plain_path};
 use crate::vault::Resolver;
@@ -23,11 +24,14 @@ pub const MENTIONS: &str = "mentions";
 
 /// Bump when the same file should compile to different rows, which makes the
 /// next run rebuild.
-const PIPELINE_VERSION: &str = "2";
+const PIPELINE_VERSION: &str = "3";
 
 const FRONTMATTER: &str = "frontmatter";
 const INLINE: &str = "inline";
 const DERIVED: &str = "derived";
+
+/// The `meta` key holding [`defaults_hash`] of the last run.
+const TYPE_DEFAULTS: &str = "type_defaults_hash";
 
 /// What to index.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -53,10 +57,12 @@ pub struct IndexReport {
     pub unchanged: usize,
     /// Files whose rows were dropped: deleted, or no longer notes.
     pub removed: usize,
-    /// Files that aren't notes, or claim an id an earlier path holds.
+    /// Files that claim an id an earlier path holds.
     pub skipped: usize,
     /// Files that could not be read or parsed.
     pub failed: usize,
+    /// How many of `indexed` don't state all of `id`, `type` and `title`.
+    pub inferred: usize,
     /// Links in the whole index that resolve to nothing (§8).
     pub hidden: usize,
     /// The paths behind `indexed` and `removed`, from the vault root.
@@ -91,20 +97,28 @@ pub enum IndexError {
 pub enum IndexState {
     /// No run has finished.
     Unbuilt,
-    /// Built by this pipeline, from this ontology.
+    /// Built by this pipeline, from this ontology and these default types.
     Current,
-    /// Built by another pipeline, or from another ontology.
+    /// Built by another pipeline, or from another ontology or default types.
     Stale,
 }
 
 /// Reads the state of the index from `meta`. Files changed since the last run
 /// don't show here: finding them takes the walk `kbx index` does.
-pub fn index_state(graph: &Graph, ontology_yaml: &str) -> rusqlite::Result<IndexState> {
+pub fn index_state(
+    graph: &Graph,
+    ontology_yaml: &str,
+    defaults: &TypeDefaults,
+) -> rusqlite::Result<IndexState> {
     let Some(pipeline) = meta(&graph.conn, "pipeline_version")? else {
         return Ok(IndexState::Unbuilt);
     };
     let ontology = meta(&graph.conn, "ontology_hash")?;
-    if pipeline == PIPELINE_VERSION && ontology == Some(sha256(ontology_yaml.as_bytes())) {
+    let types = meta(&graph.conn, TYPE_DEFAULTS)?;
+    if pipeline == PIPELINE_VERSION
+        && ontology == Some(sha256(ontology_yaml.as_bytes()))
+        && types == Some(defaults_hash(defaults))
+    {
         Ok(IndexState::Current)
     } else {
         Ok(IndexState::Stale)
@@ -128,12 +142,14 @@ pub fn excluded_notes(graph: &Graph, exclusions: &Exclusions) -> rusqlite::Resul
 ///
 /// A file whose `content_hash` matches is not parsed or written. Links are
 /// stored as written, and `edges` is compared with what they now resolve to, so
-/// a run only writes the rows that differ.
+/// a run only writes the rows that differ. A note's class can come from
+/// `defaults` rather than from its file, so new defaults make a rebuild.
 pub fn index_vault(
     graph: &mut Graph,
     vault: &Path,
     ontology_yaml: &str,
     exclusions: &Exclusions,
+    defaults: &TypeDefaults,
     options: &IndexOptions,
 ) -> Result<IndexReport, IndexError> {
     let ontology = Ontology::parse(ontology_yaml)?;
@@ -142,7 +158,9 @@ pub fn index_vault(
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-    let stale = meta(&tx, "pipeline_version")?.is_some_and(|v| v != PIPELINE_VERSION);
+    let types_hash = defaults_hash(defaults);
+    let stale = meta(&tx, "pipeline_version")?.is_some_and(|v| v != PIPELINE_VERSION)
+        || meta(&tx, TYPE_DEFAULTS)?.is_some_and(|v| v != types_hash);
     let selection = if stale {
         vec![Selected::whole_vault(vault)]
     } else {
@@ -159,7 +177,7 @@ pub fn index_vault(
         )?;
     }
 
-    let mut run = Run::new(&tx, options.full)?;
+    let mut run = Run::new(&tx, options.full, defaults)?;
     let mut on_disk = BTreeSet::new();
     for selected in &selection {
         match fs::metadata(&selected.absolute) {
@@ -203,6 +221,7 @@ pub fn index_vault(
         relink(&tx, &ontology)?;
     }
     set_meta(&tx, "ontology_hash", &ontology_hash)?;
+    set_meta(&tx, TYPE_DEFAULTS, &types_hash)?;
     set_meta(&tx, "pipeline_version", PIPELINE_VERSION)?;
     let hidden: i64 = tx.query_row("SELECT COUNT(*) FROM links WHERE dst IS NULL", [], |row| {
         row.get(0)
@@ -339,6 +358,7 @@ struct Indexed {
 struct Run<'a> {
     tx: &'a Transaction<'a>,
     force: bool,
+    defaults: &'a TypeDefaults,
     now: i64,
     by_path: BTreeMap<String, Indexed>,
     by_id: HashMap<String, String>,
@@ -348,7 +368,11 @@ struct Run<'a> {
 }
 
 impl<'a> Run<'a> {
-    fn new(tx: &'a Transaction<'a>, force: bool) -> rusqlite::Result<Run<'a>> {
+    fn new(
+        tx: &'a Transaction<'a>,
+        force: bool,
+        defaults: &'a TypeDefaults,
+    ) -> rusqlite::Result<Run<'a>> {
         let mut statement = tx.prepare("SELECT path, id, content_hash, fm_hash FROM files")?;
         let rows = statement.query_map([], |row| {
             let file = Indexed {
@@ -367,6 +391,7 @@ impl<'a> Run<'a> {
         Ok(Run {
             tx,
             force,
+            defaults,
             now: unix_seconds(SystemTime::now()),
             by_path,
             by_id,
@@ -398,16 +423,11 @@ impl<'a> Run<'a> {
             Ok(src) => src,
             Err(error) => return self.fail(path, error),
         };
-        match parse_note(path, src) {
+        match parse_note_with(path, src, self.defaults) {
             Ok(note) => {
                 let mtime = fs::metadata(&full).and_then(|metadata| metadata.modified());
                 let mtime = mtime.map_or(0, unix_seconds);
                 self.write_note(vault, &note, src, &content_hash, mtime)
-            }
-            Err(ParseError::NoFrontmatter) => {
-                debug!("{path}: no frontmatter, skipping");
-                self.report.skipped += 1;
-                self.forget(path)
             }
             Err(error) => self.fail(path, error),
         }
@@ -511,6 +531,7 @@ impl<'a> Run<'a> {
             },
         );
         self.report.indexed += 1;
+        self.report.inferred += usize::from(note.inferred.any());
         Ok(())
     }
 
@@ -795,9 +816,9 @@ fn relink(tx: &Transaction<'_>, ontology: &Ontology) -> rusqlite::Result<()> {
     write_edges(tx, &wanted)
 }
 
-pub(crate) fn load_resolver(tx: &Transaction<'_>) -> rusqlite::Result<(Resolver, Vec<String>)> {
+pub(crate) fn load_resolver(conn: &Connection) -> rusqlite::Result<(Resolver, Vec<String>)> {
     let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
-    let mut statement = tx.prepare("SELECT id, alias FROM aliases")?;
+    let mut statement = conn.prepare("SELECT id, alias FROM aliases")?;
     let mut rows = statement.query([])?;
     while let Some(row) = rows.next()? {
         aliases.entry(row.get(0)?).or_default().push(row.get(1)?);
@@ -806,7 +827,7 @@ pub(crate) fn load_resolver(tx: &Transaction<'_>) -> rusqlite::Result<(Resolver,
 
     let mut resolver = Resolver::default();
     let mut ids = Vec::new();
-    let mut statement = tx.prepare("SELECT id, path FROM files")?;
+    let mut statement = conn.prepare("SELECT id, path FROM files")?;
     let mut rows = statement.query([])?;
     while let Some(row) = rows.next()? {
         let (id, path): (String, String) = (row.get(0)?, row.get(1)?);
@@ -885,6 +906,11 @@ fn write_edges(tx: &Transaction<'_>, wanted: &BTreeMap<EdgeKey, EdgeRow>) -> rus
         )?;
     }
     Ok(())
+}
+
+/// What says whether a note's inferred class could differ from the last run's.
+fn defaults_hash(defaults: &TypeDefaults) -> String {
+    sha256(format!("{defaults:?}").as_bytes())
 }
 
 fn meta(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {

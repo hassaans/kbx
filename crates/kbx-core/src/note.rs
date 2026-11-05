@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde_yaml::{Mapping, Value};
 
+use crate::index::slash_path;
+use crate::infer::{Inferred, TypeDefaults, inferred_id, inferred_title};
 use crate::link::Link;
 use crate::section::{Lines, Section, extract_sections, link_heading_path};
 
@@ -10,16 +12,19 @@ use crate::section::{Lines, Section, extract_sections, link_heading_path};
 pub struct Note {
     /// The path the note was parsed from, normally relative to the vault.
     pub path: PathBuf,
-    /// The ULID from `id`.
+    /// The `id` key, normally a ULID, or else [`inferred_id`].
     pub id: String,
-    /// 1-based line of the `id` key.
+    /// 1-based line of the `id` key, or 1 if it isn't in the file.
     pub id_line: usize,
-    /// The `type` key, which names a class in the ontology.
+    /// The `type` key, which names a class in the ontology, or else the
+    /// default for the note's scope.
     pub class: String,
-    /// 1-based line of the `type` key.
+    /// 1-based line of the `type` key, or 1 if it isn't in the file.
     pub class_line: usize,
-    /// The `title` key.
+    /// The `title` key, or else the first H1 or the filename.
     pub title: String,
+    /// Which of `id`, `class` and `title` the file doesn't state.
+    pub inferred: Inferred,
     /// The `aliases` key, which links can resolve through.
     pub aliases: Vec<String>,
     /// The `tags` key.
@@ -112,8 +117,8 @@ pub struct Frontmatter<'a> {
 /// Why a file could not be read as a note.
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
-    /// The file doesn't open with `---`. Plain markdown is common in a vault,
-    /// so callers will usually skip these rather than report them.
+    /// The file doesn't open with `---`, and what was asked for needs a block
+    /// to edit. A note doesn't need one to be read.
     #[error("no frontmatter")]
     NoFrontmatter,
     /// The file opens with `---` and never closes it.
@@ -125,9 +130,6 @@ pub enum ParseError {
     /// The frontmatter is valid YAML but not a mapping.
     #[error("frontmatter is not a mapping")]
     NotAMapping,
-    /// `id`, `type` or `title` is absent or null.
-    #[error("frontmatter is missing `{0}`")]
-    MissingKey(&'static str),
     /// `id`, `type` or `title` is a list or a map.
     #[error("frontmatter key `{0}` must be a single value, not a list or map")]
     NotAScalar(&'static str),
@@ -150,11 +152,7 @@ impl ParseError {
 /// Finds the frontmatter block: a `---` first line, up to the next `---` line.
 /// Returns `None` if the file doesn't open with one. Handles a BOM and CRLF.
 pub fn split_frontmatter(src: &str) -> Result<Option<Frontmatter<'_>>, ParseError> {
-    let start = if src.starts_with('\u{feff}') {
-        '\u{feff}'.len_utf8()
-    } else {
-        0
-    };
+    let start = bom_len(src);
     let mut lines = src[start..].split_inclusive('\n');
     let Some(first) = lines.next().filter(|line| is_fence(line)) else {
         return Ok(None);
@@ -175,17 +173,40 @@ pub fn split_frontmatter(src: &str) -> Result<Option<Frontmatter<'_>>, ParseErro
     Err(ParseError::UnterminatedFrontmatter)
 }
 
+/// The bytes of the BOM `src` opens with, if it does.
+pub(crate) fn bom_len(src: &str) -> usize {
+    if src.starts_with('\u{feff}') {
+        '\u{feff}'.len_utf8()
+    } else {
+        0
+    }
+}
+
 fn is_fence(line: &str) -> bool {
     line.trim_end() == "---"
 }
 
-/// Parses one markdown file. `path` is stored on the note and is what
-/// filename links match, so pass it relative to the vault root.
+/// Parses one markdown file as [`parse_note_with`] does, with no scope having
+/// a class of its own.
 pub fn parse_note(path: impl Into<PathBuf>, src: &str) -> Result<Note, ParseError> {
-    let frontmatter = split_frontmatter(src)?.ok_or(ParseError::NoFrontmatter)?;
+    parse_note_with(path, src, &TypeDefaults::default())
+}
+
+/// Parses one markdown file. `path` is stored on the note, is what filename
+/// links match and is what an inferred id comes from, so pass it relative to
+/// the vault root. Frontmatter wins: only what it doesn't state is inferred,
+/// and a file with none is a note with everything inferred.
+pub fn parse_note_with(
+    path: impl Into<PathBuf>,
+    src: &str,
+    defaults: &TypeDefaults,
+) -> Result<Note, ParseError> {
+    let path = path.into();
+    let frontmatter = split_frontmatter(src)?;
+    let (yaml, body_start) = frontmatter.map_or(("", bom_len(src)), |f| (f.yaml, f.body_start));
     // The YAML starts on line 2, so a blank line makes its errors count lines
     // of the file.
-    let mapping = match serde_yaml::from_str(&format!("\n{}", frontmatter.yaml))? {
+    let mapping = match serde_yaml::from_str(&format!("\n{yaml}"))? {
         Value::Mapping(mapping) => mapping,
         Value::Null => Mapping::new(),
         _ => return Err(ParseError::NotAMapping),
@@ -213,7 +234,7 @@ pub fn parse_note(path: impl Into<PathBuf>, src: &str) -> Result<Note, ParseErro
             "kbx" => kbx = Some(value),
             "qmd" => qmd = Some(value),
             _ => {
-                let line = key_line(frontmatter.yaml, &key);
+                let line = key_line(yaml, &key);
                 match wikilinks(&value, line) {
                     Some(links) => relations.push(RelationEntry { key, line, links }),
                     None => properties.push(Property { key, line, value }),
@@ -222,14 +243,23 @@ pub fn parse_note(path: impl Into<PathBuf>, src: &str) -> Result<Note, ParseErro
         }
     }
 
-    let id = id.ok_or(ParseError::MissingKey("id"))?;
-    let sections = extract_sections(src, frontmatter.body_start, &id, &Lines::new(src));
+    let relative = slash_path(&path);
+    let inferred = Inferred {
+        id: id.is_none(),
+        class: class.is_none(),
+        title: title.is_none(),
+    };
+    let line_of = |key, missing| if missing { 1 } else { key_line(yaml, key) };
+    let (id_line, class_line) = (line_of("id", inferred.id), line_of("type", inferred.class));
+    let id = id.unwrap_or_else(|| inferred_id(&relative));
+    let sections = extract_sections(src, body_start, &id, &Lines::new(src));
     Ok(Note {
-        path: path.into(),
-        class: class.ok_or(ParseError::MissingKey("type"))?,
-        id_line: key_line(frontmatter.yaml, "id"),
-        class_line: key_line(frontmatter.yaml, "type"),
-        title: title.ok_or(ParseError::MissingKey("title"))?,
+        class: class.unwrap_or_else(|| defaults.class_for(&relative).to_string()),
+        id_line,
+        class_line,
+        title: title.unwrap_or_else(|| inferred_title(&sections, &relative)),
+        inferred,
+        path,
         id,
         aliases,
         tags,
@@ -264,15 +294,15 @@ fn holds_map(value: &Value) -> bool {
     }
 }
 
-/// Reads a required single value. YAML types `title: 1984` as a number, but
-/// it's text here. Null counts as missing.
+/// Reads a single value. YAML types `title: 1984` as a number, but
+/// it's text here. Null and an empty string count as missing.
 fn scalar(value: Value, key: &'static str) -> Result<Option<String>, ParseError> {
     match value {
         Value::Null => Ok(None),
         Value::Sequence(_) | Value::Mapping(_) | Value::Tagged(_) => {
             Err(ParseError::NotAScalar(key))
         }
-        other => Ok(scalar_text(&other)),
+        other => Ok(scalar_text(&other).filter(|text| !text.trim().is_empty())),
     }
 }
 

@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use crate::exclude::Exclusions;
 use crate::index::{IndexError, select, walk};
-use crate::note::{Note, ParseError, parse_note};
+use crate::infer::TypeDefaults;
+use crate::note::{Note, parse_note_with};
 use crate::ontology::Ontology;
 use crate::vault::{Finding, FindingCode, Vault};
 
@@ -14,12 +15,13 @@ use crate::vault::{Finding, FindingCode, Vault};
 /// This reads the files, not the index, so it sees what's on disk now. Every
 /// note is parsed, because links and duplicate ids depend on the whole vault,
 /// but only the given files are reported on: §8 leaves `link.unresolved` to
-/// the author of the file. Plain markdown isn't a note, and has no findings,
-/// and nor has what `exclusions` rules out, even when named in `paths`.
+/// the author of the file. What `exclusions` rules out has no findings, even
+/// when named in `paths`.
 pub fn lint_vault(
     vault: &Path,
     ontology_yaml: &str,
     exclusions: &Exclusions,
+    defaults: &TypeDefaults,
     paths: &[PathBuf],
 ) -> Result<Vec<Finding>, IndexError> {
     let ontology = Ontology::parse(ontology_yaml)?;
@@ -34,9 +36,8 @@ pub fn lint_vault(
     let mut notes = Vec::new();
     let mut findings = Vec::new();
     for path in &files {
-        match read_note(vault, path) {
-            Ok(Some(note)) => notes.push((selects(path), note)),
-            Ok(None) => {}
+        match read_note(vault, path, defaults) {
+            Ok(note) => notes.push((selects(path), note)),
             Err((line, message)) if selects(path) => findings.push(Finding {
                 code: FindingCode::NoteInvalid,
                 path: path.into(),
@@ -58,12 +59,8 @@ pub fn lint_vault(
 
 /// Reads a file as `kbx index` does. The error is a line and what's wrong, for
 /// anything the index counts as failed.
-fn read_note(vault: &Path, path: &str) -> Result<Option<Note>, (usize, String)> {
+fn read_note(vault: &Path, path: &str, defaults: &TypeDefaults) -> Result<Note, (usize, String)> {
     let bytes = fs::read(vault.join(path)).map_err(|error| (1, error.to_string()))?;
     let src = std::str::from_utf8(&bytes).map_err(|error| (1, error.to_string()))?;
-    match parse_note(path, src) {
-        Ok(note) => Ok(Some(note)),
-        Err(ParseError::NoFrontmatter) => Ok(None),
-        Err(error) => Err((error.line(), error.to_string())),
-    }
+    parse_note_with(path, src, defaults).map_err(|error| (error.line(), error.to_string()))
 }

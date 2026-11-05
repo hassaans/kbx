@@ -54,6 +54,24 @@ after `git add` is linted as edited.
 Every lint finding is an error except `link.unstable`, a link by filename rather
 than id. That's a warning, because it's how most Obsidian vaults link.
 
+### Existing vaults
+
+kbx needs nothing from an existing vault: `kbx init` and `kbx index` work on the
+notes you have. A note can leave out `id`, `type` and `title`, or have no
+frontmatter at all. kbx infers what's missing and keeps it in the index:
+
+- `id` from the note's path, as a slug and a short hash
+- `title` from the first H1, or else the filename
+- `type` from `default_type` in `kbx.toml`, per scope, with `Note` as the fallback
+
+Anything your frontmatter states wins. `kbx doctor` says what to add to the
+ontology for classes it lacks, such as the values of your own `type` keys.
+
+Indexing, linting and suggesting never write to your notes. Accepting a link
+writes the relation and nothing else to a note with inferred keys. Renaming such
+a note gives it a new id, so add `id:` to any note whose history should survive
+that. See [Existing vaults](docs/existing-vaults.md).
+
 ### What kbx writes, and where
 
 Everything kbx keeps for a vault is under `.kbx/`: the database, the ontology

@@ -211,6 +211,15 @@ impl Graph {
         Ok(None)
     }
 
+    /// The classes notes have, with how many of each, commonest first.
+    pub fn class_counts(&self) -> rusqlite::Result<Vec<(String, i64)>> {
+        let mut statement = self.conn.prepare(
+            "SELECT type, COUNT(*) AS notes FROM files GROUP BY type ORDER BY notes DESC, type",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect()
+    }
+
     /// Counts what the index holds.
     pub fn stats(&self) -> rusqlite::Result<GraphStats> {
         let count = |sql: &str| self.conn.query_row(sql, [], |row| row.get(0));

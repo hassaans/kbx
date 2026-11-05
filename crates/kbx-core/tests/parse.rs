@@ -1,4 +1,9 @@
-use kbx_core::{ParseError, parse_note, split_frontmatter};
+use std::collections::BTreeSet;
+
+use kbx_core::{
+    DEFAULT_CLASS, Inferred, ParseError, TypeDefaults, Vault, inferred_id, parse_note,
+    parse_note_with, split_frontmatter,
+};
 
 /// The frontmatter from spec §3, verbatim, with a body added.
 const EXAMPLE: &str = r#"---
@@ -141,27 +146,110 @@ fn unterminated_frontmatter_is_an_error() {
 }
 
 #[test]
-fn a_file_without_frontmatter_is_reported_as_such() {
-    assert!(matches!(
-        parse_note("a.md", "# Just notes\n"),
-        Err(ParseError::NoFrontmatter)
-    ));
+fn a_file_without_frontmatter_is_a_note_with_everything_inferred() {
+    let note = parse_note("Projects/Alpha Plan.md", "Intro.\n\n# Launch\n\n# Later\n").unwrap();
+    assert_eq!(note.id, inferred_id("Projects/Alpha Plan.md"));
+    assert_eq!(note.class, DEFAULT_CLASS);
+    assert_eq!(note.title, "Launch");
+    let all = Inferred {
+        id: true,
+        class: true,
+        title: true,
+    };
+    assert_eq!(note.inferred, all);
+    assert_eq!((note.id_line, note.class_line), (1, 1));
 }
 
 #[test]
-fn missing_required_keys_are_errors() {
-    for (src, want) in [
-        ("---\ntype: C\ntitle: T\n---\n", "id"),
-        ("---\nid: A\ntitle: T\n---\n", "type"),
-        ("---\nid: A\ntype: C\n---\n", "title"),
-        ("---\nid: A\ntype: C\ntitle:\n---\n", "title"),
-        ("---\n---\n", "id"),
-    ] {
-        match parse_note("a.md", src) {
-            Err(ParseError::MissingKey(key)) => assert_eq!(key, want),
-            other => panic!("{src:?}: {other:?}"),
-        }
+fn stated_keys_win_over_inference_one_by_one() {
+    let note = parse_note("a.md", "---\nid: A\n---\n# Heading\n").unwrap();
+    assert_eq!((note.id.as_str(), note.title.as_str()), ("A", "Heading"));
+    assert!(!note.inferred.id && note.inferred.class && note.inferred.title);
+
+    let note = parse_note("a.md", "---\ntype: C\ntitle: T\n---\n# Heading\n").unwrap();
+    assert_eq!(note.id, inferred_id("a.md"));
+    assert_eq!((note.class.as_str(), note.title.as_str()), ("C", "T"));
+    assert!(note.inferred.id && !note.inferred.class && !note.inferred.title);
+
+    let note = parse_note("a.md", "---\nid: A\ntype: C\ntitle: T\n---\n# Heading\n").unwrap();
+    assert!(!note.inferred.any());
+}
+
+#[test]
+fn a_null_key_counts_as_unstated() {
+    let note = parse_note("a.md", "---\nid: A\ntype: C\ntitle:\n---\n").unwrap();
+    assert_eq!(note.title, "a");
+    assert!(note.inferred.title);
+}
+
+#[test]
+fn a_title_comes_from_the_first_h1_and_else_the_filename() {
+    let title = |path: &str, src: &str| parse_note(path, src).unwrap().title;
+    assert_eq!(title("x.md", "## Two\n\n# One\n"), "One");
+    assert_eq!(title("x.md", "One\n===\n"), "One");
+    assert_eq!(title("x.md", "```\n# code\n```\n"), "x");
+    assert_eq!(title("x.md", "#\n\n# Real\n"), "Real");
+    assert_eq!(title("a/My Note.v2.md", "## Two\n"), "My Note.v2");
+    assert_eq!(title("x.md", ""), "x");
+    assert_eq!(title("x.md", "# Heading ^block\n"), "Heading");
+}
+
+#[test]
+fn an_empty_key_counts_as_absent() {
+    for empty in ["", "~", "\"\"", "''", "\"  \""] {
+        let src = format!("---\nid: {empty}\ntype: {empty}\ntitle: {empty}\n---\n# Heading\n");
+        let note = parse_note("Projects/a.md", &src).unwrap();
+        assert_eq!(note.id, inferred_id("Projects/a.md"), "{empty:?}");
+        assert_eq!(note.class, DEFAULT_CLASS, "{empty:?}");
+        assert_eq!(note.title, "Heading", "{empty:?}");
+        assert!(note.inferred.id && note.inferred.class && note.inferred.title);
     }
+}
+
+#[test]
+fn an_inferred_id_is_a_slug_and_a_digest_of_the_path() {
+    let id = inferred_id("Projects/Alpha Plan.md");
+    let (slug, digest) = id.rsplit_once('-').unwrap();
+    assert_eq!(slug, "projects-alpha-plan");
+    assert_eq!(digest.len(), 8);
+    assert_eq!(inferred_id("Projects/Alpha Plan.md"), id, "it's stable");
+    assert_eq!(
+        inferred_id("日本語/メモ.md").split('-').next(),
+        Some("日本語")
+    );
+    assert!(inferred_id("!!!.md").starts_with("note-"));
+    assert!(inferred_id(&format!("{}.md", "a".repeat(500))).len() < 80);
+}
+
+#[test]
+fn paths_sharing_a_slug_get_different_ids() {
+    let paths = ["a/b.md", "a-b.md", "A/B.md", "a b.md", "a/b.MD"];
+    let ids: BTreeSet<String> = paths.iter().map(|path| inferred_id(path)).collect();
+    assert_eq!(ids.len(), paths.len());
+}
+
+#[test]
+fn a_filename_link_never_lands_on_an_inferred_id_by_its_prefix() {
+    let top = parse_note("projects.md", "Top.\n").unwrap();
+    let plan = parse_note("projects-plan.md", "Plan.\n").unwrap();
+    let plan_id = plan.id.clone();
+    let vault = Vault::new(vec![top, plan]);
+    let link = parse_note("x.md", "[[projects-plan]]\n").unwrap();
+    let link = link.mentions().next().unwrap().clone();
+    assert_eq!(vault.resolve(&link).unwrap().note.id, plan_id);
+}
+
+#[test]
+fn a_scope_default_gives_a_note_its_class() {
+    let defaults = TypeDefaults {
+        global: "Thing".to_string(),
+        scopes: [("People".to_string(), "Entity".to_string())].into(),
+    };
+    let class = |path: &str| parse_note_with(path, "Text.\n", &defaults).unwrap().class;
+    assert_eq!(class("People/Ada.md"), "Entity");
+    assert_eq!(class("People/deep/Ada.md"), "Entity");
+    assert_eq!(class("Other/Ada.md"), "Thing");
+    assert_eq!(class("Ada.md"), "Thing");
 }
 
 #[test]
@@ -322,8 +410,8 @@ fn a_yaml_error_gives_the_line_in_the_file() {
 
 #[test]
 fn an_error_about_the_whole_frontmatter_points_at_its_opening_fence() {
-    let missing = parse_note("a.md", "---\nid: 1\n---\n").unwrap_err();
-    assert_eq!(missing.line(), 1);
+    let list = parse_note("a.md", "---\n- a\n---\n").unwrap_err();
+    assert_eq!(list.line(), 1);
     let open = parse_note("a.md", "---\nid: 1\n").unwrap_err();
     assert_eq!(open.line(), 1);
 }

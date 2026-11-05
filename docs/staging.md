@@ -44,6 +44,10 @@ outside the frontmatter changes, and only `kbx:` and the `qmd.metadata` mirror
 change inside it. A note edited since `kbx index` takes no entries, and the
 command exits 1. The other notes are still staged.
 
+A note with an inferred `id`, `type` or `title` takes no proposals, because only
+an acceptance writes to such a note. `kbx suggest --stage` counts those notes and
+leaves their candidates for `kbx review`. See [Existing vaults](existing-vaults.md).
+
 `kbx index` never reads `kbx.proposed`. The graph is the same with or without
 it, apart from the line numbers of whatever comes after the block.
 

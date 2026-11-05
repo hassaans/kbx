@@ -8,10 +8,11 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use toml::Value;
-use toml_edit::{Array, DocumentMut, InlineTable, value};
+use toml_edit::{Array, DocumentMut, InlineTable, Key, value};
 
 use crate::exclude::{DEFAULT_EXCLUDE, ExcludeError, Excluded, Exclusions};
 use crate::graph::Graph;
+use crate::infer::{DEFAULT_CLASS, TypeDefaults};
 use crate::ontology::{Ontology, OntologyError};
 use crate::path::canonical_path;
 
@@ -45,6 +46,12 @@ pub struct Config {
     /// key means.
     #[serde(default)]
     pub exclude: Option<Vec<String>>,
+    /// The class of a note with no `type` key, unless its scope has its own.
+    #[serde(default = "default_type")]
+    pub default_type: String,
+    /// What's set per scope, by folder.
+    #[serde(default)]
+    pub scope: BTreeMap<String, ScopeConfig>,
     /// The ontology file. A relative path starts at the vault root.
     pub ontology: String,
     /// The search backend. Use [`backend`](Config::backend), which says what
@@ -68,6 +75,18 @@ impl Config {
         self.exclude.clone().unwrap_or_else(default_exclude)
     }
 
+    /// The classes of notes with no `type` key.
+    pub fn type_defaults(&self) -> TypeDefaults {
+        let scopes = self.scope.iter().filter_map(|(folder, scope)| {
+            let class = scope.default_type.clone()?;
+            Some((folder.clone(), class))
+        });
+        TypeDefaults {
+            global: self.default_type.clone(),
+            scopes: scopes.collect(),
+        }
+    }
+
     /// The search backend in use. `kbx init` always writes the key, so a file
     /// without one was written by hand: if it lists qmd collections it was set
     /// up for QMD, and stays there. Anything else gets the built-in engine.
@@ -82,6 +101,17 @@ impl Config {
 
 fn default_exclude() -> Vec<String> {
     DEFAULT_EXCLUDE.map(String::from).to_vec()
+}
+
+fn default_type() -> String {
+    DEFAULT_CLASS.to_string()
+}
+
+/// One folder's table under `[scope]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct ScopeConfig {
+    /// The class of a note here with no `type` key. Unset means the global one.
+    pub default_type: Option<String>,
 }
 
 /// The `[write]` table of `kbx.toml`.
@@ -554,6 +584,8 @@ pub fn init(
 /// `toml` serialization would lose.
 fn config_text(ontology: &str, scopes: &[String], exclude: &[String], search: Search) -> String {
     let qmd = Qmd::default().with_scopes(scopes);
+    let scope_table = scope_text(scopes);
+    let default_type = Value::from(DEFAULT_CLASS);
     let collections = name_list(&qmd.collections);
     let roots = root_table(&qmd.roots);
     let scopes = Value::from(scopes.to_vec());
@@ -572,7 +604,8 @@ exclude = {exclude}
 ontology = {ontology}
 search = "{search}"  # or "qmd" or "builtin"
 qmd = {{ bin = "qmd", collections = {collections}, roots = {roots} }}
-
+default_type = {default_type}  # the class of a note with no `type` key
+{scope_table}
 [judge]
 order = ["claude-cli", "codex-cli", "ollama", "llama-server"]
 batch = 20
@@ -586,6 +619,20 @@ llama_server = {{ host = "http://127.0.0.1:8080" }}
 [judge.overrides]
 "#
     )
+}
+
+/// A `[scope]` table giving each scope the global class, for editing later.
+fn scope_text(scopes: &[String]) -> String {
+    if scopes.is_empty() {
+        return String::new();
+    }
+    let class = Value::from(DEFAULT_CLASS);
+    let mut text = "\n[scope]  # per-scope `default_type`\n".to_string();
+    for scope in scopes {
+        let key = Key::new(scope.as_str());
+        text.push_str(&format!("{key} = {{ default_type = {class} }}\n"));
+    }
+    text
 }
 
 /// The folders directly in `dir`, but for the one kbx made.

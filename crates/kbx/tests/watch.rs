@@ -300,6 +300,29 @@ fn reconciliation_finds_a_change_when_events_never_arrive() {
 }
 
 #[test]
+fn a_new_default_type_reaches_a_running_watch() {
+    let vault = indexed();
+    vault.write("notes/plain.md", "No frontmatter here.\n");
+    let watch = Watch::start(&vault, &["--debounce-ms", "50"]);
+    let class = || -> Option<String> {
+        let path = "notes/plain.md";
+        let sql = "SELECT type FROM files WHERE path = ?";
+        db(&vault).query_row(sql, [path], |row| row.get(0)).ok()
+    };
+    watch.wait_until("the note", || class().as_deref() == Some("Note"));
+
+    let config = vault.root().join("kbx.toml");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(&config, text.replace("= \"Note\"", "= \"Concept\"")).unwrap();
+    watch.wait_until("the new class", || class().as_deref() == Some("Concept"));
+
+    // The rebuild this leaves behind must not bring the old class back.
+    vault.ok(&["index"]);
+    watch.settle(&vault);
+    assert_eq!(class().as_deref(), Some("Concept"));
+}
+
+#[test]
 fn reconciliation_stays_quiet_when_nothing_changed() {
     let vault = indexed();
     let watch = Watch::start(&vault, &["--debounce-ms", "200", "--reconcile-secs", "1"]);

@@ -5,7 +5,7 @@ mod common;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use common::{FIXTURE, FakePath, copy_dir, id};
 use rusqlite::Connection;
@@ -739,7 +739,7 @@ fn incremental_runs_end_where_a_rebuild_would() {
     vault.ok(&["index"]);
     vault.write(
         "engineering/plain.md",
-        "No frontmatter, so this is not a note.\n",
+        "No frontmatter, and still a note.\n",
     );
     vault.ok(&["index"]);
 
@@ -1020,32 +1020,21 @@ fn renaming_a_file_keeps_links_by_id_and_hides_links_by_filename() {
 // --- what isn't a note ------------------------------------------------------
 
 #[test]
-fn a_file_without_frontmatter_is_skipped_and_logged_at_debug() {
+fn a_file_without_frontmatter_is_a_note_and_counts_as_inferred() {
     let vault = Vault::fixture();
-    let output = Command::new(env!("CARGO_BIN_EXE_kbx"))
-        .arg("index")
-        .env("KBX_LOG", "debug")
-        .current_dir(vault.root())
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains(", 2 skipped"));
-    let log = String::from_utf8_lossy(&output.stderr);
-    assert!(log.contains("DEBUG") && log.contains("README.md"), "{log}");
-    assert_eq!(vault.count("files"), 25);
-
-    let quiet = vault.kbx(&["index"]);
-    let log = String::from_utf8_lossy(&quiet.stderr);
-    assert!(!log.contains("README.md"), "the skip is debug only: {log}");
+    vault.write("scratch/plain.md", "Just text.\n");
+    let out = vault.ok(&["index"]);
+    assert!(out.ends_with(", 1 inferred\n"), "{out}");
+    assert_eq!(vault.count("files"), 26);
 }
 
 #[test]
-fn a_note_that_stops_having_frontmatter_loses_its_rows() {
+fn a_note_that_stops_having_frontmatter_loses_the_rows_of_its_old_id() {
     let vault = Vault::fixture();
     vault.ok(&["index"]);
     vault.write(RATE_LIMITS, "Plain text now.\n");
     vault.ok(&["index"]);
-    assert_eq!(vault.count("files"), 24);
+    assert_eq!(vault.count("files"), 25);
     let sections: i64 = vault
         .db()
         .query_row(

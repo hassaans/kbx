@@ -55,7 +55,8 @@ pub fn import_reviews(file: Option<&Path>) -> Result<ExitCode, Box<dyn Error>> {
 
 fn indexed() -> Result<Session, Box<dyn Error>> {
     let session = Session::read_only()?;
-    if index_state(&session.graph, &session.yaml)? == IndexState::Stale {
+    let defaults = session.project.config.type_defaults();
+    if index_state(&session.graph, &session.yaml, &defaults)? == IndexState::Stale {
         warn!("the index is out of date; run `kbx index`");
     }
     Ok(session)

@@ -41,6 +41,7 @@ fn every_link_lands_on_the_same_note_in_the_vault_and_the_index() {
         &root,
         EXAMPLE_ONTOLOGY,
         &Exclusions::new(&root, &[]).unwrap(),
+        &Default::default(),
         &options,
     )
     .unwrap();

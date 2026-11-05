@@ -46,6 +46,9 @@ pub struct StageReport {
     pub written: Vec<PathBuf>,
     /// Notes that took no entries, by id, and why. The candidates stand.
     pub refused: Vec<(String, ReviewError)>,
+    /// Notes left alone because they have inferred keys. Their candidates stay
+    /// in the queue, for `kbx review`.
+    pub inferred: usize,
 }
 
 /// What [`sync_stage`] did.
@@ -71,7 +74,9 @@ pub struct Synced {
 /// Writes these candidates under `kbx.proposed`, in the note a relation would
 /// be written to, leaving out what the queue leaves out and what's there.
 ///
-/// One note refusing doesn't stop the rest. Candidates sharing a staged note
+/// A note with inferred keys takes no entries: staging isn't an acceptance, and
+/// only an acceptance writes to such a note. One note refusing doesn't stop the
+/// rest. Candidates sharing a staged note
 /// stay acceptable: their recorded hash follows the write. The index doesn't,
 /// until `kbx index` runs.
 pub fn stage(
@@ -116,12 +121,14 @@ pub fn stage(
     }
 
     let mut report = StageReport::default();
+    let links = load_resolver(g.connection())?;
     for (note, lines) in by_note {
-        match stage_note(g, vault, &note, &lines) {
+        match stage_note(g, vault, &note, &lines, &links) {
             Ok(written) => {
                 report.staged += lines.len();
                 report.written.extend(written);
             }
+            Err(ReviewError::Inferred(_)) => report.inferred += 1,
             Err(error) => report.refused.push((note, error)),
         }
     }
@@ -139,14 +146,21 @@ struct Line {
 impl Line {
     /// The entry as it goes in the note. `to` is the link a relation would hold,
     /// so that moving the line under a relation key keeps the anchor.
-    fn anchored(&self, connection: &Connection, vault: &Path) -> Result<StagedEntry, ReviewError> {
+    fn linked(
+        &self,
+        connection: &Connection,
+        vault: &Path,
+        (resolver, ids): &(Resolver, Vec<String>),
+    ) -> Result<StagedEntry, ReviewError> {
         let mut entry = self.entry.clone();
-        let Some(section) = &self.section else {
-            return Ok(entry);
-        };
         if let Some(file) = OnDisk::read(connection, vault, &self.target)? {
             let hash = file.hash.clone();
-            let link = file.checked(Some(&hash))?.link_target(Some(section));
+            let names = |target: &str| {
+                let found = resolver.resolve(target);
+                found.is_some_and(|(index, _)| ids[index] == self.target)
+            };
+            let file = file.checked(Some(&hash))?;
+            let link = file.link_target(self.section.as_deref(), names);
             entry.to = format!("[[{link}]]");
         }
         Ok(entry)
@@ -158,6 +172,7 @@ fn stage_note(
     vault: &Path,
     note: &str,
     lines: &[Line],
+    links: &(Resolver, Vec<String>),
 ) -> Result<Option<PathBuf>, ReviewError> {
     let tx = Transaction::new_unchecked(&g.conn, TransactionBehavior::Immediate)?;
     let file = OnDisk::read(&tx, vault, note)?
@@ -174,10 +189,13 @@ fn stage_note(
     }
     let hash = file.hash.clone();
     let file = file.checked(Some(&hash))?;
+    if file.note.inferred.any() {
+        return Err(ReviewError::Inferred(file.path));
+    }
 
     let entries = lines
         .iter()
-        .map(|line| line.anchored(&tx, vault))
+        .map(|line| line.linked(&tx, vault, links))
         .collect::<Result<Vec<StagedEntry>, ReviewError>>()?;
     let new = stage_entries(&file.text, &entries)
         .map_err(|error| ReviewError::Write(file.path.clone(), error))?;

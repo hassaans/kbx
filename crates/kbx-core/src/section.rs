@@ -14,6 +14,8 @@ use crate::link::Link;
 pub struct Section {
     /// The stable key, see [`section_key`].
     pub key: Uuid,
+    /// The heading's level, 1 to 6, or 0 for the text before the first one.
+    pub level: u8,
     /// Heading texts from the outermost heading down to this one.
     pub heading_path: Vec<String>,
     /// `heading_path` as slugs joined by `/`, as in `{id}#{slug_path}`.
@@ -159,6 +161,7 @@ pub(crate) fn extract_sections(
                     open_headings.pop();
                 }
                 open_headings.push((level, text.trim().to_string()));
+                sections[current].level = level;
 
                 let path: Vec<String> = open_headings.iter().map(|(_, t)| t.clone()).collect();
                 let count = seen_paths.entry(path.clone()).or_default();
@@ -258,6 +261,7 @@ pub(crate) fn extract_sections(
 fn empty_section(start: usize) -> Section {
     Section {
         key: Uuid::nil(),
+        level: 0,
         heading_path: Vec::new(),
         slug_path: String::new(),
         ordinal: 0,

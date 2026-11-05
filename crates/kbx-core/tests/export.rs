@@ -37,6 +37,7 @@ fn indexed(ontology: &str) -> Db {
         &vault,
         ontology,
         &Exclusions::new(&vault, &[]).unwrap(),
+        &Default::default(),
         &IndexOptions::default(),
     )
     .unwrap();

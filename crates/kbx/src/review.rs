@@ -49,7 +49,8 @@ impl Session {
     fn with(project: Project, graph: Graph) -> Result<Session, Box<dyn Error>> {
         let yaml = crate::read_ontology(&project)?;
         let ontology = Ontology::parse(&yaml)?;
-        if index_state(&graph, &yaml)? == IndexState::Unbuilt {
+        let defaults = project.config.type_defaults();
+        if index_state(&graph, &yaml, &defaults)? == IndexState::Unbuilt {
             return Err(NO_INDEX.into());
         }
         Ok(Session {
@@ -77,7 +78,15 @@ impl Session {
         };
         let vault = &self.project.vault;
         let exclusions = self.project.exclusions()?;
-        index_vault(&mut self.graph, vault, &self.yaml, &exclusions, &options)?;
+        let defaults = self.project.config.type_defaults();
+        index_vault(
+            &mut self.graph,
+            vault,
+            &self.yaml,
+            &exclusions,
+            &defaults,
+            &options,
+        )?;
         Ok(())
     }
 
@@ -112,7 +121,8 @@ pub fn run(json: bool) -> Result<ExitCode, Box<dyn Error>> {
         return Err("`kbx review` needs a terminal; `kbx review --json` prints the queue".into());
     }
     let yaml = &session.yaml;
-    if index_state(&session.graph, yaml)? == IndexState::Stale {
+    let defaults = session.project.config.type_defaults();
+    if index_state(&session.graph, yaml, &defaults)? == IndexState::Stale {
         warn!("the index is out of date; run `kbx index`");
     }
     tui::run(session, queue)?;
@@ -297,11 +307,13 @@ pub fn sync_stage(mark_reviewed: bool) -> Result<ExitCode, Box<dyn Error>> {
     let vault = session.project.vault.clone();
     let options = IndexOptions::default();
     let exclusions = session.project.exclusions()?;
+    let defaults = session.project.config.type_defaults();
     index_vault(
         &mut session.graph,
         &vault,
         &session.yaml,
         &exclusions,
+        &defaults,
         &options,
     )?;
 

@@ -332,7 +332,7 @@ fn an_edit_that_would_change_another_value_is_refused() {
 
 #[test]
 fn a_file_kbx_cannot_read_is_refused() {
-    let error = add("no frontmatter\n", "rel", "B").unwrap_err();
+    let error = add("---\n- a\n---\n", "rel", "B").unwrap_err();
     assert!(matches!(error, WriteError::Parse(_)), "{error}");
     let error = add("---\nid: [\n---\n", "rel", "B").unwrap_err();
     assert!(matches!(error, WriteError::Parse(_)), "{error}");
@@ -533,4 +533,69 @@ fn reviewed_is_set_in_place_and_only_changes_what_it_should() {
     assert_eq!(outside(&src), outside(&new));
     assert!(new.contains("rel: [\"[[C]]\"]  # why\nkbx:\n  reviewed: 2026-11-04\nqmd:"));
     assert_eq!(set_reviewed(&new, "2026-11-04").unwrap(), None);
+}
+
+#[test]
+fn a_note_without_frontmatter_gets_a_block_with_the_relation_alone() {
+    let new = |src: &str| {
+        add_relation(src, "see_also", "b", |_| false)
+            .unwrap()
+            .unwrap()
+    };
+    let block = "---\nsee_also: [\"[[b]]\"]\n---\n";
+    assert_eq!(
+        new("# Title\n\nBody.\n"),
+        format!("{block}# Title\n\nBody.\n")
+    );
+    assert_eq!(new("no newline"), format!("{block}no newline"));
+    assert_eq!(new(""), block);
+    assert_eq!(
+        new("\u{feff}# Title\n"),
+        format!("\u{feff}{block}# Title\n"),
+        "a BOM stays first"
+    );
+    assert_eq!(
+        new("# Title\r\nBody\r\n"),
+        "---\r\nsee_also: [\"[[b]]\"]\r\n---\r\n# Title\r\nBody\r\n",
+        "a CRLF file stays CRLF"
+    );
+}
+
+#[test]
+fn a_note_with_an_inferred_key_gets_no_mirror() {
+    let src = "---\ntags: [a]\n---\nBody.\n";
+    let new = add_relation(src, "see_also", "b", |_| false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(new, "---\ntags: [a]\nsee_also: [\"[[b]]\"]\n---\nBody.\n");
+
+    let src = "---\nid: A\ntype: Concept\n---\nBody.\n";
+    let new = add_relation(src, "see_also", "b", |_| false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        new,
+        "---\nid: A\ntype: Concept\nsee_also: [\"[[b]]\"]\n---\nBody.\n"
+    );
+}
+
+#[test]
+fn an_empty_block_and_one_of_tool_keys_take_a_relation_first() {
+    let new = |src: &str| {
+        add_relation(src, "see_also", "b", |_| false)
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(
+        new("---\n---\nBody.\n"),
+        "---\nsee_also: [\"[[b]]\"]\n---\nBody.\n"
+    );
+    assert_eq!(
+        new("---\r\n---\r\nBody.\r\n"),
+        "---\r\nsee_also: [\"[[b]]\"]\r\n---\r\nBody.\r\n"
+    );
+    assert_eq!(
+        new("---\nqmd:\n  x: 1\n---\n"),
+        "---\nsee_also: [\"[[b]]\"]\nqmd:\n  x: 1\n---\n"
+    );
 }

@@ -64,10 +64,12 @@ impl Generator for AliasCooccur {
                     continue;
                 }
             };
-            let Ok(Some(frontmatter)) = split_frontmatter(&src) else {
-                continue;
+            let body = match split_frontmatter(&src) {
+                Ok(Some(frontmatter)) => &src[frontmatter.body_start..],
+                Ok(None) => &src,
+                Err(_) => continue,
             };
-            let body = words(&src[frontmatter.body_start..]);
+            let body = words(body);
 
             let mut found: BTreeMap<&str, (u32, BTreeSet<&str>)> = BTreeMap::new();
             for (at, word) in body.iter().enumerate() {

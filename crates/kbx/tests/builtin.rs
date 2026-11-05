@@ -81,7 +81,7 @@ fn suggest_finds_knn_candidates_with_no_qmd_on_path() {
 #[test]
 fn an_empty_graph_builds_no_search_index() {
     let vault = Fixture::bare(FakePath::empty());
-    vault.write("note.md", "No frontmatter.\n");
+    vault.write("note.md", "---\nid: [\n---\nNot a note.\n");
     vault.ok(&["init"]);
     vault.ok(&["index"]);
 
@@ -101,7 +101,7 @@ fn a_graph_left_empty_empties_the_search_index() {
     vault.ok(&["index"]);
     assert!(with_model(&vault, &KNN).status.success());
 
-    vault.write("note.md", "No frontmatter any more.\n");
+    vault.write("note.md", "---\nid: [\n---\nNot a note any more.\n");
     vault.ok(&["index"]);
     assert!(with_model(&vault, &KNN).status.success());
     let connection = Connection::open(vault.root().join(INDEX)).unwrap();
