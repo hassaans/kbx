@@ -177,14 +177,14 @@ fn reviews(vault: &Fixture) -> Vec<(String, String, Option<String>, i64)> {
 
 #[test]
 fn the_diff_is_byte_for_byte_what_accepting_writes() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let cid = first(&vault);
     assert_diff_is_the_write(&vault, &[&cid], 2);
 }
 
 #[test]
 fn a_crlf_note_keeps_its_line_endings_in_the_diff() {
-    let vault = Fixture::new();
+    let vault = Fixture::new().writing();
     for (path, text) in notes(vault.root()) {
         let path = vault.root().join(path);
         fs::write(path, text.replace('\n', "\r\n")).unwrap();
@@ -196,7 +196,7 @@ fn a_crlf_note_keeps_its_line_endings_in_the_diff() {
 
 #[test]
 fn the_diff_of_a_staged_candidate_takes_its_line_out() {
-    let vault = Fixture::new();
+    let vault = Fixture::new().writing();
     vault.ok(&["index"]);
     let mut args = SUGGEST.to_vec();
     args.push("--stage");
@@ -212,14 +212,14 @@ fn the_diff_of_a_staged_candidate_takes_its_line_out() {
 
 #[test]
 fn candidates_sharing_a_note_make_one_diff_for_it() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let (a, b) = sharing(&vault);
     assert_diff_is_the_write(&vault, &[&a, &b], 3);
 }
 
 #[test]
 fn it_shows_the_inverse_as_the_other_notes_own_diff() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let cid = first(&vault);
     let printed = vault.ok(&["accept", &cid, "--rel", "see_also", "--no-write"]);
     assert_eq!(printed.matches("--- a/").count(), 2, "{printed}");
@@ -228,7 +228,7 @@ fn it_shows_the_inverse_as_the_other_notes_own_diff() {
 
 #[test]
 fn a_derived_inverse_leaves_the_other_note_out_of_the_diff() {
-    let vault = Fixture::new();
+    let vault = Fixture::new().writing();
     let path = vault.root().join(".kbx/ontology.yaml");
     let yaml = fs::read_to_string(&path).unwrap();
     let marked = yaml.replace("weight: 1.0,", "weight: 1.0, derived_only: true,");
@@ -243,7 +243,7 @@ fn a_derived_inverse_leaves_the_other_note_out_of_the_diff() {
 
 #[test]
 fn review_shows_it_as_accepted_and_unwritten_and_a_plain_accept_writes_it() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let cid = first(&vault);
     let other = pairs(&vault)[1].0.clone();
     let reason = "they belong together";
@@ -273,7 +273,7 @@ fn review_shows_it_as_accepted_and_unwritten_and_a_plain_accept_writes_it() {
 
 #[test]
 fn a_refused_candidate_records_nothing() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let cid = first(&vault);
     let output = vault.kbx(&["accept", &cid, "--rel", "no_such", "--no-write"]);
     assert!(!output.status.success());
@@ -288,7 +288,7 @@ fn a_refused_candidate_records_nothing() {
 
 #[test]
 fn rejecting_takes_the_acceptance_back() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let cid = first(&vault);
     let before = notes(vault.root());
     vault.ok(&["accept", &cid, "--rel", "see_also", "--no-write"]);
@@ -304,7 +304,7 @@ fn rejecting_takes_the_acceptance_back() {
 
 #[test]
 fn deferring_puts_it_back_in_the_queue_undecided() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let cid = first(&vault);
     vault.ok(&["accept", &cid, "--rel", "see_also", "--no-write"]);
     vault.ok(&["defer", &cid]);
@@ -316,7 +316,7 @@ fn deferring_puts_it_back_in_the_queue_undecided() {
 
 #[test]
 fn another_relation_replaces_the_one_accepted() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let accepted = pairs(&vault).into_iter().find_map(|(cid, ..)| {
         let args = ["accept", &cid, "--rel", "depends_on", "--no-write"];
         vault.kbx(&args).status.success().then_some(cid)
@@ -330,7 +330,7 @@ fn another_relation_replaces_the_one_accepted() {
 
 #[test]
 fn an_inverse_relation_is_written_the_way_it_was_previewed() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let cid = first(&vault);
     let before = notes(vault.root());
     let printed = vault.ok(&["accept", &cid, "--rel", "has_part", "--no-write"]);
@@ -344,7 +344,7 @@ fn an_inverse_relation_is_written_the_way_it_was_previewed() {
 
 #[test]
 fn an_inverse_relation_is_taken_back_under_its_own_row() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let cid = first(&vault);
     vault.ok(&["accept", &cid, "--rel", "has_part", "--no-write"]);
     vault.ok(&["accept", &cid, "--rel", "see_also"]);
@@ -355,7 +355,7 @@ fn an_inverse_relation_is_taken_back_under_its_own_row() {
 
 #[test]
 fn a_withdrawn_acceptance_goes_back_to_the_rejection_it_replaced() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let cid = first(&vault);
     vault.ok(&["reject", &cid, "--rel", "part_of"]);
     vault.ok(&SUGGEST);
@@ -372,7 +372,7 @@ fn a_withdrawn_acceptance_goes_back_to_the_rejection_it_replaced() {
 
 #[test]
 fn suggest_keeps_the_decision_and_does_not_stage_it() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let cid = first(&vault);
     vault.ok(&["accept", &cid, "--rel", "see_also", "--no-write"]);
     let mut args = SUGGEST.to_vec();
@@ -386,7 +386,7 @@ fn suggest_keeps_the_decision_and_does_not_stage_it() {
 
 #[test]
 fn a_note_edited_since_is_refused_until_suggest_catches_up() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let (cid, src, _) = pairs(&vault).remove(0);
     vault.ok(&["accept", &cid, "--rel", "see_also", "--no-write"]);
     let path: String = db(&vault)
@@ -419,7 +419,7 @@ fn a_note_edited_since_is_refused_until_suggest_catches_up() {
 
 #[test]
 fn review_json_reads_a_database_from_before_the_column() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let cid = first(&vault);
     db(&vault)
         .execute_batch("ALTER TABLE candidates DROP COLUMN accepted_rel")
@@ -429,7 +429,7 @@ fn review_json_reads_a_database_from_before_the_column() {
 
 #[test]
 fn a_terminal_free_run_prints_the_diff_on_stdout() {
-    let vault = suggested(Fixture::new());
+    let vault = suggested(Fixture::new().writing());
     let cid = first(&vault);
     let output = vault.kbx(&["accept", &cid, "--rel", "see_also", "--no-write"]);
     assert!(stdout(&output).contains(&format!("accepted {cid}, not written")));

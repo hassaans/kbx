@@ -28,7 +28,7 @@ fn paths(vault: &Fixture) -> Vec<String> {
 }
 
 fn config(vault: &Fixture) -> toml::Value {
-    let text = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    let text = fs::read_to_string(vault.root().join(".kbx/kbx.toml")).unwrap();
     toml::from_str(&text).unwrap()
 }
 
@@ -38,7 +38,7 @@ fn list(value: &toml::Value) -> Vec<&str> {
 }
 
 fn edit_config(vault: &Fixture, edit: impl Fn(String) -> String) {
-    let file = vault.root().join("kbx.toml");
+    let file = vault.root().join(".kbx/kbx.toml");
     fs::write(&file, edit(fs::read_to_string(&file).unwrap())).unwrap();
 }
 

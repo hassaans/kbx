@@ -2,7 +2,7 @@
 
 This page settles the §14 open question: how a relation can point at part of a
 note, and what other tools do with such a link. It's off by default. To turn it
-on, add this to `kbx.toml`:
+on, add this to `.kbx/kbx.toml`:
 
 ```toml
 [write]
@@ -11,7 +11,9 @@ section_anchors = true
 
 With the setting off, which is the default, kbx proposes, judges and writes
 note-level pairs exactly as it did before. [What the tools do](#what-the-tools-do)
-says why.
+says why. An anchor reaches a note only with `frontmatter = true` under `[write]`
+as well. Without it, an accepted section-level relation keeps its sections in
+`.kbx/`.
 
 ## The convention
 

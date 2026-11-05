@@ -51,11 +51,11 @@ pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
     };
 
     let mut found = Project::discover(&env::current_dir()?);
+    let config = found.as_mut().ok().map(|p| check_config(p, fix));
     match &found {
         Ok(project) => {
             report("vault", (Status::Ok, project.vault.display().to_string()));
-            let file = project.config_file.display().to_string();
-            report("config", (Status::Ok, file));
+            report("config", config.unwrap_or((Status::Ok, String::new())));
             let yaml = fs::read_to_string(&project.ontology).ok();
             let ontology = check_ontology(project, yaml.as_deref());
             // Staleness means nothing against a file `kbx index` would refuse.
@@ -110,6 +110,23 @@ pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// The config file belongs in `.kbx/`. One at the root works, but it's the only
+/// thing kbx would have added to the vault's root.
+fn check_config(project: &mut Project, fix: bool) -> Check {
+    let file = project.config_file.display().to_string();
+    if !project.config_at_root() {
+        return (Status::Ok, file);
+    }
+    if !fix {
+        let detail = format!("{file} is at the vault root; `kbx doctor --fix` moves it to .kbx/");
+        return (Status::Warn, detail);
+    }
+    match project.move_config() {
+        Ok(path) => (Status::Ok, format!("moved to {}", path.display())),
+        Err(error) => (Status::Fail, error.to_string()),
+    }
 }
 
 fn check_ontology(project: &Project, yaml: Option<&str>) -> Check {

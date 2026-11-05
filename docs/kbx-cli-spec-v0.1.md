@@ -44,6 +44,20 @@ below; the project's fixed decisions override it where they differ:
 - §2's "reject nested maps" holds only for `id`, `type`, `title`, `aliases` and
   `tags`. A vault's own keys are ignored whatever they hold, and a relation key
   holding a map is a `rel.unknown` finding. See `docs/frontmatter-writer.md`.
+- `kbx.toml` lives in `.kbx/`: `kbx init` creates nothing else at the vault root
+  and `--in-kbx` is a no-op kept for scripts. A root `kbx.toml` is still read, with
+  a `kbx doctor` warning, and `kbx doctor --fix` moves it. Wherever this spec says
+  `kbx.toml`, read `.kbx/kbx.toml`.
+- §3, §6 and §7's writes to notes are opt-in. By default everything kbx would add
+  to frontmatter stays in `.kbx/` and no `.md` file changes: accepted relations and
+  their inverses, the review lock, and the inferred `id`, `type` and `title`.
+  `kbx accept` and `a` in `kbx review` add an edge of origin `kbx`, which `kbx index`
+  keeps and generators, `kbx lint` and `kbx export` take as they do a frontmatter
+  relation. A note that states the relation wins, and the `.kbx/` copy is dropped.
+  `[write] frontmatter = true` turns on the writer as §7 describes it, `--stage` and
+  `kbx sync-stage` included, which refuse without it. `kbx apply` writes what's
+  already kept in `.kbx/`, and `kbx mark-reviewed` sets the lock in either mode.
+  See `docs/review.md` and `docs/frontmatter-writer.md`.
 
 ---
 

@@ -311,7 +311,7 @@ fn a_new_default_type_reaches_a_running_watch() {
     };
     watch.wait_until("the note", || class().as_deref() == Some("Note"));
 
-    let config = vault.root().join("kbx.toml");
+    let config = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&config).unwrap();
     fs::write(&config, text.replace("= \"Note\"", "= \"Concept\"")).unwrap();
     watch.wait_until("the new class", || class().as_deref() == Some("Concept"));
@@ -522,7 +522,7 @@ fn a_note_excluded_while_watching_is_not_linted() {
     vault.ok(&["index"]);
     let watch = Watch::start(&vault, &[]);
 
-    let file = vault.root().join("kbx.toml");
+    let file = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&file).unwrap();
     let kept = text.lines().filter(|line| !line.starts_with("exclude ="));
     let kept = kept.collect::<Vec<_>>().join("\n");

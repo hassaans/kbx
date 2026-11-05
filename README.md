@@ -1,16 +1,15 @@
 # kbx
 
 kbx is a command-line tool that turns a markdown vault into a typed knowledge
-graph. It suggests links between notes, judges them with LLMs, and writes the
-relations you accept back to frontmatter. It's built for Obsidian and other
-personal knowledge management users.
+graph. It suggests links between notes, judges them with LLMs, and keeps the
+relations you accept in `.kbx/`, or writes them to frontmatter if you turn that on.
+It's built for Obsidian and other personal knowledge management users.
 
 kbx is in early development. So far it compiles a vault into a graph, checks it
 against the ontology and answers questions about it:
 
 ```sh
-kbx init                   # create .kbx/, kbx.toml and the example ontology
-kbx init --in-kbx          # the same with .kbx/kbx.toml, leaving the vault's root alone
+kbx init                   # create .kbx/ with kbx.toml and the example ontology
 kbx index                  # compile changed notes into .kbx/graph.sqlite; says why any were left out, and exits 1 if the index ends up with no notes
 kbx index --full           # rebuild, ignoring the stored hashes
 kbx index notes/a.md       # limit the run to some files and folders
@@ -27,16 +26,20 @@ kbx suggest --note <id> --generators schema_gap,alias_cooccur
 kbx suggest --budget 50    # keep at most 50 candidates
 kbx suggest --judge none   # stop at the candidates; by default a logged-in claude or codex CLI judges them, else local ollama or llama-server
 kbx suggest --budget-usd 0.50   # stop judging before this run spends more (see docs/judge.md)
-kbx suggest --stage        # also write proposals to `kbx.proposed` for your editor
-kbx sync-stage             # take edits there as decisions; see docs/staging.md
+kbx suggest --stage        # with writing on, also put proposals in `kbx.proposed` for your editor
+kbx sync-stage             # with writing on, take edits there as decisions; see docs/staging.md
 kbx suggest --eval         # each generator's precision and recall against your reviews
 kbx watch                  # re-index saved notes and lint them, until stopped
 kbx watch --suggest        # also run `kbx suggest` 45 s after the last save
 kbx hook install           # lint staged notes on commit; prints an Obsidian recipe
 kbx review                 # go through the candidates: a / r / d / e / s / q
 kbx review --json          # the same queue for editors and agents
-kbx accept <cid>… --rel see_also   # write relations and inverses to frontmatter
-kbx accept <cid>… --no-write       # record the decision, print the diff, touch no note
+kbx review --accepted      # the relations accepted and kept in .kbx/
+kbx accept <cid>… --rel see_also   # add relations and inverses to the graph, print the diff, touch no note
+kbx accept <cid>… --no-write       # the same with writing on, for this run
+kbx apply --dry-run        # the diff of writing the relations kept in .kbx/ to frontmatter
+kbx apply                  # with writing on, write them
+kbx mark-reviewed <id>…    # no new proposals for these notes until their content changes
 kbx reject <cid>… --reason "…"     # three rejections of a pair suppress it
 kbx defer <cid>…           # put a decision off
 kbx unreject --list        # the suppressed pairs; `kbx unreject <cid>` lifts one
@@ -45,7 +48,7 @@ kbx export reviews --jsonl # the reviews table; `kbx import reviews --jsonl` rea
 kbx export rdf             # the graph as Turtle; see docs/export.md
 kbx bakeoff                # score judge models against labels; see docs/judge-bakeoff.md
 kbx doctor                 # check the vault, the index, RAM, the judges and search
-kbx doctor --fix           # on QMD, create the qmd collections that are missing
+kbx doctor --fix           # move a root kbx.toml into .kbx/; on QMD, create missing collections
 ```
 
 The pre-commit hook lints staged notes as they are on disk, so a file edited
@@ -67,44 +70,64 @@ frontmatter at all. kbx infers what's missing and keeps it in the index:
 Anything your frontmatter states wins. `kbx doctor` says what to add to the
 ontology for classes it lacks, such as the values of your own `type` keys.
 
-Indexing, linting and suggesting never write to your notes. Accepting a link
-writes the relation and nothing else to a note with inferred keys. Renaming such
-a note gives it a new id, so add `id:` to any note whose history should survive
-that. See [Existing vaults](docs/existing-vaults.md).
+kbx writes nothing to your notes unless you [turn writing on](#writing-to-frontmatter).
+With it on, accepting a link writes the relation and nothing else to a note with
+inferred keys. Renaming such a note gives it a new id, so add `id:` to any note
+whose history should survive that. See [Existing vaults](docs/existing-vaults.md).
 
 ### What kbx writes, and where
 
-Everything kbx keeps for a vault is under `.kbx/`: the database, the ontology
-`kbx init` starts you with, the search index and the caches. To keep the rest of
-a shared or synced vault exactly as it is, put the config in there too:
+Everything kbx keeps for a vault is under `.kbx/`: the config, the database, the
+ontology `kbx init` starts you with, the search index and the caches. That
+includes what it learns about your notes: accepted relations and their inverses,
+review locks, and the `id`, `type` and `title` it infers. `kbx init`, `kbx index`,
+`kbx suggest`, `kbx accept` and `kbx review` change nothing outside `.kbx/`.
 
-```sh
-kbx init --in-kbx
-```
+An accepted relation is an edge like any other, with `kbx` for its origin rather
+than `frontmatter`. It survives `kbx index --full`, generators see the pair as
+linked, `kbx lint` counts it, and `kbx export` emits it. `kbx review --accepted`
+lists them, and [Accepted relations](docs/review.md#accepted-relations) has the
+rest. If a note later states the same relation, the note wins and `.kbx/` lets go
+of it.
 
 kbx looks for `.kbx/kbx.toml` first, then `kbx.toml`, in the current folder and
-then each parent. If one folder has both it stops with an error naming them, and
-you keep one. The file reads the same in either place, so you can move an existing
-`kbx.toml` into `.kbx/` as it is: a relative `vault` still starts at the folder
-holding `.kbx/`. `kbx doctor` prints which file is in use.
+then each parent. A `kbx.toml` at the vault root, as earlier versions wrote, still
+works. `kbx doctor` warns about it and `kbx doctor --fix` moves it into `.kbx/`,
+where it reads the same: a relative `vault` still starts at the folder holding
+`.kbx/`. If one folder has both, kbx stops with an error naming them and you keep
+one. `kbx init --in-kbx` is still accepted, and does what `kbx init` does.
 
-With that, `kbx index`, `kbx suggest` and `kbx accept --no-write` change nothing
-outside `.kbx/`. Nothing below happens unless you run the command beside it, and
-neither `kbx watch` nor `kbx watch --suggest` runs any of them.
+### Writing to frontmatter
+
+To have kbx write to your notes, add this to `.kbx/kbx.toml`:
+
+```toml
+[write]
+frontmatter = true
+```
+
+Then `kbx accept` and `a` in `kbx review` write the relation and its inverse to
+frontmatter, and [`kbx suggest --stage`, `kbx sync-stage`](docs/staging.md) and the
+`kbx.reviewed` lock work. Without the setting the staging commands refuse and say
+so. See [the frontmatter writer](docs/frontmatter-writer.md).
+
+Relations you accepted before turning it on stay in `.kbx/` until you run
+`kbx apply`, which writes them the same way. `kbx apply --dry-run` prints the diff
+first, and works with the setting off.
+
+Nothing below happens unless you run the command beside it, and neither `kbx watch`
+nor `kbx watch --suggest` runs any of them. The rows about notes need the setting.
 
 | Path | Written by |
 |---|---|
-| `kbx.toml` at the vault root | `kbx init` without `--in-kbx`. `kbx init --search qmd` and `kbx doctor --fix` also rewrite its qmd collections, in whichever file is in use. |
-| Notes: relations, inverses and the `qmd.metadata` mirror | `kbx accept` without `--no-write`, `a` in `kbx review`, and `kbx sync-stage` for a link you moved under a relation key |
+| `kbx.toml` at the vault root | Nothing creates one now. If you have one, `kbx init --search qmd` rewrites its qmd collections, and `kbx doctor --fix` moves it. |
+| Notes: relations, inverses and the `qmd.metadata` mirror | `kbx accept` without `--no-write`, `a` in `kbx review`, `kbx apply`, and `kbx sync-stage` for a link you moved under a relation key |
 | Notes: `kbx.proposed` | `kbx suggest --stage` adds lines. `kbx sync-stage`, `kbx accept`, `kbx reject`, and `a` and `r` in `kbx review` take out the lines of what they decide. |
-| Notes: `kbx.reviewed` | `kbx sync-stage --mark-reviewed` |
+| Notes: `kbx.reviewed` | `kbx sync-stage --mark-reviewed` and `kbx mark-reviewed` |
 | `.kbx-*.tmp` beside a note | Any of the three rows above, for the moment before the rename over the note |
 | `pre-commit` in the repository's hooks folder, usually `.git/hooks/` | `kbx hook install` |
 | The file named by `--doc`, by default `docs/judge-bakeoff.md` from where you run it | `kbx bakeoff`, between its markers |
 | The file named by `--out` | `kbx bakeoff --prepare --out` |
-
-`kbx suggest --stage` writes into your notes, so it doesn't belong in a run that
-has to leave them alone. See [Staged proposals](docs/staging.md).
 
 Outside the vault:
 

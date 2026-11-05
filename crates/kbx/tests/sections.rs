@@ -67,15 +67,15 @@ fn pairs_shown(judge: &FakeModel) -> Vec<Value> {
 
 /// The fixture vault with the note holding `^shed-order` added.
 fn vault() -> Fixture {
-    let vault = Fixture::new();
+    let vault = Fixture::new().writing();
     copy_dir(Path::new(OVERLAY), vault.root());
     vault
 }
 
 fn anchors_on(vault: &Fixture) {
-    let config = vault.root().join("kbx.toml");
-    let mut text = fs::read_to_string(&config).unwrap();
-    text.push_str("\n[write]\nsection_anchors = true\n");
+    let config = vault.root().join(".kbx/kbx.toml");
+    let text = fs::read_to_string(&config).unwrap();
+    let text = text.replace("\n[write]\n", "\n[write]\nsection_anchors = true\n");
     fs::write(config, text).unwrap();
 }
 
@@ -358,7 +358,7 @@ fn turning_anchors_off_takes_the_next_suggest_back_to_note_level() {
     vault.ok(&["suggest", "--judge", "none", "--generators", "qmd_knn"]);
     assert_ne!(row(&vault, SESSION, SHED).0, cid(&id(SESSION), &id(SHED)));
 
-    let config = vault.root().join("kbx.toml");
+    let config = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&config).unwrap();
     fs::write(
         &config,
@@ -400,7 +400,7 @@ fn by_default_a_block_changes_nothing() {
 
 #[test]
 fn anchors_on_a_note_with_nothing_to_anchor_changes_nothing() {
-    let vault = Fixture::new();
+    let vault = Fixture::new().writing();
     anchors_on(&vault);
     vault.ok(&["index"]);
     // `…11` says an alias of `…06`, and neither has a heading or a block id.
@@ -421,7 +421,7 @@ fn anchors_on_a_note_with_nothing_to_anchor_changes_nothing() {
 
 #[test]
 fn review_json_reads_a_database_from_before_the_section_columns() {
-    let vault = Fixture::new();
+    let vault = Fixture::new().writing();
     vault.ok(&["index"]);
     vault.ok(&[
         "suggest",
@@ -464,7 +464,7 @@ fn dump(db: &Connection, sql: &str) -> Value {
 /// vault: the index, `kbx graph`, the candidates, the verdicts, the queue and
 /// what accepting writes. Timestamps are left out.
 fn note_level_run() -> Value {
-    let vault = Fixture::new();
+    let vault = Fixture::new().writing();
     vault.ok(&["index"]);
     let handle = format!(
         "qmd://operations/{}-cookie-lifetime.md",

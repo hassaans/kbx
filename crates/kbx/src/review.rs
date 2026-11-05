@@ -8,8 +8,9 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use kbx_core::{
-    Decision, Graph, IndexError, IndexOptions, IndexState, Item, Ontology, Preview, Project, Queue,
-    ReviewError, STRIKES, cid, index_state, index_vault, suppressed_pairs,
+    AcceptedRelation, Decision, Graph, IndexError, IndexOptions, IndexState, Item, Ontology,
+    Preview, Project, Queue, ReviewError, STRIKES, accepted_relations, cid, index_state,
+    index_vault, suppressed_pairs, written_paths,
 };
 use serde_json::{Value, json};
 use tracing::warn;
@@ -17,6 +18,19 @@ use tracing::warn;
 use crate::tui;
 
 pub(crate) const NO_INDEX: &str = "the vault has no index yet; run `kbx index`";
+
+/// Refuses `what`, which only writes to notes, on a vault that keeps them as they
+/// are.
+pub(crate) fn require_frontmatter(project: &Project, what: &str) -> Result<(), String> {
+    if project.config.write.frontmatter {
+        return Ok(());
+    }
+    Err(format!(
+        "{what} writes to your notes, and this vault keeps everything in .kbx; \
+         set `frontmatter = true` under `[write]` in {} to turn that on",
+        project.config_file.display()
+    ))
+}
 
 /// What every decision starts from.
 pub(crate) struct Session {
@@ -65,6 +79,20 @@ impl Session {
         &self.project.vault
     }
 
+    /// Whether accepting writes to notes.
+    pub(crate) fn writes_notes(&self) -> bool {
+        self.project.config.write.frontmatter
+    }
+
+    /// The queue as this vault shows it.
+    fn queue(&self) -> rusqlite::Result<Queue> {
+        let queue = Queue::load(&self.graph, &self.ontology)?;
+        Ok(match self.writes_notes() {
+            true => queue,
+            false => queue.without_accepted(&accepted_relations(self.graph.connection())?),
+        })
+    }
+
     /// Brings the index up to date with what accepting wrote, given as paths
     /// from the vault. The links are on disk by now, so a failure here is for
     /// `kbx index` to repair.
@@ -91,30 +119,44 @@ impl Session {
     }
 
     /// Takes a decided candidate's line out of its note, if it has one. The
-    /// decision stands either way, and `kbx sync-stage` clears the line later.
+    /// decision stands either way, and `kbx sync-stage` clears the line later,
+    /// which is all that happens to one while the vault doesn't write to notes.
     pub(crate) fn unstage(&mut self, cid: &str) -> Result<(), Box<dyn Error>> {
+        if !self.writes_notes() {
+            return Ok(());
+        }
         let written = kbx_core::unstage(&self.graph, self.vault(), cid)?;
         self.reindex(&written.into_iter().collect::<Vec<_>>())?;
         Ok(())
     }
 }
 
-pub fn run(json: bool) -> Result<ExitCode, Box<dyn Error>> {
-    let session = if json {
+pub fn run(json: bool, accepted: bool) -> Result<ExitCode, Box<dyn Error>> {
+    let session = if json || accepted {
         Session::read_only()?
     } else {
         Session::open()?
     };
-    let queue = Queue::load(&session.graph, &session.ontology)?;
+    let held = accepted_relations(session.graph.connection())?;
+    if accepted {
+        print_accepted(&session, &held, json)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let queue = session.queue()?;
     if json {
         println!("{}", queue_json(&queue));
         return Ok(ExitCode::SUCCESS);
     }
     if queue.current().is_none() {
-        match queue.hidden() {
-            0 => println!("nothing to review"),
-            hidden => println!("nothing to review; {hidden} hidden, already rejected"),
+        let mut line = "nothing to review".to_string();
+        if queue.hidden() > 0 {
+            line.push_str(&format!("; {} hidden, already rejected", queue.hidden()));
         }
+        if !held.is_empty() {
+            let count = crate::plural(held.len(), "accepted relation");
+            line.push_str(&format!("; {count} in .kbx, see `kbx review --accepted`"));
+        }
+        println!("{line}");
         return Ok(ExitCode::SUCCESS);
     }
     if !stdin().is_terminal() || !stdout().is_terminal() {
@@ -125,8 +167,40 @@ pub fn run(json: bool) -> Result<ExitCode, Box<dyn Error>> {
     if index_state(&session.graph, yaml, &defaults)? == IndexState::Stale {
         warn!("the index is out of date; run `kbx index`");
     }
-    tui::run(session, queue)?;
+    tui::run(session, queue, held.len())?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// `kbx review --accepted`: the relations kept in `.kbx/`, each read as a note
+/// would state it. The cid is what `kbx reject` takes to withdraw one.
+fn print_accepted(
+    session: &Session,
+    held: &[AcceptedRelation],
+    json: bool,
+) -> Result<(), Box<dyn Error>> {
+    if json {
+        let title = |id: &str| -> rusqlite::Result<Option<String>> {
+            Ok(session.graph.node(id)?.map(|node| node.title))
+        };
+        let mut rows = Vec::new();
+        for relation in held {
+            rows.push(json!({
+                "cid": relation.cid,
+                "src": relation.src,
+                "dst": relation.dst,
+                "src_title": title(&relation.src)?,
+                "dst_title": title(&relation.dst)?,
+                "rel": relation.rel,
+            }));
+        }
+        println!("{}", Value::from(rows));
+        return Ok(());
+    }
+    for relation in held {
+        let (src, dst, rel) = (&relation.src, &relation.dst, &relation.rel);
+        println!("{} {src} -{rel}-> {dst}", relation.cid);
+    }
+    Ok(())
 }
 
 /// The queue for editors and agents, in the order `kbx review` shows it.
@@ -183,12 +257,18 @@ fn decision<'a>(rel: &'a Option<String>, reason: &'a Option<String>) -> Decision
     }
 }
 
+/// `kbx accept`: into the notes on a vault that writes to them, unless told not
+/// to, and otherwise into `.kbx/`.
 pub fn accept(
     cids: &[String],
     rel: &Option<String>,
     reason: &Option<String>,
+    no_write: bool,
 ) -> Result<ExitCode, Box<dyn Error>> {
     let mut session = Session::open()?;
+    if no_write || !session.writes_notes() {
+        return accept_unwritten(session, cids, rel, reason);
+    }
     let mut written = Vec::new();
     let code = each(cids, |cid| {
         let accepted = kbx_core::accept(
@@ -212,15 +292,13 @@ pub fn accept(
     Ok(code)
 }
 
-/// `kbx accept --no-write`. The diffs come last, one per note, with everything
-/// the run accepted in them. Only a terminal gets them cleaned up: note text can
-/// hold escape sequences, and piped output has to stay exact.
-pub fn accept_unwritten(
+/// The diffs come last, one per note, with everything the run accepted in them.
+fn accept_unwritten(
+    session: Session,
     cids: &[String],
     rel: &Option<String>,
     reason: &Option<String>,
 ) -> Result<ExitCode, Box<dyn Error>> {
-    let session = Session::open()?;
     let mut preview = Preview::default();
     let code = each(cids, |cid| {
         let accepted = kbx_core::accept_unwritten(
@@ -241,6 +319,13 @@ pub fn accept_unwritten(
         }
         Ok(())
     });
+    print_preview(&preview);
+    Ok(code)
+}
+
+/// Only a terminal gets the diffs cleaned up: note text can hold escape
+/// sequences, and piped output has to stay exact.
+fn print_preview(preview: &Preview) {
     if preview.is_empty() {
         println!("no note would change");
     }
@@ -250,6 +335,55 @@ pub fn accept_unwritten(
             false => print!("{diff}"),
         }
     }
+}
+
+/// `kbx apply`: the diff of everything kept in `.kbx/`, then with the setting on
+/// and without `--dry-run`, the writes.
+pub fn apply(dry_run: bool) -> Result<ExitCode, Box<dyn Error>> {
+    let mut session = Session::open()?;
+    if !dry_run {
+        require_frontmatter(&session.project, "`kbx apply`")?;
+    }
+    let (vault, ontology) = (session.vault(), &session.ontology);
+    let mut preview = Preview::default();
+    let planned = kbx_core::apply(&session.graph, vault, ontology, Some(&mut preview))?;
+    print_preview(&preview);
+    let outcome = match dry_run {
+        true => planned,
+        false => kbx_core::apply(&session.graph, vault, ontology, None)?,
+    };
+    let verb = if dry_run { "would write" } else { "wrote" };
+    for accepted in &outcome.applied {
+        println!(
+            "{verb} {} -{}-> {}",
+            accepted.src, accepted.rel, accepted.dst
+        );
+    }
+    let mut code = ExitCode::SUCCESS;
+    for (relation, error) in &outcome.refused {
+        eprintln!("error: {}: {error}", relation.cid);
+        code = ExitCode::FAILURE;
+    }
+    session.reindex(&written_paths(&outcome))?;
+    Ok(code)
+}
+
+/// `kbx mark-reviewed`: locks notes from new proposals until their content
+/// changes, in the notes or else in `.kbx/`.
+pub fn mark_reviewed(notes: &[String]) -> Result<ExitCode, Box<dyn Error>> {
+    let mut session = Session::open()?;
+    let date = today();
+    let mut written = Vec::new();
+    let code = each(notes, |note| {
+        let (graph, vault) = (&session.graph, session.vault());
+        match session.writes_notes() {
+            true => written.extend(kbx_core::mark_reviewed(graph, vault, note, &date)?),
+            false => kbx_core::hold_reviewed(graph, vault, note, &date)?,
+        }
+        println!("reviewed {note}: {date}");
+        Ok(())
+    });
+    session.reindex(&written)?;
     Ok(code)
 }
 
@@ -304,6 +438,7 @@ pub fn defer(
 /// someone just added has to resolve, and a file has to match its hash.
 pub fn sync_stage(mark_reviewed: bool) -> Result<ExitCode, Box<dyn Error>> {
     let mut session = Session::open()?;
+    require_frontmatter(&session.project, "`kbx sync-stage`")?;
     let vault = session.project.vault.clone();
     let options = IndexOptions::default();
     let exclusions = session.project.exclusions()?;

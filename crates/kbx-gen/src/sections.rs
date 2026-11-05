@@ -43,13 +43,18 @@ pub fn place_sections(g: &Graph, vault: &Path, run: &mut Run) -> Result<(), GenE
 
 /// Drops the candidates with sections, once `write.section_anchors` is off, so
 /// that no anchor gets written after it. The run being stored proposes them
-/// again as note-level pairs.
+/// again as note-level pairs. One accepted in `.kbx/` is decided, so it stays,
+/// for `kbx reject` to take back, as a note-level relation.
 pub fn forget_sections(g: &Graph) -> rusqlite::Result<()> {
-    g.connection().execute(
-        "DELETE FROM candidates WHERE src_section IS NOT NULL OR dst_section IS NOT NULL",
-        [],
-    )?;
-    Ok(())
+    g.connection().execute_batch(
+        "DELETE FROM candidates
+             WHERE (src_section IS NOT NULL OR dst_section IS NOT NULL)
+             AND cid NOT IN (SELECT cid FROM accepted);
+         UPDATE candidates SET src_section = NULL, dst_section = NULL
+             WHERE src_section IS NOT NULL OR dst_section IS NOT NULL;
+         UPDATE accepted SET src_section = NULL, dst_section = NULL
+             WHERE src_section IS NOT NULL OR dst_section IS NOT NULL;",
+    )
 }
 
 /// The section of `id` for this pair: where the terms occur most, which is exact

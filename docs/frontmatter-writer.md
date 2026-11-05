@@ -1,9 +1,40 @@
 # The frontmatter writer
 
-`kbx accept` writes accepted relations to your notes. This page says what it
-writes, what it refuses, and where it can lose a comment. To see all that without
-a note changing, use [`kbx accept --no-write`](review.md#accepting-without-writing).
-The README lists [everything kbx can write](../README.md#what-kbx-writes-and-where).
+The writer is off by default. `kbx accept` then keeps the relation in `.kbx/` and
+[prints the diff](review.md#accepted-relations) of what writing it would do, and no
+note changes. To have kbx write to your notes, add this to `.kbx/kbx.toml`:
+
+```toml
+[write]
+frontmatter = true
+```
+
+With that, `kbx accept`, `a` in `kbx review`, [staging](staging.md) and
+`kbx.reviewed` write as this page says. `kbx accept --no-write` keeps one run's
+relations in `.kbx/` anyway. This page says what gets written, what's refused, and
+where a comment can be lost. The README lists
+[everything kbx can write](../README.md#what-kbx-writes-and-where).
+
+## Applying what `.kbx/` holds
+
+Relations accepted while the setting was off stay in `.kbx/` when you turn it on.
+
+```sh
+kbx apply --dry-run   # print the diff, change nothing; needs no setting
+kbx apply             # write them; needs the setting
+```
+
+`kbx apply` prints the diff and writes each relation with this same writer, so a
+note ends up as if you'd accepted with the setting on: the inverse, the
+`qmd.metadata` mirror, and [the rules for inferred keys](#notes-with-inferred-keys)
+all apply. A written relation leaves `.kbx/` and is a frontmatter relation from
+then on.
+
+Accepted relations don't go stale the way candidates do, so `kbx apply` allows an
+edit `kbx index` has seen: the note on disk has to match the index. An edit it
+hasn't seen is refused, like the other refusals [below](#what-is-refused). What's
+refused stays in `.kbx/`, the rest is written, and the command exits 1. Run
+`kbx index` and `kbx apply` again.
 
 ## What changes
 
@@ -93,7 +124,8 @@ keys indented as a whole or a multi-line string with text at the left margin.
 `rel: ~` and a relation behind a YAML anchor are refused the same way. Add the
 link by hand instead.
 
-Acceptance is also refused, with nothing written, when:
+Acceptance is also refused, with nothing written and with the setting on or off,
+when:
 
 - Either note's `content_hash` differs from the one recorded when the candidate
   was generated. This holds after `kbx index` too. Run `kbx index` and
@@ -101,7 +133,8 @@ Acceptance is also refused, with nothing written, when:
 - The target note is gone (`target.unavailable`) or the source is
   (`source.unavailable`).
 - The notes' classes fit the relation in neither direction (`rel.range`).
-- The relation is `exclusive` and already has another target (`rel.cardinality`).
+- The relation is `exclusive` and already has another target, in a note or kept in
+  `.kbx/` (`rel.cardinality`).
 - The key holds something other than wikilinks.
 
 Candidates that share a note can be accepted in one go: `kbx accept a b` updates

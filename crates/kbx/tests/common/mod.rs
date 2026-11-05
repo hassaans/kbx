@@ -200,6 +200,15 @@ impl Fixture {
         fixture
     }
 
+    /// This vault with `[write] frontmatter = true`, as a vault that writes to
+    /// its notes has it.
+    pub fn writing(self) -> Fixture {
+        let config = self.root().join(".kbx/kbx.toml");
+        let text = fs::read_to_string(&config).unwrap();
+        fs::write(config, format!("{text}\n[write]\nfrontmatter = true\n")).unwrap();
+        self
+    }
+
     /// An empty folder, before `kbx init`, with `path` for its `PATH`.
     pub fn bare(path: FakePath) -> Fixture {
         Fixture {

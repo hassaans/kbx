@@ -21,7 +21,7 @@ const SUGGEST: [&str; 5] = [
 ];
 
 fn indexed() -> Fixture {
-    let vault = Fixture::new();
+    let vault = Fixture::new().writing();
     vault.ok(&["index"]);
     vault
 }

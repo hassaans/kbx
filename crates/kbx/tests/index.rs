@@ -199,7 +199,7 @@ fn init_creates_the_config_the_example_ontology_and_the_database() {
     fs::create_dir(vault.path(".obsidian")).unwrap();
     vault.ok(&["init", "--search", "qmd"]);
 
-    let text = fs::read_to_string(vault.path("kbx.toml")).unwrap();
+    let text = fs::read_to_string(vault.path(".kbx/kbx.toml")).unwrap();
     let config: toml::Table = text.parse().unwrap();
     assert_eq!(config["vault"].as_str(), Some("."));
     assert_eq!(config["ontology"].as_str(), Some(".kbx/ontology.yaml"));
@@ -240,7 +240,7 @@ fn init_with_an_ontology_points_the_config_at_that_file() {
     vault.ok(&["init", "--ontology", "schema.yaml"]);
     vault.ok(&["index"]);
 
-    let config: toml::Table = fs::read_to_string(vault.path("kbx.toml"))
+    let config: toml::Table = fs::read_to_string(vault.path(".kbx/kbx.toml"))
         .unwrap()
         .parse()
         .unwrap();
@@ -263,17 +263,17 @@ fn init_refuses_an_invalid_ontology_and_writes_nothing() {
     vault.write("schema.yaml", "version: 99\n");
     let output = vault.kbx(&["init", "--ontology", "schema.yaml"]);
     assert!(!output.status.success());
-    assert!(!vault.path("kbx.toml").exists());
+    assert!(!vault.path(".kbx/kbx.toml").exists());
     assert!(!vault.path(".kbx").exists());
 }
 
 #[test]
 fn init_leaves_an_existing_config_and_ontology_alone() {
     let vault = Vault::initialised();
-    vault.append("kbx.toml", "# mine\n");
+    vault.append(".kbx/kbx.toml", "# mine\n");
     vault.append(".kbx/ontology.yaml", "# mine\n");
     vault.ok(&["init", "--search", "qmd"]);
-    let config = fs::read_to_string(vault.path("kbx.toml")).unwrap();
+    let config = fs::read_to_string(vault.path(".kbx/kbx.toml")).unwrap();
     assert!(config.ends_with("# mine\n"));
     let ontology = fs::read_to_string(vault.path(".kbx/ontology.yaml")).unwrap();
     assert!(ontology.ends_with("# mine\n"));

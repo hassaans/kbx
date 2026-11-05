@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use kbx_core::{
-    ConfigLocation, Finding, Graph, IndexOptions, IndexReport, Neighbor, Node, Project, Search,
-    Severity, index_vault, init, lint_vault,
+    Finding, Graph, IndexOptions, IndexReport, Neighbor, Node, Project, Search, Severity,
+    accepted_relations, index_vault, init, lint_vault,
 };
 use serde_json::json;
 use tracing_subscriber::EnvFilter;
@@ -89,8 +89,9 @@ impl From<SearchChoice> for Search {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create .kbx/, kbx.toml and the example ontology. With `--search qmd`,
-    /// also install qmd if it's missing and create a qmd collection per scope.
+    /// Create .kbx/ with kbx.toml and the example ontology in it, and nothing
+    /// else in the vault. With `--search qmd`, also install qmd if it's missing
+    /// and create a qmd collection per scope.
     Init {
         /// Use this ontology file instead of the example.
         #[arg(long)]
@@ -98,9 +99,8 @@ enum Command {
         /// The search backend of a new vault.
         #[arg(long, value_enum)]
         search: Option<SearchChoice>,
-        /// Put kbx.toml in .kbx/, so that nothing is added to the vault's root
-        /// but that folder.
-        #[arg(long)]
+        /// Does nothing: kbx.toml goes in .kbx/ anyway.
+        #[arg(long, hide = true)]
         in_kbx: bool,
     },
     /// Compile the vault into .kbx/graph.sqlite, by content hash.
@@ -146,6 +146,7 @@ enum Command {
         budget: Option<usize>,
         /// Also write the proposals under `kbx.proposed` in the notes, for an
         /// editor to show. `kbx sync-stage` takes back what's decided there.
+        /// Needs `[write] frontmatter = true`.
         #[arg(long)]
         stage: bool,
         /// Pairs per judge call, from 10 to 25. Defaults to `judge.batch`.
@@ -236,10 +237,14 @@ enum Command {
         /// Print the queue as JSON and change nothing.
         #[arg(long)]
         json: bool,
+        /// List the relations accepted and kept in .kbx instead.
+        #[arg(long)]
+        accepted: bool,
     },
-    /// Write candidates to frontmatter: the relation on one note, its inverse
-    /// on the other. Refused if either note changed since `kbx suggest`. A
-    /// candidate accepted with --no-write is written by accepting it again.
+    /// Accept candidates: the relation becomes a graph edge kept in .kbx, its
+    /// inverse is derived, and a diff shows what writing it would do. Refused if
+    /// either note changed since `kbx suggest`. With `[write] frontmatter = true`
+    /// it's written to the notes instead.
     Accept {
         /// The candidates.
         #[arg(required = true)]
@@ -250,10 +255,24 @@ enum Command {
         /// Why, kept in the reviews table.
         #[arg(long)]
         reason: Option<String>,
-        /// Record the decision and print a diff of what would be written to
-        /// each note, without touching one.
+        /// Keep it in .kbx even with `[write] frontmatter = true`. Without that
+        /// setting nothing is written anyway.
         #[arg(long)]
         no_write: bool,
+    },
+    /// Write the relations kept in .kbx into the notes' frontmatter, printing
+    /// the diff first. Needs `[write] frontmatter = true`.
+    Apply {
+        /// Print the diff and change nothing. This needs no setting.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Lock notes from new proposals until their content changes, in .kbx or
+    /// with `[write] frontmatter = true` as `kbx.reviewed` in the note.
+    MarkReviewed {
+        /// The notes' ids.
+        #[arg(required = true)]
+        notes: Vec<String>,
     },
     /// Take candidates out of the queue. Three rejections of a pair suppress
     /// it from every generator.
@@ -290,7 +309,8 @@ enum Command {
         list: bool,
     },
     /// Take edits made under `kbx.proposed` as decisions: a line removed is a
-    /// rejection, a line moved into a relation key an acceptance.
+    /// rejection, a line moved into a relation key an acceptance. Needs
+    /// `[write] frontmatter = true`.
     SyncStage {
         /// Also set `kbx.reviewed` on each note this run finished, which locks
         /// it from new proposals until its content changes.
@@ -310,7 +330,8 @@ enum Command {
     /// Check the vault, the index, RAM, the judges and search. On QMD, install
     /// qmd if it's missing.
     Doctor {
-        /// Create the qmd collections that are missing.
+        /// Move a kbx.toml at the vault root into .kbx/, and create the qmd
+        /// collections that are missing.
         #[arg(long)]
         fix: bool,
     },
@@ -388,16 +409,8 @@ fn main() -> ExitCode {
 
     let result = match cli.command {
         Command::Init {
-            ontology,
-            search,
-            in_kbx,
-        } => {
-            let location = match in_kbx {
-                true => ConfigLocation::KbxFolder,
-                false => ConfigLocation::Root,
-            };
-            run_init(ontology, search.map(Search::from), location)
-        }
+            ontology, search, ..
+        } => run_init(ontology, search.map(Search::from)),
         Command::Index { full, paths } => run_index(IndexOptions {
             full,
             paths,
@@ -474,16 +487,15 @@ fn main() -> ExitCode {
         Command::Hook {
             action: HookAction::Install { force },
         } => hook::install(force),
-        Command::Review { json } => review::run(json),
+        Command::Review { json, accepted } => review::run(json, accepted),
         Command::Accept {
             cids,
             rel,
             reason,
-            no_write: false,
-        } => review::accept(&cids, &rel, &reason),
-        Command::Accept {
-            cids, rel, reason, ..
-        } => review::accept_unwritten(&cids, &rel, &reason),
+            no_write,
+        } => review::accept(&cids, &rel, &reason, no_write),
+        Command::Apply { dry_run } => review::apply(dry_run),
+        Command::MarkReviewed { notes } => review::mark_reviewed(&notes),
         Command::Reject { cids, rel, reason } => review::reject(&cids, &rel, &reason),
         Command::Defer { cids, rel, reason } => review::defer(&cids, &rel, &reason),
         Command::Unreject { cids, list: false } => review::unreject(&cids),
@@ -508,14 +520,10 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_init(
-    ontology: Option<PathBuf>,
-    search: Option<Search>,
-    location: ConfigLocation,
-) -> Result<ExitCode, Box<dyn Error>> {
+fn run_init(ontology: Option<PathBuf>, search: Option<Search>) -> Result<ExitCode, Box<dyn Error>> {
     let dir = env::current_dir()?;
     let backend = search.unwrap_or(Search::Builtin);
-    let report = init(&dir, ontology.as_deref(), backend, location)?;
+    let report = init(&dir, ontology.as_deref(), backend)?;
     let mut project = Project::discover(&dir)?;
     if report.config {
         let file = project.config_file.strip_prefix(&dir)?;
@@ -650,7 +658,19 @@ fn lint_project(
     let ontology = read_ontology(project)?;
     let exclusions = project.exclusions()?;
     let defaults = project.config.type_defaults();
-    let findings = lint_vault(&project.vault, &ontology, &exclusions, &defaults, paths)?;
+    // The graph is there to read, not to build: a hook may lint without one.
+    let accepted = match project.graph.is_file() {
+        true => accepted_relations(Graph::open_read_only(&project.graph)?.connection())?,
+        false => Vec::new(),
+    };
+    let findings = lint_vault(
+        &project.vault,
+        &ontology,
+        &exclusions,
+        &defaults,
+        paths,
+        &accepted,
+    )?;
     let severity = |finding: &Finding| match finding.code.severity() {
         Severity::Warning if strict => Severity::Error,
         severity => severity,
@@ -734,6 +754,9 @@ fn run_graph(query: GraphQuery) -> Result<ExitCode, Box<dyn Error>> {
             let stats = graph.stats()?;
             println!("nodes {}", stats.nodes);
             println!("edges {}", stats.edges);
+            if stats.accepted > 0 {
+                println!("accepted in .kbx {}", stats.accepted);
+            }
             println!("sections {}", stats.sections);
             println!("hidden links {}", stats.hidden);
         }

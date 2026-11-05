@@ -35,7 +35,8 @@ pub struct EdgeRow {
     pub inverse_of: Option<String>,
     /// The relation's weight. Mentions and keys outside the ontology have none.
     pub weight: Option<f64>,
-    /// `frontmatter`, `inline` or `derived`.
+    /// `frontmatter`, `inline` or `derived`, or `kbx` for an accepted relation
+    /// no note states.
     pub origin: String,
     /// The section holding the link.
     pub src_section: Option<String>,

@@ -62,12 +62,15 @@ pub(crate) struct App {
     /// Why the index is behind the notes, kept because the status bar may
     /// never be drawn again: the last acceptance ends the session.
     index_failure: Option<String>,
+    /// Relations accepted and kept in `.kbx/`.
+    held: usize,
     quit: bool,
 }
 
 /// Runs the session until the queue ends or the user quits. Assumes a terminal.
-pub fn run(session: Session, queue: Queue) -> Result<(), Box<dyn Error>> {
+pub fn run(session: Session, queue: Queue, held: usize) -> Result<(), Box<dyn Error>> {
     let mut app = App::new(session, queue);
+    app.held = held;
     let mut terminal = ratatui::try_init()?;
     let result = app.drive(&mut terminal);
     ratatui::try_restore()?;
@@ -86,6 +89,7 @@ impl App {
             tally: Tally::default(),
             excerpts: None,
             index_failure: None,
+            held: 0,
             quit: false,
         };
         app.read_excerpts();
@@ -214,17 +218,25 @@ impl App {
 
     fn accept(&mut self) {
         let session = &self.session;
-        let vault = session.vault();
-        let accepted = self
-            .queue
-            .accept(&session.graph, vault, &session.ontology, None);
+        let (graph, vault, ontology) = (&session.graph, session.vault(), &session.ontology);
+        let writes = session.writes_notes();
+        let accepted = match writes {
+            true => self.queue.accept(graph, vault, ontology, None),
+            false => self.queue.accept_unwritten(graph, vault, ontology, None),
+        };
         match accepted {
             Ok(accepted) => {
                 self.tally.accepted += 1;
+                if !writes {
+                    self.held += 1;
+                }
                 let mut line = format!(
                     "accepted: {} -{}-> {}",
                     accepted.src, accepted.rel, accepted.dst
                 );
+                if !writes {
+                    line.push_str(", kept in .kbx");
+                }
                 if let Err(error) = self.session.reindex(&accepted.written) {
                     let failure = format!("the index is out of date, run `kbx index`: {error}");
                     line.push_str(&format!("; {failure}"));
@@ -353,7 +365,13 @@ impl App {
             count.push_str(&format!("  ({hidden} hidden, already rejected)"));
         }
         if item.unwritten {
-            count.push_str("  accepted, not written: a writes it");
+            count.push_str(match self.session.writes_notes() {
+                true => "  accepted, not written: a writes it",
+                false => "  accepted, not written: a keeps it in .kbx",
+            });
+        }
+        if self.held > 0 {
+            count.push_str(&format!("  ({} accepted in .kbx)", self.held));
         }
         let ontology = &self.session.ontology;
         let rel = item.rel.as_deref();
@@ -498,13 +516,18 @@ mod tests {
         }
     }
 
-    /// The fixture vault after `kbx init`, `kbx index` and `kbx suggest`.
+    /// The fixture vault after `kbx init`, `kbx index` and `kbx suggest`, with
+    /// `[write] frontmatter` on, as most of these are about the notes.
     fn session() -> (TempDir, Session) {
+        session_writing(true)
+    }
+
+    fn session_writing(writes: bool) -> (TempDir, Session) {
         let dir = TempDir::new().unwrap();
         copy_dir(Path::new(FIXTURE), dir.path());
-        let location = kbx_core::ConfigLocation::Root;
-        init(dir.path(), None, kbx_core::Search::Builtin, location).unwrap();
-        let project = Project::discover(dir.path()).unwrap();
+        init(dir.path(), None, kbx_core::Search::Builtin).unwrap();
+        let mut project = Project::discover(dir.path()).unwrap();
+        project.config.write.frontmatter = writes;
         let yaml = fs::read_to_string(&project.ontology).unwrap();
         let mut graph = Graph::open(&project.graph).unwrap();
         let exclusions = project.exclusions().unwrap();
@@ -622,6 +645,32 @@ mod tests {
         let cells: Vec<&str> = buffer.content.iter().map(|cell| cell.symbol()).collect();
         let rows = cells.chunks(width).map(|row| row.concat());
         rows.collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn by_default_a_keeps_the_relation_in_kbx_and_leaves_the_notes_alone() {
+        let (_dir, session) = session_writing(false);
+        let mut app = loaded(session);
+        let item = current(&app);
+        let (src, dst) = (note(&app, &item.src), note(&app, &item.dst));
+        press(&mut app, KeyCode::Char('e'));
+        choose(&mut app, "see_also");
+        press(&mut app, KeyCode::Char('a'));
+
+        assert_eq!(note(&app, &item.src), src);
+        assert_eq!(note(&app, &item.dst), dst);
+        let db = app.session.graph.connection();
+        let edges: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE origin = 'kbx'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(edges, 1);
+        assert_eq!(review(&app, &item.src, &item.dst).1, "accept");
+        assert!(screen(&app).contains("kept in .kbx"), "{}", screen(&app));
+        assert_ne!(app.queue.current().map(|i| &i.cid), Some(&item.cid));
     }
 
     #[test]

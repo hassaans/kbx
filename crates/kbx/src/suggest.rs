@@ -64,6 +64,9 @@ pub struct Options {
 
 pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     let project = Project::discover(&env::current_dir()?)?;
+    if options.stage {
+        crate::review::require_frontmatter(&project, "`kbx suggest --stage`")?;
+    }
     let size = batch_size(&project, options.batch)?;
     let yaml = fs::read_to_string(&project.ontology)
         .map_err(|error| format!("{}: {error}", project.ontology.display()))?;

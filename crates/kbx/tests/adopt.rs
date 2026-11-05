@@ -30,7 +30,7 @@ fn existing() -> Fixture {
 }
 
 fn indexed() -> Fixture {
-    let vault = existing();
+    let vault = existing().writing();
     vault.ok(&["index"]);
     vault
 }
@@ -292,7 +292,7 @@ fn accept_gives_a_note_without_frontmatter_a_block_with_the_relation_alone() {
 
 #[test]
 fn a_note_with_all_its_keys_links_to_an_inferred_one_by_path_and_keeps_its_mirror() {
-    let vault = existing();
+    let vault = existing().writing();
     vault.write(
         "Areas/Pinned.md",
         &format!(
@@ -358,7 +358,7 @@ fn accept_no_write_previews_the_relation_alone_and_changes_no_note() {
 fn accept_no_write_keeps_a_scope_default_across_candidates_sharing_a_note() {
     let vault = existing();
     vault.write("Projects/Gamma.md", "Follows the alpha work.\n");
-    let path = vault.root().join("kbx.toml");
+    let path = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&path).unwrap();
     let edited = text.replace(
         "Projects = { default_type = \"Note\" }",
@@ -402,7 +402,7 @@ fn staging_leaves_a_note_with_inferred_keys_alone() {
 #[test]
 fn init_writes_a_default_type_for_the_vault_and_each_scope() {
     let vault = existing();
-    let text = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    let text = fs::read_to_string(vault.root().join(".kbx/kbx.toml")).unwrap();
     assert!(text.contains("default_type = \"Note\"  #"), "{text}");
     assert!(
         text.contains("Areas = { default_type = \"Note\" }\n"),
@@ -417,7 +417,7 @@ fn init_writes_a_default_type_for_the_vault_and_each_scope() {
 #[test]
 fn a_kbx_toml_from_before_default_type_falls_back_on_note() {
     let vault = existing();
-    let path = vault.root().join("kbx.toml");
+    let path = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&path).unwrap();
     let kept: Vec<&str> = text
         .lines()
@@ -431,7 +431,7 @@ fn a_kbx_toml_from_before_default_type_falls_back_on_note() {
 #[test]
 fn a_scope_default_applies_and_changing_it_rebuilds_the_index() {
     let vault = indexed();
-    let path = vault.root().join("kbx.toml");
+    let path = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&path).unwrap();
     let edited = text.replace(
         "Projects = { default_type = \"Note\" }",

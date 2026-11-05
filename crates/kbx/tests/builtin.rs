@@ -209,7 +209,7 @@ fn init_writes_builtin_and_runs_neither_npm_nor_qmd() {
     path.tool("node", &log);
     let vault = Fixture::bare(path);
     let out = vault.ok(&["init"]);
-    let config = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    let config = fs::read_to_string(vault.root().join(".kbx/kbx.toml")).unwrap();
     assert!(config.contains("search = \"builtin\""), "{config}");
     assert!(out.contains("built-in engine"), "{out}");
     assert!(!out.contains("found qmd"), "{out}");
@@ -262,7 +262,7 @@ fn doctor_says_when_the_model_is_ready() {
 
 /// `kbx.toml` of `body`, without the line `search = …` of `kbx init`.
 fn without_search_key(vault: &Fixture, qmd_line: Option<&str>) {
-    let file = vault.root().join("kbx.toml");
+    let file = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&file).unwrap();
     let kept = text
         .lines()
@@ -302,7 +302,7 @@ fn a_vault_written_with_search_qmd_stays_on_qmd() {
     let vault = Fixture::bare(path);
     copy_dir(Path::new(FIXTURE), vault.root());
     vault.ok(&["init", "--search", "qmd"]);
-    let config = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    let config = fs::read_to_string(vault.root().join(".kbx/kbx.toml")).unwrap();
     assert!(config.contains("search = \"qmd\""), "{config}");
     let text = vault.ok(&["doctor"]);
     assert!(
@@ -345,7 +345,7 @@ fn a_folder_excluded_later_leaves_the_search_index_at_the_next_suggest() {
     };
     assert_eq!(terms(&vault), 1);
 
-    let file = vault.root().join("kbx.toml");
+    let file = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&file).unwrap();
     fs::write(
         &file,
