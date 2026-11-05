@@ -1,0 +1,100 @@
+name: Smoke
+
+# Installs a published kbx the way a user would, on machines that have never seen
+# it. Nothing here publishes or needs a secret. See docs/releasing.md.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version to check, or empty for the one in Cargo.toml
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: version
+        run: |
+          version=${INPUT_VERSION:-${RELEASE_TAG#v}}
+          version=${version:-$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)}
+          [[ -n $version ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+
+  npm:
+    name: npm ${{ matrix.os }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            package: kbx-linux-x64-gnu
+          - os: macos-latest
+            package: kbx-darwin-arm64
+          - os: windows-latest
+            package: kbx-windows-x64
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: .github/scripts/smoke-wait.sh npm kbx "$VERSION"
+      - run: .github/scripts/smoke-npm.sh "$VERSION" "${{ matrix.package }}" tests/fixtures/vault
+
+  no-npm:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: .github/scripts/smoke-wait.sh npm kbx-linux-x64-gnu "$VERSION"
+      - run: .github/scripts/smoke-no-npm.sh "$VERSION" kbx-linux-x64-gnu
+
+  cargo:
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 75
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: .github/scripts/smoke-wait.sh crates kbx "$VERSION"
+      - run: cargo install kbx --locked --version "$VERSION"
+      - name: Check the version it prints
+        run: |
+          printed=$("$HOME/.cargo/bin/kbx" --version)
+          echo "$printed"
+          [[ $printed == "kbx $VERSION" ]]
