@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "kbx"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "clap",
  "kbx-core",
@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "kbx-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "oxrdf",
  "oxttl",
@@ -896,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "kbx-gen"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "kbx-core",
  "rusqlite",
@@ -909,7 +909,7 @@ dependencies = [
 
 [[package]]
 name = "kbx-judge"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "kbx-core",

@@ -1,15 +1,16 @@
 # Releasing kbx
 
 Pushing a `v*` tag runs `.github/workflows/release.yml`. It builds the five
-targets, tests each one on its own platform, and then publishes in this order:
+targets, tests each one on its own platform, and then publishes a GitHub Release
+with the five binaries attached. After that, two jobs run side by side:
 
-1. a GitHub Release with the five binaries attached
-2. the five platform packages on npm
-3. the `kbx` shim on npm
-4. `kbx-core`, `kbx-gen`, `kbx-judge` and `kbx` on crates.io, waiting for each
-   crate to reach the index before the next
+- `npm-publish`: the five platform packages, then the `kbx` shim
+- `cargo-publish`: `kbx-core`, `kbx-gen`, `kbx-judge` and `kbx` on crates.io,
+  waiting for each crate to reach the index before the next
 
-Nothing publishes unless every build, test and packaging step passes.
+Neither job waits for the other, so a failure on one registry doesn't stop the
+other from publishing. Nothing publishes unless every build, test and packaging
+step passes.
 
 ## Before the first release
 
@@ -87,7 +88,9 @@ What to do depends on where it stopped:
   ```
 
 - **A registry or network error during publishing**: re-run the failed jobs. The
-  run picks up from the first package or crate that's missing.
+  run picks up from the first package or crate that's missing. npm and crates.io
+  publish independently, so one can be complete while the other failed: the
+  re-run only touches the job that failed, and that job still skips what's out.
 - **A bug that needs a code change, after something published**: npm and
   crates.io versions can't be replaced, and a re-run uses the tagged commit, so
   re-running won't help. Fix it on `main` and release the next patch version.
@@ -97,7 +100,16 @@ What to do depends on where it stopped:
   though neither registry has the version. Leave the tag and the Release as they
   are, and don't delete them to reuse the version. Fix it on `main` and release
   the next patch version. v0.1.0 went this way: it's a GitHub Release with no npm
-  packages or crates, and v0.1.1 is the first version on the registries.
+  packages or crates.
+- **npm refuses a package name**: no re-run gets past this, and the version stays
+  partly out. Rename the package on `main` and release the next patch version.
+  v0.1.1 went this way: npm answered `E403 Package name triggered spam detection`
+  for `kbx-win32-x64-msvc`, from CI and from the owner's machine. So v0.1.1 is a
+  GitHub Release plus four orphan platform packages (`kbx-darwin-arm64`,
+  `kbx-darwin-x64`, `kbx-linux-x64-gnu` and `kbx-linux-arm64-gnu`). The `kbx` shim
+  never went out, and neither did the crates, because `cargo-publish` ran after
+  `npm-publish` then. The Windows package is `kbx-windows-x64` from v0.1.2, and
+  v0.1.2 is the first version meant to reach both registries in full.
 
 A re-run can't pick up an edit to `release.yml` or `.github/scripts/` either: it
 always uses the files at the tag.

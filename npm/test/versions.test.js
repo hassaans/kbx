@@ -79,10 +79,10 @@ describe('check-versions.js', () => {
   it('fails when an optional dependency is missing', (t) => {
     const root = copyRepo(t);
     edit(root, 'kbx', (manifest) => {
-      delete manifest.optionalDependencies['kbx-win32-x64-msvc'];
+      delete manifest.optionalDependencies['kbx-windows-x64'];
     });
     const result = check(root);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /kbx-win32-x64-msvc/);
+    assert.match(result.stderr, /kbx-windows-x64/);
   });
 });

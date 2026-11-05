@@ -8,7 +8,7 @@ below; the project's fixed decisions override it where they differ:
   name is `kbx`.
 - npm: unscoped shim `kbx` plus platform packages `kbx-darwin-arm64`,
   `kbx-darwin-x64`, `kbx-linux-x64-gnu`, `kbx-linux-arm64-gnu`,
-  `kbx-win32-x64-msvc` (not `@kbx/cli-*`); hand-written GitHub Actions,
+  `kbx-windows-x64` (not `@kbx/cli-*`); hand-written GitHub Actions,
   no cargo-dist, no Homebrew, no postinstall.
 - Search: QMD (`@tobilu/qmd`) is the v0 backend, installed silently when
   missing, and stays a supported option for good; a built-in engine becomes
@@ -71,7 +71,7 @@ kbx/
 │   ├── kbx-darwin-x64/
 │   ├── kbx-linux-x64-gnu/
 │   ├── kbx-linux-arm64-gnu/
-│   └── kbx-win32-x64-msvc/
+│   └── kbx-windows-x64/
 ├── schema/
 │   ├── ontology.example.yaml
 │   └── judge.schema.json      # JSON Schema the judge must return

@@ -11,7 +11,7 @@ const PLATFORM_PACKAGES = [
   'kbx-darwin-x64',
   'kbx-linux-arm64-gnu',
   'kbx-linux-x64-gnu',
-  'kbx-win32-x64-msvc',
+  'kbx-windows-x64',
 ];
 
 const root = path.resolve(process.argv[2] || path.join(__dirname, '..'));

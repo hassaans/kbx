@@ -16,7 +16,7 @@ const TARGETS = [
   { platform: 'darwin', arch: 'x64', pkg: 'kbx-darwin-x64', file: 'kbx' },
   { platform: 'linux', arch: 'x64', pkg: 'kbx-linux-x64-gnu', file: 'kbx' },
   { platform: 'linux', arch: 'arm64', pkg: 'kbx-linux-arm64-gnu', file: 'kbx' },
-  { platform: 'win32', arch: 'x64', pkg: 'kbx-win32-x64-msvc', file: 'kbx.exe' },
+  { platform: 'win32', arch: 'x64', pkg: 'kbx-windows-x64', file: 'kbx.exe' },
 ];
 
 function tempDir(t) {
