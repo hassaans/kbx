@@ -558,6 +558,60 @@ fn a_whole_vault_collection_does_not_reach_an_excluded_folder() {
     assert_eq!(mask_of(&vault, "vault"), "*.md");
 }
 
+/// A vault with its scopes set up, then `include` added for a folder that
+/// `.gitignore` kept out of them.
+fn include_after_init(include: &str) -> Fixture {
+    let vault = two_scopes("[]");
+    vault.write(".gitignore", "personal/\n");
+    vault.write("personal/journal/three.md", &note(3, "three"));
+    vault.write("personal/taxes/four.md", &note(4, "four"));
+    vault.ok(&["init", "--search", "qmd"]);
+    let file = vault.root().join(".kbx/kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(&file, format!("include = {include}\n{text}")).unwrap();
+    vault
+}
+
+#[test]
+fn doctor_fix_makes_a_collection_for_a_folder_include_brings_back() {
+    let vault = include_after_init(r#"["personal/journal"]"#);
+
+    let printed = vault.ok(&["doctor"]);
+    assert!(printed.contains("missing personal"), "{printed}");
+    vault.ok(&["doctor", "--fix"]);
+
+    assert_eq!(mask_of(&vault, "personal"), "journal/**/*.md");
+    let roots = config(&vault)["qmd"]["roots"].clone();
+    assert_eq!(roots["personal"].as_str(), Some("personal"), "{roots}");
+    let scopes = config(&vault)["scopes"].clone();
+    assert_eq!(scopes.as_array().unwrap().len(), 2, "{scopes}");
+}
+
+#[test]
+fn a_folder_include_finds_nothing_in_gets_no_collection() {
+    let vault = include_after_init(r#"["personal/typo"]"#);
+
+    vault.ok(&["doctor", "--fix"]);
+
+    let added = adds(&vault).join("\n");
+    assert!(!added.contains("personal"), "{added}");
+}
+
+#[test]
+fn a_mask_reaches_into_an_ignored_folder_inside_a_scope_as_far_as_include_does() {
+    let vault = include_after_init(r#"["team-a/drafts/keep"]"#);
+    vault.write(".gitignore", "personal/\ndrafts/\n");
+    vault.write("team-a/drafts/keep/five.md", &note(5, "five"));
+    vault.write("team-a/drafts/left/six.md", &note(6, "six"));
+    vault.write("team-a/drafts/seven.md", &note(7, "seven"));
+
+    let printed = vault.ok(&["doctor"]);
+    assert!(printed.contains("mask out of date for team-a"), "{printed}");
+    vault.ok(&["doctor", "--fix"]);
+
+    assert_eq!(mask_of(&vault, "team-a"), "{*.md,drafts/keep/**/*.md}");
+}
+
 /// A vault set up before `exclude`, with its collections in qmd.
 fn set_up_before_exclude() -> Fixture {
     let vault = two_scopes("[]");

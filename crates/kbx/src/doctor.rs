@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use kbx_core::{
     ConfigError, Graph, IndexState, JudgeConfig, Ontology, Project, Search, count_note_files,
-    index_state,
+    gitignore_counts, index_state,
 };
 use kbx_gen::MODEL;
 use kbx_judge::{Availability, JudgeId, backend};
@@ -64,6 +64,9 @@ pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
             let types = usable.map(|yaml| check_types(project, yaml));
             report("ontology", ontology);
             report("exclude", check_exclude(project));
+            if let Some(gitignore) = check_gitignore(project) {
+                report("gitignore", gitignore);
+            }
             report("index", index);
             if let Some(types) = types {
                 report("types", types);
@@ -205,6 +208,21 @@ fn check_exclude(project: &Project) -> Check {
         );
     }
     (Status::Warn, notes.join("; "))
+}
+
+/// What `.gitignore` files cost the vault and what `include` wins back, which
+/// says what a change to `include` would do before a run. Nothing if the rule
+/// can't be read, as the `exclude` row says.
+fn check_gitignore(project: &Project) -> Option<Check> {
+    let exclusions = project.exclusions().ok()?;
+    let counts = gitignore_counts(&project.vault, &exclusions);
+    let removed = plural(counts.removed, "markdown file");
+    let detail = format!(
+        ".gitignore files remove {removed}; `include` brings back {}",
+        counts.restored
+    );
+    let idle = !project.config.include.is_empty() && counts.restored == 0;
+    Some((if idle { Status::Warn } else { Status::Ok }, detail))
 }
 
 /// Says what `ontology.yaml` needs for the classes notes are given: a note of

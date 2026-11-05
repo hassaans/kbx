@@ -50,6 +50,10 @@ fn set_exclude(vault: &Fixture, exclude: &str) {
     });
 }
 
+fn set_include(vault: &Fixture, include: &str) {
+    edit_config(vault, |text| format!("include = {include}\n{text}"));
+}
+
 fn git(vault: &Fixture, args: &[&str]) {
     let status = Command::new("git")
         .args(args)
@@ -322,4 +326,170 @@ fn a_bad_exclude_pattern_stops_the_index() {
 
     assert!(!output.status.success());
     assert!(stderr(&output).contains("[z-a"), "{}", stderr(&output));
+}
+
+/// A vault with a folder `.gitignore` takes out, and `include` to bring part of
+/// it back. Notes 1 to 5.
+fn with_ignored_folder(include: &str) -> Fixture {
+    let vault = bare();
+    vault.write("a/one.md", &note(1, "One"));
+    vault.write(".gitignore", "personal/\n");
+    vault.write("personal/journal/two.md", &note(2, "Two"));
+    vault.write("personal/taxes/three.md", &note(3, "Three"));
+    vault.write("personal/secrets/four.md", &note(4, "Four"));
+    vault.write("personal/.trash/five.md", &note(5, "Five"));
+    vault.ok(&["init"]);
+    set_include(&vault, include);
+    vault
+}
+
+#[test]
+fn the_index_reads_what_include_brings_back_and_nothing_else() {
+    let vault = with_ignored_folder(r#"["personal/journal"]"#);
+
+    vault.ok(&["index"]);
+
+    assert_eq!(paths(&vault), ["a/one.md", "personal/journal/two.md"]);
+}
+
+#[test]
+fn exclude_and_hidden_folders_win_over_include() {
+    let vault = with_ignored_folder(r#"["/personal", "**/*.md"]"#);
+
+    vault.ok(&["index"]);
+
+    assert_eq!(
+        paths(&vault),
+        [
+            "a/one.md",
+            "personal/journal/two.md",
+            "personal/taxes/three.md"
+        ]
+    );
+}
+
+#[test]
+fn a_note_leaves_the_index_when_include_stops_listing_it() {
+    let vault = with_ignored_folder(r#"["personal/journal"]"#);
+    vault.ok(&["index"]);
+
+    edit_config(&vault, |text| {
+        let kept = text.lines().filter(|line| !line.starts_with("include ="));
+        kept.collect::<Vec<_>>().join("\n")
+    });
+    vault.ok(&["index"]);
+
+    assert_eq!(paths(&vault), ["a/one.md"]);
+}
+
+/// The folder is ignored, but what `include` keeps of it is still under it, so
+/// naming the folder must not read as the notes having gone.
+#[test]
+fn naming_a_partly_included_folder_keeps_its_notes() {
+    let vault = with_ignored_folder(r#"["personal/journal"]"#);
+    vault.ok(&["index"]);
+
+    vault.ok(&["index", "personal"]);
+
+    assert_eq!(paths(&vault), ["a/one.md", "personal/journal/two.md"]);
+}
+
+#[test]
+fn lint_reads_what_include_brings_back_and_passes_over_the_rest() {
+    let vault = with_ignored_folder(r#"["personal/journal"]"#);
+    let bad = |n| format!("---\nid: {}\ntype: Nonesuch\ntitle: Bad\n---\n", id(n));
+    vault.write("personal/journal/bad.md", &bad(6));
+    vault.write("personal/taxes/bad.md", &bad(7));
+
+    let output = vault.kbx(&["lint"]);
+
+    let printed = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(printed.contains("personal/journal/bad.md"), "{printed}");
+    assert!(!printed.contains("personal/taxes"), "{printed}");
+}
+
+/// A vault of ignored notes fails `kbx index`, which has to go on saying why.
+#[test]
+fn the_index_report_keeps_the_reason_for_what_include_leaves_out() {
+    let vault = bare();
+    vault.write("personal/taxes/one.md", &note(1, "One"));
+    vault.write(".gitignore", "personal/\n");
+    vault.ok(&["init"]);
+    set_include(&vault, r#"["personal/journal"]"#);
+
+    let output = vault.kbx(&["index"]);
+
+    assert!(!output.status.success());
+    let printed = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(printed.contains("ignored by .gitignore"), "{printed}");
+}
+
+#[test]
+fn a_bad_include_pattern_stops_the_index() {
+    let vault = bare();
+    vault.write("a/one.md", &note(1, "One"));
+    vault.ok(&["init"]);
+    set_include(&vault, r#"["[z-a"]"#);
+
+    let output = vault.kbx(&["index"]);
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("`include`"), "{}", stderr(&output));
+}
+
+fn gitignore_row(vault: &Fixture) -> String {
+    let printed = vault.ok(&["doctor"]);
+    let row = printed.lines().find(|line| line.starts_with("gitignore"));
+    row.unwrap_or_else(|| panic!("no row in:\n{printed}"))
+        .to_string()
+}
+
+/// Notes 4 and 5 don't count: `exclude` and a hidden folder would keep them
+/// out with no `.gitignore` at all.
+#[test]
+fn doctor_counts_what_gitignore_removes_and_include_brings_back() {
+    let vault = with_ignored_folder(r#"["personal/journal"]"#);
+
+    let row = gitignore_row(&vault);
+
+    assert!(row.contains("ok"), "{row}");
+    assert!(row.contains("remove 2 markdown files"), "{row}");
+    assert!(row.contains("`include` brings back 1"), "{row}");
+}
+
+#[test]
+fn doctor_counts_a_note_as_the_index_does() {
+    let vault = with_ignored_folder(r#"["/personal", "**/*.md"]"#);
+    vault.write("a/note.txt", "Not markdown.\n");
+    vault.write("a/kept.log.md", &note(6, "Six"));
+    vault.write(".gitignore", "personal/\n*.log.md\n");
+
+    let row = gitignore_row(&vault);
+    vault.ok(&["index"]);
+
+    assert!(row.contains("remove 3 markdown files"), "{row}");
+    assert!(row.contains("`include` brings back 3"), "{row}");
+    assert_eq!(paths(&vault).len(), 1 + 3);
+}
+
+#[test]
+fn doctor_warns_about_an_include_that_brings_nothing_back() {
+    let vault = with_ignored_folder(r#"["personal/typo"]"#);
+
+    let row = gitignore_row(&vault);
+
+    assert!(row.contains("warn"), "{row}");
+    assert!(row.contains("remove 2 markdown files"), "{row}");
+}
+
+#[test]
+fn doctor_does_not_call_a_partly_included_scope_excluded() {
+    let vault = with_ignored_folder(r#"["personal/journal"]"#);
+    edit_config(&vault, |text| {
+        text.replacen("scopes = [", "scopes = [\"personal\", ", 1)
+    });
+
+    let printed = vault.ok(&["doctor"]);
+
+    assert!(!printed.contains("scope personal"), "{printed}");
 }

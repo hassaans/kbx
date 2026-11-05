@@ -1601,6 +1601,52 @@ fn a_note_in_a_gitignored_folder_never_reaches_the_judge() {
     assert!(seen.contains(NOTE) && !seen.contains(SECRET), "{seen}");
 }
 
+fn set_include(vault: &Fixture, include: &str) {
+    let file = vault.root().join(".kbx/kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(&file, format!("include = {include}\n{text}")).unwrap();
+}
+
+#[test]
+fn a_gitignored_note_under_include_reaches_the_judge() {
+    let vault = vault_with_private_note("private");
+    vault.write(".gitignore", "private/\n");
+    set_exclude(&vault, "[]");
+    set_include(&vault, r#"["operations/private"]"#);
+    vault.ok(&["index"]);
+
+    judge_with_claude(&vault);
+
+    let seen = seen_by_judge(&vault.path);
+    assert!(seen.contains(SECRET), "{seen}");
+}
+
+#[test]
+fn a_note_under_include_and_exclude_never_reaches_the_judge() {
+    let vault = vault_with_private_note("credentials");
+    vault.write(".gitignore", "credentials/\n");
+    set_include(&vault, r#"["operations/credentials", "**/*.md"]"#);
+    vault.ok(&["index"]);
+
+    judge_with_claude(&vault);
+
+    let seen = seen_by_judge(&vault.path);
+    assert!(seen.contains(NOTE) && !seen.contains(SECRET), "{seen}");
+}
+
+#[test]
+fn a_note_under_include_in_a_hidden_folder_never_reaches_the_judge() {
+    let vault = vault_with_private_note(".private");
+    set_exclude(&vault, "[]");
+    set_include(&vault, r#"["operations/.private", "**/*.md"]"#);
+    vault.ok(&["index"]);
+
+    judge_with_claude(&vault);
+
+    let seen = seen_by_judge(&vault.path);
+    assert!(seen.contains(NOTE) && !seen.contains(SECRET), "{seen}");
+}
+
 /// A note indexed before its folder was excluded is still in the graph, and
 /// nothing says `kbx index` ran since.
 #[test]
