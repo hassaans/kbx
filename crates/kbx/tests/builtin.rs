@@ -79,6 +79,38 @@ fn suggest_finds_knn_candidates_with_no_qmd_on_path() {
 }
 
 #[test]
+fn an_empty_graph_builds_no_search_index() {
+    let vault = Fixture::bare(FakePath::empty());
+    vault.write("note.md", "No frontmatter.\n");
+    vault.ok(&["init"]);
+    vault.ok(&["index"]);
+
+    let output = with_model(&vault, &KNN);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("the graph has no notes"));
+    assert!(!vault.root().join(INDEX).exists());
+}
+
+#[test]
+fn a_graph_left_empty_empties_the_search_index() {
+    let vault = Fixture::bare(FakePath::empty());
+    let id = common::id(1);
+    let note = format!("---\nid: {id}\ntype: Concept\ntitle: Note\n---\n\nThe body.\n");
+    vault.write("note.md", &note);
+    vault.ok(&["init"]);
+    vault.ok(&["index"]);
+    assert!(with_model(&vault, &KNN).status.success());
+
+    vault.write("note.md", "No frontmatter any more.\n");
+    vault.ok(&["index"]);
+    assert!(with_model(&vault, &KNN).status.success());
+    let connection = Connection::open(vault.root().join(INDEX)).unwrap();
+    let query = "SELECT count(*) FROM texts";
+    let texts: i64 = connection.query_row(query, [], |row| row.get(0)).unwrap();
+    assert_eq!(texts, 0);
+}
+
+#[test]
 fn the_builtin_engine_never_runs_qmd() {
     let path = FakePath::empty();
     let calls = path.dir().join("calls");

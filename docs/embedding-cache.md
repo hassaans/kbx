@@ -107,6 +107,9 @@ what they were at the last successful refresh and `qmd status` reports the same 
 and vector counts. Reporting the counts is how a lost or emptied qmd index gets
 noticed. The `.kbx/` file can be deleted at any time; the next run searches again.
 
+With no notes in the graph, or none in a searched collection, no candidate could come
+from a search. `kbx suggest` then says so and runs no `update`, `embed` or `query`.
+
 Some cases don't use the cache:
 
 - A qmd that doesn't name its models is never cached, because kbx couldn't tell when

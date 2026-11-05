@@ -57,13 +57,28 @@ fn vault() -> Fixture {
     vault.write(&note_path(2), &note(2, "Rate limits."));
     vault.ok(&["init", "--search", "qmd"]);
     vault.ok(&["index"]);
+    answer_with_note_2(&vault);
+    forget_calls(&vault);
+    vault
+}
+
+/// The same folders with nothing kbx can index in them, as on `~/HQ`.
+fn unindexed_vault() -> Fixture {
+    let vault = Fixture::bare(fake_qmd());
+    vault.write(&note_path(1), "No frontmatter.\n");
+    vault.write(&note_path(2), "None here either.\n");
+    vault.ok(&["init", "--search", "qmd"]);
+    vault.ok(&["index"]);
+    forget_calls(&vault);
+    vault
+}
+
+fn answer_with_note_2(vault: &Fixture) {
     let hit = format!(
         "[{{\"score\":0.75,\"file\":\"qmd://team-b/{}.md\",\"line\":6}}]",
         id(2).to_lowercase()
     );
     fs::write(vault.path.dir().join("answer.json"), hit).unwrap();
-    forget_calls(&vault);
-    vault
 }
 
 fn note_path(n: u32) -> String {
@@ -131,6 +146,47 @@ fn a_second_suggest_on_an_unchanged_vault_issues_no_embedding_work() {
     suggest(&vault);
     assert_eq!(embedding_calls(&vault), 0);
     assert_eq!(knn_pairs(&vault), first, "the cache changes no candidate");
+}
+
+#[test]
+fn an_empty_graph_issues_no_embedding_work_until_it_has_notes() {
+    let vault = unindexed_vault();
+    let said = vault.ok(&["suggest", "--judge", "none"]);
+    assert!(said.contains("the graph has no notes"), "{said}");
+    vault.ok(&["suggest", "--judge", "none", "--dry-run"]);
+    assert_eq!(embedding_calls(&vault), 0);
+
+    vault.write(&note_path(1), &note(1, "Token buckets."));
+    vault.write(&note_path(2), &note(2, "Rate limits."));
+    vault.ok(&["index"]);
+    answer_with_note_2(&vault);
+    let said = vault.ok(&["suggest", "--judge", "none"]);
+    assert!(!said.contains("the graph has no notes"), "{said}");
+    assert_eq!(count(&vault, "update"), 1);
+    assert_eq!(count(&vault, "embed"), 1);
+    assert_eq!(count(&vault, "query"), 2);
+}
+
+#[test]
+fn notes_outside_every_collection_issue_no_embedding_work() {
+    let vault = vault();
+    let config = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    let moved = config
+        .replace("= \"team-a\"", "= \"archive-a\"")
+        .replace("= \"team-b\"", "= \"archive-b\"");
+    assert_ne!(moved, config);
+    vault.write("kbx.toml", &moved);
+
+    let said = vault.ok(&["suggest", "--judge", "none"]);
+    assert!(said.contains("no note is in a searched folder"), "{said}");
+    assert_eq!(embedding_calls(&vault), 0);
+}
+
+#[test]
+fn a_run_that_searches_nothing_does_not_mention_it() {
+    let vault = unindexed_vault();
+    let said = vault.ok(&["suggest", "--judge", "none", "--generators", "adamic_adar"]);
+    assert!(!said.contains("skipped the search"), "{said}");
 }
 
 #[test]

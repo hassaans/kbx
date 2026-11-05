@@ -5,6 +5,7 @@ use std::env;
 use std::error::Error;
 use std::fs;
 use std::ops::RangeInclusive;
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::ValueEnum;
@@ -88,11 +89,25 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
 
     let wants_knn = |names: &Vec<String>| names.iter().any(|name| name == "qmd_knn");
     let searching = options.generators.as_ref().is_none_or(wants_knn);
-    let search = match project.config.backend() {
-        SearchBackend::Qmd => qmd_backend(&project, &graph, searching, read_only)?,
-        SearchBackend::Builtin => builtin::backend(&project, &graph, searching, read_only)?,
+    let idle = match searching {
+        true => nothing_to_search(&project, &graph, &exclusions)?,
+        false => None,
     };
-    let chosen = generators(options.generators.as_deref(), Some(search))?;
+    if let Some(reason) = idle {
+        println!("skipped the search: {reason}");
+    }
+    let search = match (idle, project.config.backend()) {
+        (None, SearchBackend::Qmd) => Some(qmd_backend(&project, &graph, searching, read_only)?),
+        (None, SearchBackend::Builtin) => {
+            Some(builtin::backend(&project, &graph, searching, read_only)?)
+        }
+        (Some(_), SearchBackend::Builtin) if !read_only => {
+            builtin::forget(&project, &graph)?;
+            None
+        }
+        (Some(_), _) => None,
+    };
+    let chosen = generators(options.generators.as_deref(), search)?;
     let scope = Scope {
         vault: &project.vault,
         ontology: &ontology,
@@ -184,6 +199,42 @@ fn forget_excluded(
         )?;
     }
     Ok(())
+}
+
+/// Why no search could find a candidate, if none could. This alone decides
+/// whether a run refreshes and searches, which could embed a whole vault for
+/// nothing. A qmd with no collections isn't one of these: `qmd_knn` fails there,
+/// and says to run `kbx init`.
+fn nothing_to_search(
+    project: &Project,
+    graph: &Graph,
+    exclusions: &Exclusions,
+) -> Result<Option<&'static str>, Box<dyn Error>> {
+    if graph.stats()?.nodes == 0 {
+        return Ok(Some("the graph has no notes"));
+    }
+    let roots = project.searched(exclusions);
+    if matches!(project.config.backend(), SearchBackend::Builtin) || roots.is_empty() {
+        return Ok(None);
+    }
+    // Without its `.` and `./`, so that the vault's root is a prefix of every path.
+    let folder = |root: &String| -> PathBuf {
+        let normal = |part: &Component<'_>| matches!(part, Component::Normal(_));
+        Path::new(root).components().filter(normal).collect()
+    };
+    let folders: Vec<PathBuf> = roots.values().map(folder).collect();
+    let mut statement = graph.connection().prepare("SELECT path FROM files")?;
+    let paths = statement.query_map([], |row| row.get::<_, String>(0))?;
+    for path in paths {
+        let path = path?;
+        if folders
+            .iter()
+            .any(|root| Path::new(&path).starts_with(root))
+        {
+            return Ok(None);
+        }
+    }
+    Ok(Some("no note is in a searched folder"))
 }
 
 /// QMD, with what it found kept in the search cache where that can be trusted.
