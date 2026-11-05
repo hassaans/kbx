@@ -25,6 +25,10 @@ your last key, before `kbx:` and `qmd:`. A value is extended in its own style:
 | `rel: "[[a]]"` | `rel: ["[[a]]", "[[b]]"]` |
 | `rel:` or `rel: []` | `rel: ["[[b]]"]` |
 
+Keys kbx doesn't define, such as a `meta:` block another tool wrote, keep their
+bytes, order, quoting and comments, whatever they hold. kbx ignores them when it
+reads a note, and a nested map under one doesn't stop the note from indexing.
+
 ## Where a comment is lost
 
 `kbx:` and `qmd:` are tool-owned (§3), and these are the only places a comment

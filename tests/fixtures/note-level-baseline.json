@@ -156,7 +156,7 @@
       "[\"adamic_adar\",\"common_neighbors\"]",
       "{\"adamic_adar\":{\"score\":0.03898712452512801,\"via\":[\"01KBX000000000000000000001\"]},\"common_neighbors\":{\"score\":0.1,\"via\":[\"01KBX000000000000000000001\"]}}",
       0.12502196838443824,
-      "7da65782366e637f44b9d1a09b86911134e3915712585b3129a540106be4e4a4",
+      "1c67649d9f891a6360b150b51d7d30f0cfe3d3958bf6cd762c24eb8a35d302a9",
       "8582d4b1d035dc79754d3e1fc5945d707c76dede9d2becf2f9be1f97c6034d7b"
     ],
     [
@@ -187,7 +187,7 @@
       "{\"adamic_adar\":{\"score\":0.03898712452512801,\"via\":[\"01KBX000000000000000000001\"]},\"common_neighbors\":{\"score\":0.1,\"via\":[\"01KBX000000000000000000001\"]}}",
       0.12502196838443824,
       "e904e8ecfa61821f582d5bbca8b1293ed93bfc69112e9f475ac89297ac0c40f9",
-      "7da65782366e637f44b9d1a09b86911134e3915712585b3129a540106be4e4a4"
+      "1c67649d9f891a6360b150b51d7d30f0cfe3d3958bf6cd762c24eb8a35d302a9"
     ],
     [
       "2f91b021996e6364bb629bffea1a6839",
@@ -246,7 +246,7 @@
       "[\"adamic_adar\",\"common_neighbors\",\"two_hop_bridge\"]",
       "{\"adamic_adar\":{\"score\":0.03898712452512801,\"via\":[\"01KBX000000000000000000001\"]},\"common_neighbors\":{\"score\":0.1,\"via\":[\"01KBX000000000000000000001\"]},\"two_hop_bridge\":{\"score\":1.0,\"via\":[\"01KBX000000000000000000001\"]}}",
       0.5625109841922191,
-      "7da65782366e637f44b9d1a09b86911134e3915712585b3129a540106be4e4a4",
+      "1c67649d9f891a6360b150b51d7d30f0cfe3d3958bf6cd762c24eb8a35d302a9",
       "202ab8d9a52768a348b1bcb034d09b5c15aa4edf42e549c53d999a41af4439c5"
     ],
     [
@@ -276,7 +276,7 @@
       "[\"adamic_adar\",\"common_neighbors\"]",
       "{\"adamic_adar\":{\"score\":0.03898712452512801,\"via\":[\"01KBX000000000000000000001\"]},\"common_neighbors\":{\"score\":0.1,\"via\":[\"01KBX000000000000000000001\"]}}",
       0.12502196838443824,
-      "7da65782366e637f44b9d1a09b86911134e3915712585b3129a540106be4e4a4",
+      "1c67649d9f891a6360b150b51d7d30f0cfe3d3958bf6cd762c24eb8a35d302a9",
       "295f2e9ab661502ba229955af30ed881606aacecbc9ed278756266e286a923c5"
     ],
     [
@@ -287,7 +287,7 @@
       "{\"adamic_adar\":{\"score\":0.03898712452512801,\"via\":[\"01KBX000000000000000000001\"]},\"common_neighbors\":{\"score\":0.1,\"via\":[\"01KBX000000000000000000001\"]},\"two_hop_bridge\":{\"score\":1.0,\"via\":[\"01KBX000000000000000000001\"]}}",
       0.5625109841922191,
       "bbc4968cbbd8102777b908aab7b801225973a726c4ecd38a4d6a76db764d656c",
-      "7da65782366e637f44b9d1a09b86911134e3915712585b3129a540106be4e4a4"
+      "1c67649d9f891a6360b150b51d7d30f0cfe3d3958bf6cd762c24eb8a35d302a9"
     ],
     [
       "537ca3667bfc255c169de3b54e9787eb",
@@ -456,7 +456,7 @@
       "[\"adamic_adar\",\"common_neighbors\"]",
       "{\"adamic_adar\":{\"score\":0.03898712452512801,\"via\":[\"01KBX000000000000000000001\"]},\"common_neighbors\":{\"score\":0.1,\"via\":[\"01KBX000000000000000000001\"]}}",
       0.12502196838443824,
-      "7da65782366e637f44b9d1a09b86911134e3915712585b3129a540106be4e4a4",
+      "1c67649d9f891a6360b150b51d7d30f0cfe3d3958bf6cd762c24eb8a35d302a9",
       "62aa3eb35a8636299a7024444084f1258aba7fc5a7851414d8e69a26e45e3c0b"
     ],
     [
@@ -467,7 +467,7 @@
       "{\"adamic_adar\":{\"score\":0.03898712452512801,\"via\":[\"01KBX000000000000000000001\"]},\"common_neighbors\":{\"score\":0.1,\"via\":[\"01KBX000000000000000000001\"]}}",
       0.12502196838443824,
       "0912d3ef50193af010f3be35fbda036599c6ea22178d3d52f55e3bef4cd8be9f",
-      "7da65782366e637f44b9d1a09b86911134e3915712585b3129a540106be4e4a4"
+      "1c67649d9f891a6360b150b51d7d30f0cfe3d3958bf6cd762c24eb8a35d302a9"
     ],
     [
       "8b860682ff6a3e56cf9293fe3f786884",
@@ -506,7 +506,7 @@
       "[\"adamic_adar\",\"common_neighbors\",\"two_hop_bridge\"]",
       "{\"adamic_adar\":{\"score\":0.6213349345596119,\"via\":[\"01KBX000000000000000000007\"]},\"common_neighbors\":{\"score\":1.0,\"via\":[\"01KBX000000000000000000007\"]},\"two_hop_bridge\":{\"score\":0.27,\"via\":[\"01KBX000000000000000000007\"]}}",
       0.7571749186367146,
-      "7da65782366e637f44b9d1a09b86911134e3915712585b3129a540106be4e4a4",
+      "1c67649d9f891a6360b150b51d7d30f0cfe3d3958bf6cd762c24eb8a35d302a9",
       "e3775b1f5dec08203693ad2b99bdd643aaba81e2135e335d2197cb55a25a40c0"
     ],
     [
@@ -696,7 +696,7 @@
       "[\"adamic_adar\",\"common_neighbors\",\"qmd_knn\",\"two_hop_bridge\"]",
       "{\"adamic_adar\":{\"score\":0.03898712452512801,\"via\":[\"01KBX000000000000000000001\"]},\"common_neighbors\":{\"score\":0.1,\"via\":[\"01KBX000000000000000000001\"]},\"qmd_knn\":{\"score\":0.75,\"sections\":{\"01KBX000000000000000000006\":\"0bb60dec-d1ed-5231-bc32-fcd7e8397eb6\",\"01KBX000000000000000000013\":\"2aa6f9ac-b652-501e-9ce1-d2d155791b09\"}},\"two_hop_bridge\":{\"score\":1.0,\"via\":[\"01KBX000000000000000000001\"]}}",
       0.7500062766812681,
-      "7da65782366e637f44b9d1a09b86911134e3915712585b3129a540106be4e4a4",
+      "1c67649d9f891a6360b150b51d7d30f0cfe3d3958bf6cd762c24eb8a35d302a9",
       "59ebabe0eb983b90c1c631cadab624e09b3e67520b2bb7877f6c167aadb0e854"
     ],
     [
@@ -857,7 +857,7 @@
       "{\"adamic_adar\":{\"score\":0.03898712452512801,\"via\":[\"01KBX000000000000000000001\"]},\"alias_cooccur\":{\"score\":1.0,\"src\":\"01KBX000000000000000000011\",\"terms\":[\"token bucket\"]},\"common_neighbors\":{\"score\":0.1,\"via\":[\"01KBX000000000000000000001\"]}}",
       0.5625109841922191,
       "112ce3895f728a400fea8eb383bada6d5551cb018b602bb28468e601de5ffbc5",
-      "7da65782366e637f44b9d1a09b86911134e3915712585b3129a540106be4e4a4"
+      "1c67649d9f891a6360b150b51d7d30f0cfe3d3958bf6cd762c24eb8a35d302a9"
     ],
     [
       "f84a4c2a2f5aa9819ce9db0f9a027c2f",
@@ -886,7 +886,7 @@
       "[\"adamic_adar\",\"common_neighbors\"]",
       "{\"adamic_adar\":{\"score\":0.03898712452512801,\"via\":[\"01KBX000000000000000000001\"]},\"common_neighbors\":{\"score\":0.1,\"via\":[\"01KBX000000000000000000001\"]}}",
       0.12502196838443824,
-      "7da65782366e637f44b9d1a09b86911134e3915712585b3129a540106be4e4a4",
+      "1c67649d9f891a6360b150b51d7d30f0cfe3d3958bf6cd762c24eb8a35d302a9",
       "3e1556334a34413126c19977313eb626dabe4cfc0ee9ac8b90a32f82fd15c5ca"
     ],
     [
@@ -1590,8 +1590,8 @@
       "01KBX000000000000000000006",
       "Concept",
       "Rate limits",
-      "7da65782366e637f44b9d1a09b86911134e3915712585b3129a540106be4e4a4",
-      "8ecdcdf6763b30e85be08478da6b806d21814ddc84081aceaaf1a9a853e78160",
+      "1c67649d9f891a6360b150b51d7d30f0cfe3d3958bf6cd762c24eb8a35d302a9",
+      "b0d72493df8b48f6adc416b6b7a99ca9cbb500cb70d8588fd16d23e6b4d38387",
       "engineering"
     ],
     [
@@ -2095,7 +2095,7 @@
     ]
   ],
   "note 11": "---\nid: 01KBX000000000000000000011\ntype: Procedure\ntitle: Respond to an incident\ndepends_on: [\"[[01KBX000000000000000000001-platform]]\", \"[[01KBX000000000000000000006]]\"]\nqmd:\n  metadata: {type: Procedure, tags: []}\n---\nWhen callers report errors, first check whether the token bucket for that caller is empty.\n",
-  "note 6": "---\nid: 01KBX000000000000000000006\ntype: Concept\ntitle: Rate limits\naliases: [token bucket, request quota]\npart_of: [\"[[01KBX000000000000000000001-platform]]\"]\nrequired_by: [\"[[01KBX000000000000000000011]]\"]\nqmd:\n  metadata: {type: Concept, tags: []}\n---\nA cap on how many requests a caller may make in a window.\n",
+  "note 6": "---\nid: 01KBX000000000000000000006\ntype: Concept\ntitle: Rate limits\naliases: [token bucket, request quota]\npart_of: [\"[[01KBX000000000000000000001-platform]]\"]\nmeta:   # written by another tool\n  owner: {team: 'platform',   \"on call\": true}\n  review:\n    cadence: \"quarterly\"\n    see_also: [\"[[ghost note]]\"]\nhistory:\n  - {by: 'a', at: 2026-01-02}\nrequired_by: [\"[[01KBX000000000000000000011]]\"]\nqmd:\n  metadata: {type: Concept, tags: []}\n---\nA cap on how many requests a caller may make in a window.\n",
   "review": [
     {
       "cid": "f84a4c2a2f5aa9819ce9db0f9a027c2f",
@@ -3464,8 +3464,8 @@
       "01KBX000000000000000000006",
       "",
       null,
-      8,
-      8,
+      15,
+      15,
       "55fd47bc77a5de879e27dac6c979255f1adf877e5b3fb32661dd029a48ad5213",
       15
     ],

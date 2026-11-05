@@ -56,6 +56,49 @@ fn a_new_key_goes_after_the_last_user_key_and_before_the_tool_namespaces() {
 }
 
 #[test]
+fn keys_kbx_does_not_define_keep_their_bytes_when_a_relation_is_added() {
+    let src = include_str!(
+        "../../../tests/fixtures/vault/engineering/01KBX000000000000000000006-rate-limits.md"
+    );
+    let start = src.find("meta:").unwrap();
+    let end = src.rfind("---\n").unwrap();
+    let unknown = &src[start..end];
+    assert!(unknown.contains("# written by another tool"));
+
+    // A new key goes after them, and only adds lines.
+    let new = add(src, "see_also", "B").unwrap().expect("a change");
+    let added = "see_also: [\"[[B]]\"]\nqmd:\n  metadata: {type: Concept, tags: []}\n";
+    assert_eq!(new, format!("{}{added}{}", &src[..end], &src[end..]));
+
+    // An existing key before them grows in place.
+    let new = add(src, "part_of", "B").unwrap().expect("a change");
+    let at = new.find("meta:").unwrap();
+    assert_eq!(
+        new[at..]
+            .strip_prefix(unknown)
+            .map(|rest| rest.starts_with("qmd:")),
+        Some(true)
+    );
+    assert!(new[..at].ends_with("-platform]]\", \"[[B]]\"]\n"), "{new}");
+}
+
+#[test]
+fn unknown_keys_after_the_tool_namespaces_keep_their_bytes() {
+    let tail = "meta:\n  a: {b: 'c'}  # why\n# end\n";
+    let src = note(&format!("{HEAD}{MIRROR}{tail}"));
+    assert_eq!(
+        edited(&src),
+        format!("{HEAD}{MIRROR}meta:\n  a: {{b: 'c'}}  # why\nrel: [\"[[B]]\"]\n# end\n")
+    );
+}
+
+#[test]
+fn a_relation_key_holding_a_nested_map_is_refused() {
+    let src = note(&format!("{HEAD}rel:\n  a: 1\n{MIRROR}"));
+    assert!(matches!(add(&src, "rel", "B"), Err(WriteError::NotLinks(key)) if key == "rel"));
+}
+
+#[test]
 fn a_flow_list_grows_in_place_and_keeps_its_comment() {
     let src = note(&format!(
         "{HEAD}rel: [\"[[A1]]\", '[[A2]]']  # why\ntags: []\n{MIRROR}"

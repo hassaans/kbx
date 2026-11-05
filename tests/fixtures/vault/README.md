@@ -49,4 +49,7 @@ without an id prefix; it's the target of the `link.unstable` case.
   item, a paragraph and a table, and a fenced block that must be ignored.
 - `engineering/…03-tokens` and `…04-redirects` carry the inverse key
   `required_by`; `…05-auth-overview` carries `has_part`.
+- `engineering/…06-rate-limits` has nested maps under `meta` and `history`, keys
+  kbx doesn't define. It's indexed with them ignored, so the link inside `meta`
+  is no edge and no finding, and the writer keeps their bytes.
 - `engineering/…07-retries` has a link that resolves by alias.

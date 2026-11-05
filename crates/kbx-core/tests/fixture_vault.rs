@@ -292,6 +292,18 @@ fn the_full_example_note_exercises_parsing() {
 }
 
 #[test]
+fn nested_maps_under_unknown_keys_are_ignored() {
+    let (vault, _) = load();
+    let note = find(&vault, "rate-limits");
+    let keys: Vec<_> = note.relations.iter().map(|r| r.key.as_str()).collect();
+    assert_eq!(keys, ["part_of"]);
+    let keys: Vec<_> = note.properties.iter().map(|p| p.key.as_str()).collect();
+    assert_eq!(keys, ["meta", "history"]);
+    let ontology = Ontology::parse(ONTOLOGY).unwrap();
+    assert_eq!(vault.validate_note(note, &ontology), []);
+}
+
+#[test]
 fn inverse_keys_and_alias_links_are_present() {
     let (vault, _) = load();
     assert!(find(&vault, "tokens").relation("required_by").is_some());
