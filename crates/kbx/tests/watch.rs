@@ -488,3 +488,28 @@ fn editing_gitignore_takes_a_folder_out_while_watching() {
 
     watch.wait_until("the note to leave", || !is_indexed(&vault, 71));
 }
+
+/// The note leaves the index and is on the list of what changed, so a lint
+/// using the rule from when the watch began would read it again.
+#[test]
+fn a_note_excluded_while_watching_is_not_linted() {
+    let vault = indexed();
+    let broken = "[[01KBX000000000000000000099-gone]]";
+    vault.write("kept/note.md", &note(73, "Concept", broken));
+    vault.ok(&["index"]);
+    let watch = Watch::start(&vault, &[]);
+
+    let file = vault.root().join("kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    let kept = text.lines().filter(|line| !line.starts_with("exclude ="));
+    let kept = kept.collect::<Vec<_>>().join("\n");
+    fs::write(&file, format!("exclude = [\"kept\"]\n{kept}\n")).unwrap();
+
+    watch.wait_until("the note to leave", || !is_indexed(&vault, 73));
+    watch.settle(&vault);
+    let lines = watch.lines();
+    assert!(
+        !lines.iter().any(|line| line.contains("kept/")),
+        "{lines:?}"
+    );
+}

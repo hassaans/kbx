@@ -240,9 +240,11 @@ fn current_exclusions(project: &Project) -> Result<Exclusions, Box<dyn Error>> {
 }
 
 /// Indexes `paths`, or the whole vault if there are none, and lints what
-/// changed. Says whether anything did. Re-reads everything each time: the
-/// ontology may have been edited and the database deleted, as a cache can be.
+/// changed. Says whether anything did. Re-reads everything each time: `kbx.toml`
+/// and the ontology may have been edited and the database deleted, as a cache
+/// can be.
 fn update(project: &Project, paths: Vec<PathBuf>) -> Result<bool, Box<dyn Error>> {
+    let project = &Project::load(&project.config_file)?;
     let ontology = read_ontology(project)?;
     let mut graph = Graph::open(&project.graph)?;
     let options = IndexOptions {
@@ -250,7 +252,7 @@ fn update(project: &Project, paths: Vec<PathBuf>) -> Result<bool, Box<dyn Error>
         missing_ok: true,
         ..IndexOptions::default()
     };
-    let exclusions = current_exclusions(project)?;
+    let exclusions = project.exclusions()?;
     let report = index_vault(&mut graph, &project.vault, &ontology, &exclusions, &options)?;
 
     // A note that fails has no hash to compare, so it counts only when an
