@@ -342,7 +342,7 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
   });
 
   describe('publish-github.sh', () => {
-    const files = ['binaries/kbx-darwin-arm64', 'binaries/kbx-win32-x64-msvc.exe'];
+    const files = ['binaries/kbx-darwin-arm64', 'binaries/kbx-windows-x64.exe'];
 
     it('creates the release and attaches every file', (t) => {
       const gh = 'if [[ $2 == view ]]; then echo "release not found" >&2; exit 1; fi';
@@ -351,7 +351,7 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
       assert.deepEqual(result.calls.slice(1), [
         'gh release create v1.2.3 --verify-tag --generate-notes --title v1.2.3',
         'gh release upload v1.2.3 binaries/kbx-darwin-arm64',
-        'gh release upload v1.2.3 binaries/kbx-win32-x64-msvc.exe',
+        'gh release upload v1.2.3 binaries/kbx-windows-x64.exe',
       ]);
     });
 
@@ -359,11 +359,11 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
       const gh = 'if [[ $2 == view ]]; then echo kbx-darwin-arm64; fi';
       const result = run(t, 'publish-github.sh', ['v1.2.3', ...files], { tools: { gh } });
       assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(result.calls.slice(1), ['gh release upload v1.2.3 binaries/kbx-win32-x64-msvc.exe']);
+      assert.deepEqual(result.calls.slice(1), ['gh release upload v1.2.3 binaries/kbx-windows-x64.exe']);
     });
 
     it('does nothing when the release is complete', (t) => {
-      const gh = 'if [[ $2 == view ]]; then echo kbx-darwin-arm64; echo kbx-win32-x64-msvc.exe; fi';
+      const gh = 'if [[ $2 == view ]]; then echo kbx-darwin-arm64; echo kbx-windows-x64.exe; fi';
       const result = run(t, 'publish-github.sh', ['v1.2.3', ...files], { tools: { gh } });
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.calls.length, 1);
@@ -376,5 +376,35 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
       assert.equal(result.calls.length, 1);
       assert.match(result.stderr, /HTTP 502/);
     });
+  });
+});
+
+describe('release.yml', () => {
+  const workflow = fs.readFileSync(path.join(REPO, '.github', 'workflows', 'release.yml'), 'utf8');
+
+  function needs(job) {
+    const block = workflow.split(/^  (?=[\w-]+:\r?$)/m).find((text) => text.startsWith(`${job}:`));
+    assert.ok(block, `no ${job} job`);
+    const match = block.match(/^ {4}needs: (.+?)\r?$/m);
+    return match ? match[1].replace(/[[\]]/g, '').split(/,\s*/) : [];
+  }
+
+  function upstream(job) {
+    return needs(job).flatMap((name) => [name, ...upstream(name)]);
+  }
+
+  it('builds one binary per npm platform package', () => {
+    const packages = [...workflow.matchAll(/^ +package: (\S+)\r?$/gm)].map((match) => match[1]);
+    assert.deepEqual(packages.sort(), TARGETS.map((row) => row.pkg).sort());
+  });
+
+  it('publishes to npm and crates.io independently', () => {
+    assert.ok(!upstream('cargo-publish').includes('npm-publish'));
+    assert.ok(!upstream('npm-publish').includes('cargo-publish'));
+  });
+
+  it('holds both registries back until the GitHub Release is out', () => {
+    assert.ok(needs('cargo-publish').includes('github-release'));
+    assert.ok(needs('npm-publish').includes('github-release'));
   });
 });

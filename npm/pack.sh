@@ -25,7 +25,7 @@ if [[ $pkg != kbx ]]; then
     exit 1
   fi
   file=kbx
-  [[ $pkg == kbx-win32-* ]] && file=kbx.exe
+  [[ $pkg == kbx-windows-* ]] && file=kbx.exe
   mkdir -p "$stage/bin"
   cp "$binary" "$stage/bin/$file"
   chmod 755 "$stage/bin/$file"

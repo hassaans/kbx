@@ -71,7 +71,7 @@ jobs:
           # A static CRT, because a clean Windows has no VCRUNTIME140.dll.
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            package: kbx-win32-x64-msvc
+            package: kbx-windows-x64
             extension: .exe
             rustflags: -C target-feature=+crt-static
     env:
@@ -139,7 +139,7 @@ jobs:
       # anything goes out.
       - name: Dry-run the npm publish
         run: |
-          for pkg in kbx-darwin-arm64 kbx-darwin-x64 kbx-linux-x64-gnu kbx-linux-arm64-gnu kbx-win32-x64-msvc kbx; do
+          for pkg in kbx-darwin-arm64 kbx-darwin-x64 kbx-linux-x64-gnu kbx-linux-arm64-gnu kbx-windows-x64 kbx; do
             .github/scripts/publish-npm.sh "$pkg" "$VERSION" "dist/$pkg-$VERSION.tgz" --dry-run
           done
         env:
@@ -150,8 +150,8 @@ jobs:
           path: dist/*.tgz
           if-no-files-found: error
 
-  # Catches a crate that can't be published before npm goes out, because npm
-  # versions can't be taken back.
+  # Catches a crate that can't be published before anything goes out, because
+  # npm and crates.io versions can't be taken back.
   package-crates:
     needs: preflight
     runs-on: ubuntu-latest
@@ -200,15 +200,16 @@ jobs:
           path: dist
       - name: Publish the platform packages, then the shim
         run: |
-          for pkg in kbx-darwin-arm64 kbx-darwin-x64 kbx-linux-x64-gnu kbx-linux-arm64-gnu kbx-win32-x64-msvc kbx; do
+          for pkg in kbx-darwin-arm64 kbx-darwin-x64 kbx-linux-x64-gnu kbx-linux-arm64-gnu kbx-windows-x64 kbx; do
             .github/scripts/publish-npm.sh "$pkg" "$VERSION" "dist/$pkg-$VERSION.tgz"
           done
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+  # Not after npm-publish, so a problem on one registry never holds up the other.
   cargo-publish:
-    needs: [preflight, npm-publish]
+    needs: [preflight, github-release]
     if: needs.preflight.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:

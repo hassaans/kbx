@@ -17,7 +17,7 @@ machine through an optional dependency, with no install scripts, so
 | macOS x64              | `kbx-darwin-x64`      |
 | Linux x64 (glibc)      | `kbx-linux-x64-gnu`   |
 | Linux arm64 (glibc)    | `kbx-linux-arm64-gnu` |
-| Windows x64            | `kbx-win32-x64-msvc`  |
+| Windows x64            | `kbx-windows-x64`     |
 
 Anywhere else, including Alpine and other musl systems, use `cargo install kbx`.
 

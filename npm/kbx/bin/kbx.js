@@ -9,7 +9,7 @@ const PACKAGES = {
   'darwin-x64': 'kbx-darwin-x64',
   'linux-x64': 'kbx-linux-x64-gnu',
   'linux-arm64': 'kbx-linux-arm64-gnu',
-  'win32-x64': 'kbx-win32-x64-msvc',
+  'win32-x64': 'kbx-windows-x64',
 };
 
 function fail(message) {
