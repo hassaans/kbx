@@ -30,15 +30,15 @@ function manifest(name) {
 }
 
 const errors = [];
-for (const name of ['kbx', ...PLATFORM_PACKAGES]) {
+for (const name of ['kbx-cli', ...PLATFORM_PACKAGES]) {
   const actual = manifest(name).version;
   if (actual !== version) errors.push(`npm/${name}/package.json is at ${actual}`);
 }
 
-const pins = manifest('kbx').optionalDependencies || {};
+const pins = manifest('kbx-cli').optionalDependencies || {};
 for (const name of PLATFORM_PACKAGES) {
   if (pins[name] !== version) {
-    errors.push(`npm/kbx/package.json pins ${name} to ${pins[name]}`);
+    errors.push(`npm/kbx-cli/package.json pins ${name} to ${pins[name]}`);
   }
 }
 

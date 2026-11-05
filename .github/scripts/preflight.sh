@@ -8,7 +8,7 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
 node "$root/npm/check-versions.js"
-version=$(node -p "require(process.argv[1]).version" "$root/npm/kbx/package.json")
+version=$(node -p "require(process.argv[1]).version" "$root/npm/kbx-cli/package.json")
 
 publish=false
 if [[ $GITHUB_REF == refs/tags/* ]]; then

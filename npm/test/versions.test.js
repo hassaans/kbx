@@ -9,7 +9,7 @@ const { describe, it } = require('node:test');
 const { NPM_DIR, REPO, TARGETS, tempDir } = require('./helpers');
 
 const CHECK = path.join(NPM_DIR, 'check-versions.js');
-const PACKAGES = ['kbx', ...TARGETS.map((row) => row.pkg)];
+const PACKAGES = ['kbx-cli', ...TARGETS.map((row) => row.pkg)];
 
 function check(root) {
   return spawnSync(process.execPath, root ? [CHECK, root] : [CHECK], { encoding: 'utf8' });
@@ -50,7 +50,7 @@ describe('check-versions.js', () => {
     fs.writeFileSync(file, cargo.replace(/^version = ".*"$/m, 'version = "9.9.9"'));
     const result = check(root);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /npm\/kbx\/package.json/);
+    assert.match(result.stderr, /npm\/kbx-cli\/package.json/);
     assert.match(result.stderr, /9\.9\.9/);
   });
 
@@ -68,7 +68,7 @@ describe('check-versions.js', () => {
 
   it('fails when an optional dependency pin drifts', (t) => {
     const root = copyRepo(t);
-    edit(root, 'kbx', (manifest) => {
+    edit(root, 'kbx-cli', (manifest) => {
       manifest.optionalDependencies['kbx-darwin-x64'] = '9.9.9';
     });
     const result = check(root);
@@ -78,7 +78,7 @@ describe('check-versions.js', () => {
 
   it('fails when an optional dependency is missing', (t) => {
     const root = copyRepo(t);
-    edit(root, 'kbx', (manifest) => {
+    edit(root, 'kbx-cli', (manifest) => {
       delete manifest.optionalDependencies['kbx-windows-x64'];
     });
     const result = check(root);

@@ -19,7 +19,7 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 cp -R "$npm_dir/$pkg/." "$stage/"
 
-if [[ $pkg != kbx ]]; then
+if [[ $pkg != kbx-cli ]]; then
   if [[ ! -f $binary ]]; then
     echo "pack.sh: $pkg needs a binary, got: ${binary:-nothing}" >&2
     exit 1

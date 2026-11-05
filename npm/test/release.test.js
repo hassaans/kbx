@@ -9,7 +9,7 @@ const { describe, it } = require('node:test');
 const { NPM_DIR, REPO, TARGETS, tempDir } = require('./helpers');
 
 const SCRIPTS = path.join(REPO, '.github', 'scripts');
-const VERSION = require('../kbx/package.json').version;
+const VERSION = require('../kbx-cli/package.json').version;
 const TAG = `v${VERSION}`;
 
 // Every tool that can publish. A test that doesn't fake one gets a stub that
@@ -157,7 +157,7 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
       fs.copyFileSync(path.join(REPO, 'Cargo.toml'), path.join(root, 'Cargo.toml'));
       fs.mkdirSync(path.join(root, 'npm'));
       fs.copyFileSync(path.join(NPM_DIR, 'check-versions.js'), path.join(root, 'npm', 'check-versions.js'));
-      for (const name of ['kbx', ...TARGETS.map((row) => row.pkg)]) {
+      for (const name of ['kbx-cli', ...TARGETS.map((row) => row.pkg)]) {
         fs.mkdirSync(path.join(root, 'npm', name));
         fs.writeFileSync(path.join(root, 'npm', name, 'package.json'), '{"version":"0.0.0"}');
       }
@@ -637,6 +637,15 @@ describe('release.yml', () => {
   it('builds one binary per npm platform package', () => {
     const packages = [...workflow.matchAll(/^ +package: (\S+)\r?$/gm)].map((match) => match[1]);
     assert.deepEqual(packages.sort(), TARGETS.map((row) => row.pkg).sort());
+  });
+
+  it('packs the shim, then dry-runs and publishes it after the platform packages', () => {
+    assert.match(workflow, /^ +npm\/pack\.sh kbx-cli dist\r?$/m);
+    const loops = [...workflow.matchAll(/^ +for pkg in (.+); do\r?$/gm)].map((match) => match[1].split(' '));
+    assert.equal(loops.length, 2);
+    for (const packages of loops) {
+      assert.deepEqual(packages, [...TARGETS.map((row) => row.pkg), 'kbx-cli']);
+    }
   });
 
   it('publishes to npm and crates.io independently', () => {

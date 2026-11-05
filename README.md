@@ -68,10 +68,11 @@ Logs go to stderr. Set `KBX_LOG=debug` to see each file that's skipped, and pass
 
 ## Install
 
-Nothing is published yet, so these commands won't work until the first release.
+The npm package is `kbx-cli`, and the command it installs is `kbx`. It's out from
+v0.1.3, so `npm i -g kbx-cli` won't work before that release.
 
 ```sh
-npm i -g kbx
+npm i -g kbx-cli
 ```
 
 npm installs a prebuilt binary through an optional dependency. There are no
@@ -95,7 +96,7 @@ To try the npm packages, pack them from a built binary and run their tests. Chan
 `kbx-darwin-arm64` to your platform's package in `npm/`:
 
 ```sh
-npm/pack.sh kbx dist
+npm/pack.sh kbx-cli dist
 npm/pack.sh kbx-darwin-arm64 dist target/debug/kbx
 KBX_BINARY=target/debug/kbx node --test "npm/test/*.test.js"
 ```

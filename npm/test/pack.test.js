@@ -20,8 +20,8 @@ function fakeBinary(dir) {
 
 describe('npm pack', () => {
   it('packs the shim with only its entry point, README and licence', (t) => {
-    const tarball = pack('kbx', tempDir(t));
-    assert.equal(path.basename(tarball), `kbx-${require('../kbx/package.json').version}.tgz`);
+    const tarball = pack('kbx-cli', tempDir(t));
+    assert.equal(path.basename(tarball), `kbx-cli-${require('../kbx-cli/package.json').version}.tgz`);
     assert.deepEqual(names(tarball), ['LICENSE', 'README.md', 'bin/kbx.js', 'package.json']);
   });
 
@@ -64,7 +64,7 @@ describe('npm pack', () => {
 });
 
 describe('package manifests', () => {
-  const manifests = ['kbx', ...TARGETS.map((row) => row.pkg)].map((name) => [
+  const manifests = ['kbx-cli', ...TARGETS.map((row) => row.pkg)].map((name) => [
     name,
     JSON.parse(fs.readFileSync(path.join(NPM_DIR, name, 'package.json'), 'utf8')),
   ]);
@@ -86,15 +86,21 @@ describe('package manifests', () => {
     });
   }
 
+  it('installs the shim as the kbx command', () => {
+    const manifest = new Map(manifests).get('kbx-cli');
+    assert.deepEqual(manifest.bin, { kbx: 'bin/kbx.js' });
+    assert.equal(manifest.repository.directory, 'npm/kbx-cli');
+  });
+
   it('pins the shim dependency exactly', () => {
-    const { dependencies } = new Map(manifests).get('kbx');
+    const { dependencies } = new Map(manifests).get('kbx-cli');
     assert.deepEqual(Object.keys(dependencies), ['detect-libc']);
     assert.match(dependencies['detect-libc'], /^\d+\.\d+\.\d+$/);
   });
 
   it('ships the repository licence with the shim', () => {
     assert.deepEqual(
-      fs.readFileSync(path.join(NPM_DIR, 'kbx', 'LICENSE')),
+      fs.readFileSync(path.join(NPM_DIR, 'kbx-cli', 'LICENSE')),
       fs.readFileSync(path.join(REPO, 'LICENSE')),
     );
   });

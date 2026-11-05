@@ -9,9 +9,9 @@ readme = "../../README.md"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
-kbx-core = { version = "0.1.2", path = "../kbx-core" }
-kbx-gen = { version = "0.1.2", path = "../kbx-gen" }
-kbx-judge = { version = "0.1.2", path = "../kbx-judge" }
+kbx-core = { version = "0.1.3", path = "../kbx-core" }
+kbx-gen = { version = "0.1.3", path = "../kbx-gen" }
+kbx-judge = { version = "0.1.3", path = "../kbx-judge" }
 notify = "8.2.1"
 notify-debouncer-full = "0.7.0"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
