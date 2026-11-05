@@ -87,8 +87,11 @@ with the version from the tag. It waits for `npm-publish` and `cargo-publish`, a
 each of its jobs then waits up to 30 minutes for its package to show on the
 registry. Platform packages can trail `kbx-cli` there even though they publish
 first, and npm silently skips an optional dependency it can't see yet, so each npm
-job waits for both `kbx-cli` and its platform package before it installs. A release
-that fails its smoke checks shows as a failed run, even though everything is out.
+job waits for both `kbx-cli` and its platform package before it installs. The npm
+jobs also run in a fresh home, and `smoke-npm.sh` creates `AppData/Local` there:
+Windows finds kbx's model folder through the user profile, so without it `kbx
+suggest` has nowhere to put the model. A release that fails its smoke checks shows
+as a failed run, even though everything is out.
 
 `release.yml` calls it because nothing else would start it. The Release comes from
 the workflow's `GITHUB_TOKEN`, and GitHub starts no workflows from events that
