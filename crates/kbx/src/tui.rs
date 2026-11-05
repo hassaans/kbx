@@ -549,6 +549,7 @@ mod tests {
             vault: session.vault(),
             ontology: &session.ontology,
             note: None,
+            mention_weight: kbx_core::DEFAULT_MENTION_WEIGHT,
         };
         let run = suggest(&session.graph, &chosen, &scope, Budget::default()).unwrap();
         store(&session.graph, &run).unwrap();

@@ -1,7 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use kbx_core::Graph;
 pub(crate) use kbx_core::ordered;
+use kbx_core::{Graph, MENTIONS};
+
+/// The most neighbours a note may have and still have its inline links read.
+/// Beyond this it's a list: one note linking to 5,000 is 12.5 million pairs.
+const MAX_INLINE_REACH: usize = 200;
 
 /// A note, as far as the generators need it.
 pub(crate) struct NoteRow {
@@ -28,6 +32,12 @@ pub(crate) struct Snapshot {
     pub(crate) forward: Vec<Forward>,
     /// Notes with typed degree above p99 (§5).
     pub(crate) hubs: HashSet<String>,
+    /// Each note's neighbours by inline links alone, whichever way they point.
+    /// Kept apart from `neighbors` so that a typed pair scores as it would
+    /// without them, and `degree` still means what `qmd_knn` sorts by.
+    pub(crate) inline: BTreeMap<String, BTreeSet<String>>,
+    /// Inline links as `(src, dst)`, like `inline` without those of a hub.
+    pub(crate) mentions: Vec<(String, String)>,
     linked: HashSet<(String, String)>,
 }
 
@@ -48,6 +58,7 @@ impl Snapshot {
 
         let mut neighbors: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut forward = Vec::new();
+        let mut mentions = Vec::new();
         let mut linked = HashSet::new();
         let mut statement =
             connection.prepare("SELECT src, dst, rel, inverse_of, weight FROM edges")?;
@@ -60,7 +71,12 @@ impl Snapshot {
                 continue;
             }
             linked.insert(ordered(&src, &dst));
-            let Some(weight) = weight else { continue };
+            let Some(weight) = weight else {
+                if rel == MENTIONS {
+                    mentions.push((src, dst));
+                }
+                continue;
+            };
             neighbors
                 .entry(src.clone())
                 .or_default()
@@ -85,13 +101,54 @@ impl Snapshot {
             .filter(|(_, set)| set.len() as f64 > cutoff)
             .map(|(id, _)| id.clone())
             .collect();
-        Ok(Snapshot {
+        let mut snapshot = Snapshot {
             notes,
             neighbors,
             forward,
             hubs,
+            inline: BTreeMap::new(),
+            mentions,
             linked,
-        })
+        };
+        snapshot.settle_inline();
+        Ok(snapshot)
+    }
+
+    /// Fills in `inline` from `mentions`, then drops the inline links of each
+    /// hub: a typed hub, or a note with [`reach`](Snapshot::reach) above p99 or
+    /// [`MAX_INLINE_REACH`]. Such a note is a list, at either end of a pair.
+    fn settle_inline(&mut self) {
+        let typed = |a: &str, b: &str| self.neighbors.get(a).is_some_and(|set| set.contains(b));
+        let mut inline: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (src, dst) in &self.mentions {
+            if !typed(src, dst) {
+                inline.entry(src.clone()).or_default().insert(dst.clone());
+                inline.entry(dst.clone()).or_default().insert(src.clone());
+            }
+        }
+        self.inline = inline;
+        let reaches = self.notes.keys().map(|id| self.reach(id));
+        let cutoff = percentile_99(reaches.collect()).min(MAX_INLINE_REACH as f64);
+        let above = self
+            .inline
+            .keys()
+            .filter(|id| self.reach(id) as f64 > cutoff);
+        let mut hubs: HashSet<String> = above.cloned().collect();
+        hubs.extend(self.hubs.iter().cloned());
+
+        self.inline.retain(|id, _| !hubs.contains(id));
+        for set in self.inline.values_mut() {
+            set.retain(|id| !hubs.contains(id));
+        }
+        self.mentions
+            .retain(|(src, dst)| !hubs.contains(src) && !hubs.contains(dst));
+    }
+
+    /// Forgets inline links, apart from that they link their notes.
+    pub(crate) fn without_inline(mut self) -> Snapshot {
+        self.inline.clear();
+        self.mentions.clear();
+        self
     }
 
     /// Any edge joins the two notes, in either direction.
@@ -102,6 +159,11 @@ impl Snapshot {
     /// The typed degree of a note.
     pub(crate) fn degree(&self, id: &str) -> usize {
         self.neighbors.get(id).map_or(0, BTreeSet::len)
+    }
+
+    /// The degree of a note, by typed edges and inline links.
+    pub(crate) fn reach(&self, id: &str) -> usize {
+        self.degree(id) + self.inline.get(id).map_or(0, BTreeSet::len)
     }
 }
 

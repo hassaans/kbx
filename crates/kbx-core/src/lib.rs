@@ -31,8 +31,9 @@ mod vault;
 mod writer;
 
 pub use config::{
-    CONFIG_FILE, Config, ConfigError, EXAMPLE_ONTOLOGY, InitReport, JudgeBackend, JudgeConfig,
-    Project, Qmd, Rates, ScopeConfig, Search, WriteConfig, init,
+    CONFIG_FILE, Config, ConfigError, DEFAULT_MENTION_WEIGHT, EXAMPLE_ONTOLOGY, GeneratorsConfig,
+    InitReport, JudgeBackend, JudgeConfig, Project, Qmd, Rates, ScopeConfig, Search, WriteConfig,
+    init,
 };
 pub use exclude::{DEFAULT_EXCLUDE, ExcludeError, Excluded, Exclusions};
 pub use export::{

@@ -200,6 +200,64 @@ fn plain_suggest_without_a_judge_finds_candidates() {
 }
 
 #[test]
+fn inline_links_alone_give_the_structural_generators_candidates() {
+    let vault = indexed();
+    vault.ok(&["suggest", "--judge", "none"]);
+
+    // Unlinked, and both link to the Health Check and the Retro Notes.
+    let cid = cid_of(
+        &vault,
+        "Projects/Alpha Launch.md",
+        "Projects/Beta Rollout.md",
+    );
+    let db = database(&vault);
+    let found: String = db
+        .query_row(
+            "SELECT generators FROM candidates WHERE cid = ?",
+            [cid],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(found.contains("common_neighbors"), "{found}");
+    assert!(found.contains("adamic_adar"), "{found}");
+}
+
+#[test]
+fn a_mention_weight_of_zero_turns_inline_links_off() {
+    let vault = indexed();
+    let config = vault.root().join(".kbx/kbx.toml");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(&config, text + "\n[generators]\nmention_weight = 0\n").unwrap();
+    vault.ok(&["suggest", "--judge", "none"]);
+
+    let db = database(&vault);
+    let structural: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM candidates
+             WHERE generators LIKE '%common_neighbors%' OR generators LIKE '%adamic_adar%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(structural, 0);
+}
+
+#[test]
+fn a_mention_weight_outside_zero_to_one_is_refused() {
+    let vault = indexed();
+    let config = vault.root().join(".kbx/kbx.toml");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(&config, text + "\n[generators]\nmention_weight = 1.5\n").unwrap();
+    let output = vault.kbx(&["suggest", "--judge", "none"]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("mention_weight"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn accept_writes_the_relation_alone_and_a_reindex_keeps_every_id() {
     let vault = indexed();
     vault.ok(&["suggest", "--judge", "none", GENERATORS[0], GENERATORS[1]]);

@@ -89,6 +89,9 @@ pub struct Scope<'a> {
     pub ontology: &'a Ontology,
     /// Keep only pairs touching this note.
     pub note: Option<&'a str>,
+    /// What an inline link counts for in the structural generators. At 0 they
+    /// read typed edges alone.
+    pub mention_weight: f64,
 }
 
 /// A pair proposed by one generator.
