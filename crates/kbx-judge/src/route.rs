@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use kbx_core::Graph;
+use kbx_core::{Exclusions, Graph};
 use kbx_gen::Proposal;
 
 use crate::batch::pinned_views;
@@ -40,9 +40,11 @@ pub struct Routes {
 /// backend or to nobody: if it's down the pair waits, and a pair pinned two
 /// ways is never judged. Checking on a backend shows it no pair, and is paid
 /// for out of `budget_usd`: a backend it can't cover is treated as down.
+#[allow(clippy::too_many_arguments)]
 pub async fn route(
     g: &Graph,
     vault: &Path,
+    exclusions: &Exclusions,
     candidates: &[Proposal],
     overrides: &BTreeMap<String, String>,
     general: Vec<Box<dyn Judge>>,
@@ -57,7 +59,7 @@ pub async fn route(
         ..Routes::default()
     };
     if let Some(judge) = selection.chosen {
-        let found = views(g, vault, candidates, overrides, judge.id())?;
+        let found = views(g, vault, exclusions, candidates, overrides, judge.id())?;
         routes.chosen = Some(judge.id());
         routes.pinned = found.pinned;
         routes.unreadable = found.unreadable;
@@ -80,7 +82,7 @@ pub async fn route(
             routes.passed_over.push((id, availability));
             continue;
         }
-        let found = pinned_views(g, vault, candidates, overrides, id)?;
+        let found = pinned_views(g, vault, exclusions, candidates, overrides, id)?;
         routes.unreadable += found.unreadable;
         if !found.ready.is_empty() {
             routes.assignments.push(Assignment {
@@ -252,6 +254,7 @@ mod tests {
             route(
                 &self.graph,
                 self.dir.path(),
+                &Exclusions::new(self.dir.path(), &[]).unwrap(),
                 &pairs.iter().map(proposal).collect::<Vec<_>>(),
                 &overrides,
                 boxed(general),

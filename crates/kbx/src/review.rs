@@ -76,7 +76,8 @@ impl Session {
             ..IndexOptions::default()
         };
         let vault = &self.project.vault;
-        index_vault(&mut self.graph, vault, &self.yaml, &options)?;
+        let exclusions = self.project.exclusions()?;
+        index_vault(&mut self.graph, vault, &self.yaml, &exclusions, &options)?;
         Ok(())
     }
 
@@ -250,7 +251,14 @@ pub fn sync_stage(mark_reviewed: bool) -> Result<ExitCode, Box<dyn Error>> {
     let mut session = Session::open()?;
     let vault = session.project.vault.clone();
     let options = IndexOptions::default();
-    index_vault(&mut session.graph, &vault, &session.yaml, &options)?;
+    let exclusions = session.project.exclusions()?;
+    index_vault(
+        &mut session.graph,
+        &vault,
+        &session.yaml,
+        &exclusions,
+        &options,
+    )?;
 
     let synced = kbx_core::sync_stage(&session.graph, &vault, &session.ontology)?;
     for (cid, accepted) in &synced.accepted {

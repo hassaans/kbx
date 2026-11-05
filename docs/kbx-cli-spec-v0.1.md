@@ -344,7 +344,7 @@ Read-only by default; `mcp.allow_resolve = true` is the only write path and it s
 ## 10. CLI surface
 
 ```
-kbx init [--ontology path] [--search builtin|qmd]   create .kbx/, kbx.toml, example ontology; with qmd, detect it and make one collection per scope
+kbx init [--ontology path] [--search builtin|qmd]   create .kbx/, kbx.toml, example ontology; say which folders were skipped and why; with qmd, detect it and make one collection per scope
 kbx index [--full] [paths…]          compile frontmatter → graph.sqlite (incremental by content hash)
 kbx lint  [--format json]            validate against ontology
 kbx suggest [--note id] [--generators a,b] [--judge auto|claude-cli|codex-cli|ollama|llama-server|none]
@@ -363,6 +363,7 @@ kbx doctor [--fix]                   backends, search, models, RAM, index health
 ```toml
 vault = "~/mesh"
 scopes = ["team-x", "team-y"]            # top-level folders = ACL scopes
+exclude = ["node_modules", ".git", ".obsidian", ".kbx", "credentials", "secrets", ".ssh", ".aws", ".gnupg"]  # see docs/excluding.md
 ontology = ".kbx/ontology.yaml"
 qmd = { bin = "qmd", collections = ["team-x", "team-y"], roots = { team-x = "team-x", team-y = "team-y" } }
 

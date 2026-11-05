@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use kbx_core::{Graph, IndexOptions, cid, index_vault, parse_note, section_anchor};
+use kbx_core::{Exclusions, Graph, IndexOptions, cid, index_vault, parse_note, section_anchor};
 use kbx_gen::{Proposal, Run, place_sections, store};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -30,7 +30,14 @@ fn written() -> Written {
     }
     let mut graph = Graph::open(&dir.path().join("graph.sqlite")).unwrap();
     let options = IndexOptions::default();
-    index_vault(&mut graph, dir.path(), ONTOLOGY, &options).unwrap();
+    index_vault(
+        &mut graph,
+        dir.path(),
+        ONTOLOGY,
+        &Exclusions::new(dir.path(), &[]).unwrap(),
+        &options,
+    )
+    .unwrap();
     Written { graph, dir }
 }
 

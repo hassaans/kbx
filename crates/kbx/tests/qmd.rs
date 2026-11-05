@@ -24,7 +24,11 @@ fn fake_qmd(answer: &str) -> FakePath {
 shift 2
 case "$1 $2" in
 "collection list")
-    while read -r name; do echo "$name (qmd://$name/)"; echo "  Files: 1"; done < '{dir}/collections'
+    while read -r name; do
+        echo "$name (qmd://$name/)"
+        echo "  Pattern:  $(/bin/cat "{dir}/mask-$name" 2>/dev/null || echo '**/*.md')"
+        echo "  Files: 1"
+    done < '{dir}/collections'
     ;;
 "collection add")
     name=$5
@@ -35,6 +39,11 @@ case "$1 $2" in
         fi
     done < '{dir}/collections'
     echo "$name" >> '{dir}/collections'
+    echo "$7" > "{dir}/mask-$name"
+    ;;
+"collection remove")
+    /usr/bin/grep -vx "$3" '{dir}/collections' > '{dir}/collections.kept'
+    /bin/mv '{dir}/collections.kept' '{dir}/collections'
     ;;
 query*) /bin/cat '{dir}/answer.json' ;;
 esac"#
@@ -477,4 +486,161 @@ esac"#,
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines, expected, "{log}");
     assert!(!vault.root().join(".kbx/search-index.sqlite").exists());
+}
+
+fn removes(vault: &Fixture) -> Vec<String> {
+    let calls = calls_of(vault, "collection");
+    calls
+        .into_iter()
+        .filter(|c| c.contains(" remove "))
+        .collect()
+}
+
+/// The mask of the `collection add` naming `name`.
+fn mask_of(vault: &Fixture, name: &str) -> String {
+    let adds = adds(vault);
+    let add = adds
+        .iter()
+        .rfind(|call| call.contains(&format!("--name {name} ")));
+    let add = add.unwrap_or_else(|| panic!("no collection {name} in {adds:?}"));
+    add.rsplit_once("--mask ").unwrap().1.to_string()
+}
+
+#[test]
+fn an_excluded_folder_gets_no_collection() {
+    let vault = two_scopes("[]");
+    vault.write("credentials/keys.md", &note(3, "keys"));
+    vault.write("node_modules/pkg/README.md", "# A package\n");
+
+    vault.ok(&["init", "--search", "qmd"]);
+
+    let added = adds(&vault).join("\n");
+    assert!(!added.contains("credentials"), "{added}");
+    assert!(!added.contains("node_modules"), "{added}");
+    let roots = config(&vault)["qmd"]["roots"].clone();
+    assert!(roots.get("credentials").is_none(), "{roots}");
+}
+
+#[test]
+fn a_collection_with_nothing_excluded_under_it_keeps_the_plain_mask() {
+    let vault = two_scopes("[]");
+    vault.ok(&["init", "--search", "qmd"]);
+
+    assert_eq!(mask_of(&vault, "team-a"), "**/*.md");
+}
+
+/// qmd has no ignore list of its own, so the mask has to go around the folder.
+#[test]
+fn a_mask_goes_around_a_folder_excluded_inside_a_scope() {
+    let vault = two_scopes("[]");
+    vault.write("team-a/credentials/keys.md", &note(3, "keys"));
+    vault.write("team-a/sub/credentials/keys.md", &note(4, "keys"));
+    vault.write("team-a/sub/deep/five.md", &note(5, "five"));
+    vault.write("team-a/other/six.md", &note(6, "six"));
+
+    vault.ok(&["init", "--search", "qmd"]);
+
+    assert_eq!(
+        mask_of(&vault, "team-a"),
+        "{*.md,other/**/*.md,sub/*.md,sub/deep/**/*.md}"
+    );
+}
+
+#[test]
+fn a_whole_vault_collection_does_not_reach_an_excluded_folder() {
+    let vault = Fixture::bare(fake_qmd("[]"));
+    vault.write("one.md", &note(1, "one"));
+    vault.write("credentials/keys.md", &note(2, "keys"));
+
+    vault.ok(&["init", "--search", "qmd"]);
+
+    assert_eq!(config(&vault)["scopes"].as_array().unwrap().len(), 0);
+    assert_eq!(mask_of(&vault, "vault"), "*.md");
+}
+
+/// A vault set up before `exclude`, with its collections in qmd.
+fn set_up_before_exclude() -> Fixture {
+    let vault = two_scopes("[]");
+    vault.write("credentials/keys.md", &note(3, "keys"));
+    vault.write("team-a/secrets/keys.md", &note(4, "keys"));
+    vault.ok(&["init", "--search", "qmd"]);
+    let file = vault.root().join("kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    let text = text.replace(
+        r#"qmd = { bin = "qmd", collections = ["#,
+        r#"qmd = { bin = "qmd", collections = ["credentials", "#,
+    );
+    let text = text.replace("roots = { ", r#"roots = { credentials = "credentials", "#);
+    let text = text.replace(r#"scopes = ["#, r#"scopes = ["credentials", "#);
+    fs::write(&file, text).unwrap();
+    let names = vault.path.dir().join("collections");
+    let mut listed = fs::read_to_string(&names).unwrap();
+    listed.push_str("credentials\n");
+    fs::write(&names, listed).unwrap();
+    fs::remove_file(vault.path.dir().join("mask-team-a")).unwrap();
+    forget_calls(&vault);
+    vault
+}
+
+#[test]
+fn doctor_reports_collections_that_read_excluded_folders() {
+    let vault = set_up_before_exclude();
+
+    let printed = stdout(&vault.kbx(&["doctor"]));
+
+    let row = printed.lines().find(|line| line.starts_with("collections"));
+    let row = row.unwrap_or_else(|| panic!("no collections row in:\n{printed}"));
+    assert!(row.contains("warn"), "{row}");
+    assert!(row.contains("credentials"), "{row}");
+    assert!(row.contains("team-a"), "{row}");
+    assert!(row.contains("kbx doctor --fix"), "{row}");
+    assert!(removes(&vault).is_empty());
+}
+
+#[test]
+fn doctor_fix_removes_an_excluded_collection_and_narrows_the_rest() {
+    let vault = set_up_before_exclude();
+
+    vault.ok(&["doctor", "--fix"]);
+
+    let removed = removes(&vault).join("\n");
+    assert!(
+        removed.contains("collection remove credentials"),
+        "{removed}"
+    );
+    assert!(removed.contains("collection remove team-a"), "{removed}");
+    assert_eq!(mask_of(&vault, "team-a"), "*.md");
+    let qmd = config(&vault)["qmd"].clone();
+    assert!(qmd["roots"].get("credentials").is_none(), "{qmd}");
+    let names = qmd["collections"].as_array().unwrap();
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.as_str() == Some("credentials"))
+    );
+
+    forget_calls(&vault);
+    let printed = vault.ok(&["doctor", "--fix"]);
+    assert!(removes(&vault).is_empty(), "{printed}");
+}
+
+#[test]
+fn a_named_index_keeps_its_collections_but_kbx_stops_searching_an_excluded_one() {
+    let vault = set_up_before_exclude();
+    let file = vault.root().join("kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(
+        &file,
+        text.replace(r#"bin = "qmd","#, r#"bin = "qmd", index = "shared","#),
+    )
+    .unwrap();
+    vault.ok(&["index"]);
+
+    vault.ok(&["doctor", "--fix"]);
+    assert!(removes(&vault).is_empty());
+
+    forget_calls(&vault);
+    vault.ok(&["suggest", "--judge", "none", "--generators", "qmd_knn"]);
+    let queries = calls_of(&vault, "query").join("\n");
+    assert!(!queries.contains("-c credentials"), "{queries}");
 }

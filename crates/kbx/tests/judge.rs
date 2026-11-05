@@ -53,7 +53,8 @@ case "$2" in
      pwd > "$d/claude.cwd"
      echo "$CLAUDE_CODE_DISABLE_AUTO_MEMORY" > "$d/claude.memory"
      /bin/ls -A > "$d/claude.listing"
-     /bin/cat > "$d/claude.stdin" ;;
+     /bin/cat > "$d/claude.stdin"
+     /bin/cat "$d/claude.args" "$d/claude.stdin" >> "$d/claude.seen" ;;
 esac
 echo "$step" >> "$d/claude.log"
 /bin/cat "$d/claude-$step.out"
@@ -1527,4 +1528,132 @@ mod cost_controls {
         let rows: Value = serde_json::from_str(&vault.ok(&["review", "--json"])).unwrap();
         assert_eq!(rows.as_array().unwrap().len(), verdicts.len());
     }
+}
+
+/// A word that's in the private note and nowhere else.
+const SECRET: &str = "xylophonewatermelon";
+
+/// The fixture vault plus a note in `folder` that `schema_gap` pairs with
+/// [`NOTE`]: a procedure needs something to depend on, this is a procedure, and
+/// it's in the same scope.
+fn vault_with_private_note(folder: &str) -> Fixture {
+    let vault = Fixture::new();
+    let private = id(90);
+    vault.write(
+        &format!("operations/{folder}/private.md"),
+        &format!("---\nid: {private}\ntype: Procedure\ntitle: {SECRET}\n---\n\n{SECRET}\n"),
+    );
+    logged_in_claude(&vault.path);
+    vault
+}
+
+fn set_exclude(vault: &Fixture, exclude: &str) {
+    let file = vault.root().join("kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    let kept = text.lines().filter(|line| !line.starts_with("exclude ="));
+    let kept = kept.collect::<Vec<_>>().join("\n");
+    fs::write(&file, format!("exclude = {exclude}\n{kept}\n")).unwrap();
+}
+
+/// Everything the fake `claude` was handed, in every call.
+fn seen_by_judge(path: &FakePath) -> String {
+    fs::read_to_string(path.dir().join("claude.seen")).unwrap_or_default()
+}
+
+fn judge_with_claude(vault: &Fixture) -> std::process::Output {
+    suggest(vault, "claude-cli")
+}
+
+/// Without this, the tests below would pass on a vault where no pair ever
+/// reached the judge at all.
+#[test]
+fn with_nothing_excluded_the_private_note_does_reach_the_judge() {
+    let vault = vault_with_private_note("private");
+    set_exclude(&vault, "[]");
+    vault.ok(&["index"]);
+
+    judge_with_claude(&vault);
+
+    let seen = seen_by_judge(&vault.path);
+    assert!(seen.contains(SECRET), "{seen}");
+}
+
+#[test]
+fn a_note_in_a_default_excluded_folder_never_reaches_the_judge() {
+    let vault = vault_with_private_note("credentials");
+    vault.ok(&["index"]);
+
+    judge_with_claude(&vault);
+
+    let seen = seen_by_judge(&vault.path);
+    assert!(seen.contains(NOTE) && !seen.contains(SECRET), "{seen}");
+}
+
+#[test]
+fn a_note_in_a_gitignored_folder_never_reaches_the_judge() {
+    let vault = vault_with_private_note("private");
+    vault.write(".gitignore", "private/\n");
+    vault.ok(&["index"]);
+
+    judge_with_claude(&vault);
+
+    let seen = seen_by_judge(&vault.path);
+    assert!(seen.contains(NOTE) && !seen.contains(SECRET), "{seen}");
+}
+
+/// A note indexed before its folder was excluded is still in the graph, and
+/// nothing says `kbx index` ran since.
+#[test]
+fn a_note_excluded_after_indexing_never_reaches_the_judge() {
+    let vault = vault_with_private_note("private");
+    set_exclude(&vault, "[]");
+    vault.ok(&["index"]);
+    set_exclude(&vault, r#"["private"]"#);
+
+    let output = judge_with_claude(&vault);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let seen = seen_by_judge(&vault.path);
+    assert!(seen.contains(NOTE) && !seen.contains(SECRET), "{seen}");
+    let graph = Connection::open(vault.root().join(".kbx/graph.sqlite")).unwrap();
+    let left: i64 = graph
+        .query_row(
+            "SELECT count(*) FROM files WHERE path LIKE '%/private/%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+/// `kbx bakeoff` reads the graph read-only, so nothing can be dropped from it:
+/// the views themselves have to refuse.
+#[test]
+fn a_labelled_pair_with_an_excluded_note_never_reaches_the_judge() {
+    let vault = vault_with_private_note("private");
+    set_exclude(&vault, "[]");
+    vault.ok(&["index"]);
+    set_exclude(&vault, r#"["private"]"#);
+    let line = json!({"src": NOTE, "dst": id(90), "rel": "none", "decision": "reject"});
+    vault.write("labels.jsonl", &format!("{line}\n"));
+    vault.write(
+        "report.md",
+        "<!-- bakeoff:begin -->\n<!-- bakeoff:end -->\n",
+    );
+
+    let output = vault.kbx(&[
+        "bakeoff",
+        "--labels",
+        "labels.jsonl",
+        "--models",
+        "claude-cli",
+        "--doc",
+        "report.md",
+    ]);
+
+    assert!(
+        stderr(&output).contains("1 labelled pairs have an excluded note"),
+        "{output:?}"
+    );
+    assert!(!seen_by_judge(&vault.path).contains(SECRET), "{output:?}");
 }

@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use kbx_core::{Graph, IndexOptions, index_vault};
+use kbx_core::{Exclusions, Graph, IndexOptions, index_vault};
 use kbx_gen::{EmbedError, Embedder, Query, Search, SearchIndex, SyncError};
 use rusqlite::Connection;
 use tempfile::TempDir;
@@ -110,7 +110,14 @@ impl Vault {
 
     fn reindex(&mut self) {
         let options = IndexOptions::default();
-        index_vault(&mut self.graph, &self.root, ONTOLOGY, &options).unwrap();
+        index_vault(
+            &mut self.graph,
+            &self.root,
+            ONTOLOGY,
+            &Exclusions::new(&self.root, &[]).unwrap(),
+            &options,
+        )
+        .unwrap();
     }
 
     fn sync(&self, embedder: Option<&dyn Embedder>) -> Result<kbx_gen::Synced, SyncError> {

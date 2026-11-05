@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use kbx_core::{Graph, IndexOptions, Ontology, Review, cid, index_vault};
+use kbx_core::{Exclusions, Graph, IndexOptions, Ontology, Review, cid, index_vault};
 use kbx_gen::{Candidate, GenError, Generator, Proposal, Scope, TypePairPrior, evaluate, score};
 use rusqlite::params;
 use serde_json::{Map, json};
@@ -158,7 +158,14 @@ impl Setup {
         let db = TempDir::new().unwrap();
         let mut graph = Graph::open(&db.path().join("graph.sqlite")).unwrap();
         let vault = Path::new(VAULT).canonicalize().unwrap();
-        index_vault(&mut graph, &vault, ONTOLOGY, &IndexOptions::default()).unwrap();
+        index_vault(
+            &mut graph,
+            &vault,
+            ONTOLOGY,
+            &Exclusions::new(&vault, &[]).unwrap(),
+            &IndexOptions::default(),
+        )
+        .unwrap();
         Setup {
             graph,
             ontology: Ontology::parse(ONTOLOGY).unwrap(),

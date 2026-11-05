@@ -1,6 +1,7 @@
 //! Finding QMD, installing it when it's missing, and keeping a vault's
 //! collections in it.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
@@ -9,7 +10,6 @@ use tracing::info;
 
 const PACKAGE: &str = "@tobilu/qmd";
 const INSTALL: &str = "npm i -g @tobilu/qmd";
-const MASK: &str = "**/*.md";
 
 /// Finds `qmd` on `PATH`, installing it first if it isn't there. Says nothing
 /// on success. The error is the whole report for the user.
@@ -77,18 +77,70 @@ fn failure(output: &Output) -> String {
     format!("{} {}", output.status, stderr.trim())
 }
 
-/// The planned collections qmd doesn't have yet.
-pub fn missing_collections(project: &Project) -> Result<Vec<String>, String> {
+/// What it takes to bring qmd's collections in line with the plan.
+#[derive(Default)]
+pub struct Changes {
+    /// Planned collections qmd doesn't have yet.
+    pub missing: Vec<String>,
+    /// Collections of folders that are now excluded.
+    pub barred: Vec<String>,
+    /// Collections whose mask isn't the one the folders on disk call for now.
+    pub narrowing: Vec<String>,
+}
+
+impl Changes {
+    pub fn is_empty(&self) -> bool {
+        self.missing.is_empty() && self.barred.is_empty() && self.narrowing.is_empty()
+    }
+}
+
+/// Compares qmd's collections with the plan. A named index is left to whoever
+/// named it, so nothing in it is taken away or changed.
+pub fn collection_changes(project: &Project) -> Result<Changes, String> {
+    let listed = listed_collections(project)?;
+    let planned = project.planned_qmd().map_err(|e| e.to_string())?;
+    let missing = planned.roots.keys().filter(|n| !listed.contains_key(*n));
+    let mut changes = Changes {
+        missing: missing.cloned().collect(),
+        ..Changes::default()
+    };
+    if project.config.qmd.index.is_some() {
+        return Ok(changes);
+    }
+    let barred = project.config.qmd.roots.keys();
+    let barred = barred.filter(|name| !planned.roots.contains_key(*name));
+    changes.barred = barred
+        .filter(|n| listed.contains_key(*n))
+        .cloned()
+        .collect();
+    let exclusions = project.exclusions().map_err(|e| e.to_string())?;
+    for (name, root) in &planned.roots {
+        let mask = listed.get(name).and_then(Option::as_ref);
+        if mask.is_some_and(|mask| *mask != exclusions.note_glob(root)) {
+            changes.narrowing.push(name.clone());
+        }
+    }
+    Ok(changes)
+}
+
+/// Each collection in qmd, with its mask if `qmd collection list` shows it.
+fn listed_collections(project: &Project) -> Result<BTreeMap<String, Option<String>>, String> {
     let output = run(project, &["collection", "list"])?;
     if !output.status.success() {
         return Err(failure(&output));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let existing: Vec<&str> = stdout.lines().filter_map(listed_name).collect();
-    let planned = project.planned_qmd().roots.into_keys();
-    Ok(planned
-        .filter(|name| !existing.contains(&name.as_str()))
-        .collect())
+    let mut listed = BTreeMap::new();
+    let mut current = None;
+    for line in stdout.lines() {
+        if let Some(name) = listed_name(line) {
+            listed.insert(name.to_string(), None);
+            current = Some(name);
+        } else if let (Some(name), Some(mask)) = (current, listed_mask(line)) {
+            listed.insert(name.to_string(), Some(mask.to_string()));
+        }
+    }
+    Ok(listed)
 }
 
 /// The name in a `name (qmd://name/)` line of `qmd collection list`.
@@ -96,23 +148,50 @@ fn listed_name(line: &str) -> Option<&str> {
     line.split_once(" (qmd://").map(|(name, _)| name)
 }
 
-/// Records every scope's collection in `kbx.toml` and creates the ones qmd
-/// doesn't have, returning their names. Safe to run again.
-pub fn set_up_collections(project: &mut Project) -> Result<Vec<String>, String> {
+/// The mask in a `  Pattern:  mask` line of `qmd collection list`.
+fn listed_mask(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix("Pattern:").map(str::trim)
+}
+
+/// Records every scope's collection in `kbx.toml` and brings qmd in line with
+/// it, returning what that took. Safe to run again. A collection is removed
+/// before `kbx.toml` forgets it, so a failure leaves it there to try again.
+pub fn set_up_collections(project: &mut Project) -> Result<Changes, String> {
+    let changes = collection_changes(project)?;
+    for name in changes.barred.iter().chain(&changes.narrowing) {
+        remove_collection(project, name)?;
+    }
     project.record_collections().map_err(|e| e.to_string())?;
-    let missing = missing_collections(project)?;
-    for name in &missing {
+    for name in changes.missing.iter().chain(&changes.narrowing) {
         add_collection(project, name)?;
     }
-    Ok(missing)
+    Ok(changes)
+}
+
+fn remove_collection(project: &Project, name: &str) -> Result<(), String> {
+    let output = run(project, &["collection", "remove", name])?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(format!("collection {name}: {}", failure(&output)))
 }
 
 fn add_collection(project: &Project, name: &str) -> Result<(), String> {
     let root = &project.config.qmd.roots[name];
+    let exclusions = project.exclusions().map_err(|e| e.to_string())?;
+    let mask = exclusions.note_glob(root);
     let folder = project.vault.join(root);
     let folder = canonical_path(&folder).unwrap_or(folder);
     let folder = folder.to_string_lossy();
-    let args = ["collection", "add", &folder, "--name", name, "--mask", MASK];
+    let args = [
+        "collection",
+        "add",
+        &folder,
+        "--name",
+        name,
+        "--mask",
+        &mask,
+    ];
     let output = run(project, &args)?;
     // Another run got there first, which is what was wanted.
     let exists = String::from_utf8_lossy(&output.stderr).contains("already exists.");

@@ -464,3 +464,27 @@ fn watch_needs_a_project() {
     assert!(!output.status.success());
     assert!(common::stderr(&output).contains("kbx init"));
 }
+
+#[test]
+fn a_note_saved_in_an_excluded_folder_stays_out_of_the_index() {
+    let vault = indexed();
+    let watch = Watch::start(&vault, &[]);
+
+    vault.write("credentials/note.md", &note(70, "Concept", "Private."));
+    vault.write("notes/after.md", &note(72, "Concept", "Fine."));
+
+    watch.wait_until("the visible note", || is_indexed(&vault, 72));
+    assert!(!is_indexed(&vault, 70));
+}
+
+#[test]
+fn editing_gitignore_takes_a_folder_out_while_watching() {
+    let vault = indexed();
+    vault.write("kept/note.md", &note(71, "Concept", "Kept for now."));
+    vault.ok(&["index"]);
+    let watch = Watch::start(&vault, &[]);
+
+    vault.write(".gitignore", "kept/\n");
+
+    watch.wait_until("the note to leave", || !is_indexed(&vault, 71));
+}

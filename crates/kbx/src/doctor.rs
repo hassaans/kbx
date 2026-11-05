@@ -56,6 +56,7 @@ pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
             let usable = yaml.as_deref().filter(|_| ontology.0 == Status::Ok);
             let index = check_index(project, usable);
             report("ontology", ontology);
+            report("exclude", check_exclude(project));
             report("index", index);
         }
         Err(ConfigError::NotInitialised) => {
@@ -145,6 +146,39 @@ fn check_index(project: &Project, ontology: Option<&str>) -> Check {
     }
 }
 
+/// Whether `exclude` says what it's taken to say. A scope that's excluded is
+/// no scope, and a file with no list has the defaults, which it doesn't show.
+fn check_exclude(project: &Project) -> Check {
+    let exclusions = match project.exclusions() {
+        Ok(exclusions) => exclusions,
+        Err(error) => return (Status::Fail, error.to_string()),
+    };
+    let barred = project.config.scopes.iter();
+    let barred: Vec<&str> = barred
+        .filter(|scope| exclusions.why(scope, true).is_some())
+        .map(String::as_str)
+        .collect();
+    let mut notes = Vec::new();
+    if project.config.exclude.is_none() {
+        let defaults = project.config.exclude().join(", ");
+        notes.push(format!(
+            "kbx.toml has no `exclude`, so the defaults apply: {defaults}"
+        ));
+    }
+    if !barred.is_empty() {
+        let scopes = barred.join(", ");
+        notes.push(format!("excluded, so left out: scope {scopes}"));
+    }
+    if notes.is_empty() {
+        let count = project.config.exclude().len();
+        return (
+            Status::Ok,
+            format!("{count} patterns, and .gitignore files"),
+        );
+    }
+    (Status::Warn, notes.join("; "))
+}
+
 /// A row per backend, whatever is chosen and whether or not `judge.order` has
 /// it, then the one that would be chosen.
 fn check_judges(
@@ -205,24 +239,44 @@ fn check_search(project: Option<&Project>, backend: Search) -> Check {
     (Status::Ok, detail)
 }
 
-/// Missing collections stop `qmd_knn` alone, so they are worth a warning.
+/// Missing collections stop `qmd_knn` alone, so they are worth a warning, and
+/// so is one reading what's excluded, though nothing it finds goes further.
 fn check_collections(project: &mut Project, fix: bool) -> Check {
     if fix {
         return match qmd::set_up_collections(project) {
-            Ok(created) if created.is_empty() => collections_present(project),
-            Ok(created) => (Status::Ok, format!("created {}", created.join(", "))),
+            Ok(changes) if changes.is_empty() => collections_present(project),
+            Ok(changes) => (
+                Status::Ok,
+                describe(&changes, "created", "removed", "narrowed"),
+            ),
             Err(error) => (Status::Warn, error),
         };
     }
-    match qmd::missing_collections(project) {
-        Ok(missing) if missing.is_empty() => collections_present(project),
-        Ok(missing) => {
-            let names = missing.join(", ");
+    match qmd::collection_changes(project) {
+        Ok(changes) if changes.is_empty() => collections_present(project),
+        Ok(changes) if changes.barred.is_empty() && changes.narrowing.is_empty() => {
+            let names = changes.missing.join(", ");
             let detail = format!("missing {names}; run `kbx doctor --fix` to create them");
             (Status::Warn, detail)
         }
+        Ok(changes) => {
+            let found = describe(&changes, "missing", "excluded", "mask out of date for");
+            (Status::Warn, format!("{found}; run `kbx doctor --fix`"))
+        }
         Err(error) => (Status::Warn, format!("can't be listed: {error}")),
     }
+}
+
+/// The collections in `changes`, each kind under its label.
+fn describe(changes: &qmd::Changes, missing: &str, barred: &str, narrowing: &str) -> String {
+    let kinds = [
+        (missing, &changes.missing),
+        (barred, &changes.barred),
+        (narrowing, &changes.narrowing),
+    ];
+    let kinds = kinds.iter().filter(|(_, names)| !names.is_empty());
+    let parts = kinds.map(|(label, names)| format!("{label} {}", names.join(", ")));
+    parts.collect::<Vec<_>>().join("; ")
 }
 
 fn collections_present(project: &Project) -> Check {

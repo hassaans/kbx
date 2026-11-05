@@ -5,8 +5,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use kbx_core::{
-    Decision, Graph, IndexOptions, Ontology, Queue, ReviewError, cid, excerpt, index_vault,
-    ordered, reject, suppressed_pairs, unreject,
+    Decision, Exclusions, Graph, IndexOptions, Ontology, Queue, ReviewError, cid, excerpt,
+    index_vault, ordered, reject, suppressed_pairs, unreject,
 };
 use rusqlite::{Connection, params};
 use serde_json::json;
@@ -49,7 +49,14 @@ impl Vault {
         }
         let mut graph = Graph::open(&dir.path().join("graph.sqlite")).unwrap();
         let root = dir.path().canonicalize().unwrap();
-        index_vault(&mut graph, &root, ONTOLOGY, &IndexOptions::default()).unwrap();
+        index_vault(
+            &mut graph,
+            &root,
+            ONTOLOGY,
+            &Exclusions::new(&root, &[]).unwrap(),
+            &IndexOptions::default(),
+        )
+        .unwrap();
         Vault {
             dir,
             graph,

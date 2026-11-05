@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::exclude::Exclusions;
 use crate::index::{IndexError, select, walk};
 use crate::note::{Note, ParseError, parse_note};
 use crate::ontology::Ontology;
@@ -13,10 +14,12 @@ use crate::vault::{Finding, FindingCode, Vault};
 /// This reads the files, not the index, so it sees what's on disk now. Every
 /// note is parsed, because links and duplicate ids depend on the whole vault,
 /// but only the given files are reported on: §8 leaves `link.unresolved` to
-/// the author of the file. Plain markdown isn't a note, and has no findings.
+/// the author of the file. Plain markdown isn't a note, and has no findings,
+/// and nor has what `exclusions` rules out, even when named in `paths`.
 pub fn lint_vault(
     vault: &Path,
     ontology_yaml: &str,
+    exclusions: &Exclusions,
     paths: &[PathBuf],
 ) -> Result<Vec<Finding>, IndexError> {
     let ontology = Ontology::parse(ontology_yaml)?;
@@ -27,7 +30,7 @@ pub fn lint_vault(
     let selects = |path: &str| selection.iter().any(|s| s.contains(path));
 
     let mut files = BTreeSet::new();
-    walk(vault, "", &mut files);
+    walk(vault, "", exclusions, &mut files);
     let mut notes = Vec::new();
     let mut findings = Vec::new();
     for path in &files {

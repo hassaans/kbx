@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Command;
 
-use kbx_core::{Graph, IndexOptions, index_vault};
+use kbx_core::{Exclusions, Graph, IndexOptions, index_vault};
 use kbx_gen::{Hit, QmdSearch, Query, Search, SearchError};
 use tempfile::TempDir;
 
@@ -45,7 +45,14 @@ impl Vault {
         .unwrap();
         let root = dir.path().join("vault").canonicalize().unwrap();
         let mut graph = Graph::open(&dir.path().join("graph.sqlite")).unwrap();
-        index_vault(&mut graph, &root, ONTOLOGY, &IndexOptions::default()).unwrap();
+        index_vault(
+            &mut graph,
+            &root,
+            ONTOLOGY,
+            &Exclusions::new(&root, &[]).unwrap(),
+            &IndexOptions::default(),
+        )
+        .unwrap();
         Vault { dir, graph }
     }
 

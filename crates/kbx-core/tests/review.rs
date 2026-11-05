@@ -4,8 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use kbx_core::{
-    Decision, Graph, IndexOptions, Ontology, ReviewError, STRIKES, accept, cid, defer, index_vault,
-    ordered, parse_note, reject, section_cid, split_frontmatter, suppressed_pairs, unreject,
+    Decision, Exclusions, Graph, IndexOptions, Ontology, ReviewError, STRIKES, accept, cid, defer,
+    index_vault, ordered, parse_note, reject, section_cid, split_frontmatter, suppressed_pairs,
+    unreject,
 };
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -60,7 +61,14 @@ impl Vault {
 
     fn index(&mut self) {
         let root = self.root();
-        index_vault(&mut self.graph, &root, ONTOLOGY, &IndexOptions::default()).unwrap();
+        index_vault(
+            &mut self.graph,
+            &root,
+            ONTOLOGY,
+            &Exclusions::new(&root, &[]).unwrap(),
+            &IndexOptions::default(),
+        )
+        .unwrap();
     }
 
     fn db(&self) -> &Connection {

@@ -3,7 +3,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use kbx_core::{Graph, section_excerpt, split_frontmatter};
+use kbx_core::{Exclusions, Graph, section_excerpt, split_frontmatter};
 use kbx_gen::{EXCERPT_TOKENS, Proposal};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
@@ -59,18 +59,23 @@ pub struct Views {
     pub pinned: usize,
     /// Pairs left out because a note is gone or can't be read.
     pub unreadable: usize,
+    /// Pairs left out because a note is excluded, which the index may not know
+    /// yet. No judge sees these.
+    pub excluded: usize,
 }
 
-/// Builds the batch items for `candidates`, leaving out every pair with a note
-/// pinned to a backend other than `judge`.
+/// Builds the batch items for `candidates`, leaving out every pair with an
+/// excluded note or one pinned to a backend other than `judge`. Every excerpt a
+/// judge sees comes through here, so this is where `exclusions` is final.
 pub fn views(
     g: &Graph,
     vault: &Path,
+    exclusions: &Exclusions,
     candidates: &[Proposal],
     overrides: &BTreeMap<String, String>,
     judge: JudgeId,
 ) -> rusqlite::Result<Views> {
-    collect(g, vault, candidates, overrides, judge, false)
+    collect(g, vault, exclusions, candidates, overrides, judge, false)
 }
 
 /// Like [`views`], but only the pairs with a note pinned to `judge`: what falls
@@ -78,16 +83,18 @@ pub fn views(
 pub(crate) fn pinned_views(
     g: &Graph,
     vault: &Path,
+    exclusions: &Exclusions,
     candidates: &[Proposal],
     overrides: &BTreeMap<String, String>,
     judge: JudgeId,
 ) -> rusqlite::Result<Views> {
-    collect(g, vault, candidates, overrides, judge, true)
+    collect(g, vault, exclusions, candidates, overrides, judge, true)
 }
 
 fn collect(
     g: &Graph,
     vault: &Path,
+    exclusions: &Exclusions,
     candidates: &[Proposal],
     overrides: &BTreeMap<String, String>,
     judge: JudgeId,
@@ -101,6 +108,13 @@ fn collect(
             found.unreadable += usize::from(!only_pinned);
             continue;
         };
+        if [&src, &dst]
+            .iter()
+            .any(|note| exclusions.why(&note.0, false).is_some())
+        {
+            found.excluded += 1;
+            continue;
+        }
         if pinned_away(&src.0, overrides, judge) || pinned_away(&dst.0, overrides, judge) {
             found.pinned += 1;
             continue;

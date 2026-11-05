@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime};
 
-use kbx_core::{Graph, IndexOptions, Project, index_vault, is_note_path};
+use kbx_core::{CONFIG_FILE, Exclusions, Graph, IndexOptions, Project, index_vault, is_note_path};
 use notify::event::{EventKind, ModifyKind};
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebouncedEvent, Debouncer, RecommendedCache, new_debouncer};
@@ -51,16 +51,22 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
             None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
         };
         match message {
-            Ok(Ok(batch)) => {
-                let (paths, rescan) = changed_paths(&project.vault, &batch);
-                if rescan {
-                    timers.reconcile_now();
+            Ok(Ok(batch)) => match current_exclusions(&project) {
+                Ok(exclusions) => {
+                    let (paths, rescan) = changed_paths(&project.vault, &exclusions, &batch);
+                    if rescan {
+                        timers.reconcile_now();
+                    }
+                    if !paths.is_empty() {
+                        saved.extend(paths);
+                        timers.after_save(Instant::now());
+                    }
                 }
-                if !paths.is_empty() {
-                    saved.extend(paths);
-                    timers.after_save(Instant::now());
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    timers.retry();
                 }
-            }
+            },
             Ok(Err(errors)) => {
                 for error in errors {
                     warn!("{error}");
@@ -227,6 +233,12 @@ fn since_last_write(paths: &BTreeSet<PathBuf>) -> Option<Duration> {
     written.filter_map(|at| now.duration_since(at).ok()).min()
 }
 
+/// The rule as `kbx.toml` and the `.gitignore` files now have it. They can change
+/// while `project`, read at the start, stays as it was.
+fn current_exclusions(project: &Project) -> Result<Exclusions, Box<dyn Error>> {
+    Ok(Project::load(&project.config_file)?.exclusions()?)
+}
+
 /// Indexes `paths`, or the whole vault if there are none, and lints what
 /// changed. Says whether anything did. Re-reads everything each time: the
 /// ontology may have been edited and the database deleted, as a cache can be.
@@ -238,7 +250,8 @@ fn update(project: &Project, paths: Vec<PathBuf>) -> Result<bool, Box<dyn Error>
         missing_ok: true,
         ..IndexOptions::default()
     };
-    let report = index_vault(&mut graph, &project.vault, &ontology, &options)?;
+    let exclusions = current_exclusions(project)?;
+    let report = index_vault(&mut graph, &project.vault, &ontology, &exclusions, &options)?;
 
     // A note that fails has no hash to compare, so it counts only when an
     // event names it. Otherwise every reconcile would report it again.
@@ -257,9 +270,13 @@ fn update(project: &Project, paths: Vec<PathBuf>) -> Result<bool, Box<dyn Error>
     Ok(true)
 }
 
-/// The paths in a batch worth indexing, and whether the events were lost so
-/// that only a full pass can catch up.
-fn changed_paths(vault: &Path, batch: &[DebouncedEvent]) -> (Vec<PathBuf>, bool) {
+/// The paths in a batch worth indexing, and whether only a full pass can catch
+/// up: the events were lost, or the rule on what's excluded changed.
+fn changed_paths(
+    vault: &Path,
+    exclusions: &Exclusions,
+    batch: &[DebouncedEvent],
+) -> (Vec<PathBuf>, bool) {
     let mut paths = BTreeSet::new();
     let mut rescan = false;
     for event in batch {
@@ -269,7 +286,8 @@ fn changed_paths(vault: &Path, batch: &[DebouncedEvent]) -> (Vec<PathBuf>, bool)
             continue;
         }
         for path in &event.paths {
-            if is_wanted(vault, path, &event.kind) {
+            rescan |= changes_exclusions(path);
+            if is_wanted(vault, exclusions, path, &event.kind) {
                 paths.insert(path.clone());
             }
         }
@@ -277,11 +295,16 @@ fn changed_paths(vault: &Path, batch: &[DebouncedEvent]) -> (Vec<PathBuf>, bool)
     (paths.into_iter().collect(), rescan)
 }
 
+fn changes_exclusions(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == ".gitignore" || name == CONFIG_FILE)
+}
+
 /// A note, or a folder that appeared or moved, whose notes raise no events of
-/// their own. Anything gone may have been either. Hidden paths are left out,
-/// which keeps the writes to `.kbx/` from waking the watch. Symlinks are left
-/// out because the index doesn't follow them.
-fn is_wanted(vault: &Path, path: &Path, kind: &EventKind) -> bool {
+/// their own. Anything gone may have been either. What's excluded is left out,
+/// and that keeps the writes to `.kbx/` from waking the watch. Symlinks are
+/// left out because the index doesn't follow them.
+fn is_wanted(vault: &Path, exclusions: &Exclusions, path: &Path, kind: &EventKind) -> bool {
     let Ok(relative) = path.strip_prefix(vault) else {
         return false;
     };
@@ -289,11 +312,17 @@ fn is_wanted(vault: &Path, path: &Path, kind: &EventKind) -> bool {
         .components()
         .map(|part| part.as_os_str().to_string_lossy())
         .collect();
-    if parts.is_empty() || parts.iter().any(|part| part.starts_with('.')) {
+    let relative = parts.join("/");
+    if parts.is_empty() {
         return false;
     }
-    match fs::symlink_metadata(path) {
-        Ok(file) if file.is_file() => is_note_path(&parts.join("/")),
+    let metadata = fs::symlink_metadata(path);
+    let is_dir = metadata.as_ref().is_ok_and(|file| file.is_dir());
+    if exclusions.why(&relative, is_dir).is_some() {
+        return false;
+    }
+    match metadata {
+        Ok(file) if file.is_file() => is_note_path(&relative),
         Ok(file) if file.is_dir() => matches!(
             kind,
             EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))

@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use kbx_core::{Graph, IndexOptions, index_vault};
+use kbx_core::{Exclusions, Graph, IndexOptions, index_vault};
 use kbx_gen::{Hit, Query, Search, SearchCache, SearchError, vault_state};
 use tempfile::TempDir;
 
@@ -61,6 +61,7 @@ impl Vault {
             &mut self.graph,
             &self.root,
             ONTOLOGY,
+            &Exclusions::new(&self.root, &[]).unwrap(),
             &IndexOptions::default(),
         )
         .unwrap();

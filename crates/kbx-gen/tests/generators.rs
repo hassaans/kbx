@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 
-use kbx_core::{Graph, IndexOptions, Ontology, index_vault};
+use kbx_core::{Exclusions, Graph, IndexOptions, Ontology, index_vault};
 use kbx_gen::{
     AdamicAdar, AliasCooccur, Budget, Candidate, CommonNeighbors, Generator, Hit, MAX_SEARCHES,
     QmdKnn, Query, SchemaGap, Scope, Search, SearchError, TwoHopBridge,
@@ -36,7 +36,14 @@ impl Indexed {
         let db = TempDir::new().unwrap();
         let mut graph = Graph::open(&db.path().join("graph.sqlite")).unwrap();
         let root = root.canonicalize().unwrap();
-        index_vault(&mut graph, &root, ONTOLOGY, &IndexOptions::default()).unwrap();
+        index_vault(
+            &mut graph,
+            &root,
+            ONTOLOGY,
+            &Exclusions::new(&root, &[]).unwrap(),
+            &IndexOptions::default(),
+        )
+        .unwrap();
         Indexed {
             graph,
             ontology: Ontology::parse(ONTOLOGY).unwrap(),

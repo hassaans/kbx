@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use kbx_core::{EXAMPLE_ONTOLOGY, Graph, IndexOptions, Vault, index_vault, parse_note};
+use kbx_core::{EXAMPLE_ONTOLOGY, Exclusions, Graph, IndexOptions, Vault, index_vault, parse_note};
 use tempfile::TempDir;
 
 fn write(root: &Path, relative: &str, id: &str, extra: &str, body: &str) {
@@ -36,7 +36,14 @@ fn every_link_lands_on_the_same_note_in_the_vault_and_the_index() {
 
     let mut graph = Graph::open(&root.join("graph.sqlite")).unwrap();
     let options = IndexOptions::default();
-    index_vault(&mut graph, &root, EXAMPLE_ONTOLOGY, &options).unwrap();
+    index_vault(
+        &mut graph,
+        &root,
+        EXAMPLE_ONTOLOGY,
+        &Exclusions::new(&root, &[]).unwrap(),
+        &options,
+    )
+    .unwrap();
 
     let notes = files
         .iter()
