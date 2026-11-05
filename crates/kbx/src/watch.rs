@@ -51,17 +51,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
             None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
         };
         match message {
-            Ok(Ok(batch)) => match {
-                eprintln!(
-                    "DIAG {:?} {} batch n={} first={:?} rescan={}",
-                    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap(),
-                    project.vault.display(),
-                    batch.len(),
-                    batch.first().map(|event| (event.kind, event.paths.clone())),
-                    batch.iter().any(|event| event.need_rescan()),
-                );
-                current_exclusions(&project)
-            } {
+            Ok(Ok(batch)) => match current_exclusions(&project) {
                 Ok(exclusions) => {
                     let (paths, rescan) = changed_paths(&project.vault, &exclusions, &batch);
                     if rescan {
@@ -78,7 +68,6 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
                 }
             },
             Ok(Err(errors)) => {
-                eprintln!("DIAG {} watcher errors {errors:?}", project.vault.display());
                 for error in errors {
                     warn!("{error}");
                 }
@@ -91,15 +80,9 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         if timers.take_index(Instant::now()) {
             // Windows can hold back the events of a burst until it ends, so
             // the files have the last word on whether the saves have stopped.
-            let diag_quiet = since_last_write(&saved);
-            eprintln!(
-                "DIAG {:?} {} take_index quiet={diag_quiet:?} window={:?} saved={}",
-                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap(),
-                project.vault.display(),
-                options.debounce,
-                saved.len(),
-            );
-            match since_last_write(&saved).filter(|quiet| *quiet < options.debounce) {
+            match since_last_write(&saved, options.debounce)
+                .filter(|quiet| *quiet < options.debounce)
+            {
                 Some(quiet) => timers.index_after(Instant::now(), options.debounce - quiet),
                 None => match update(&project, mem::take(&mut saved).into_iter().collect()) {
                     Ok(changed) => timers.after_batch(changed),
@@ -111,7 +94,6 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
             }
         }
         if timers.take_reconcile() {
-            eprintln!("DIAG {} reconcile pass", project.vault.display());
             match update(&project, Vec::new()) {
                 Ok(changed) => timers.after_reconcile(changed),
                 Err(error) => {
@@ -243,14 +225,21 @@ impl Timers {
     }
 }
 
-/// How long ago the most recently written of `paths` was written. A path that
-/// is gone or dated in the future says nothing, so it can't hold up the index.
-fn since_last_write(paths: &BTreeSet<PathBuf>) -> Option<Duration> {
+/// How long ago the most recently written of `paths` was written. A save can
+/// land after the clock is read, and a filesystem's dates can run a little ahead
+/// of it, so a date less than `window` ahead means just now. A path that is gone
+/// or dated further ahead says nothing, so it can't hold up the index.
+fn since_last_write(paths: &BTreeSet<PathBuf>, window: Duration) -> Option<Duration> {
     let now = SystemTime::now();
     let written = paths
         .iter()
         .filter_map(|path| fs::metadata(path).ok()?.modified().ok());
-    written.filter_map(|at| now.duration_since(at).ok()).min()
+    let quiet = |at: SystemTime| match now.duration_since(at) {
+        Ok(quiet) => Some(quiet),
+        Err(ahead) if ahead.duration() < window => Some(Duration::ZERO),
+        Err(_) => None,
+    };
+    written.filter_map(quiet).min()
 }
 
 /// The rule as `kbx.toml` and the `.gitignore` files now have it. They can change
@@ -377,43 +366,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn diag_race() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-        let dir = tempfile::TempDir::new().unwrap();
-        let note = dir.path().join("note.md");
-        fs::write(&note, "saved").unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let (flag, path) = (Arc::clone(&stop), note.clone());
-        let writer = std::thread::spawn(move || {
-            let mut n = 0u64;
-            while !flag.load(Ordering::Relaxed) {
-                n += 1;
-                fs::write(&path, format!("save {n}")).unwrap();
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            n
-        });
-        let paths = BTreeSet::from([note.clone()]);
-        let (mut clock_first, mut clock_last, mut calls) = (0u64, 0u64, 0u64);
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(60) {
-            calls += 1;
-            if since_last_write(&paths).is_none() {
-                clock_first += 1;
-            }
-            let written = fs::metadata(&note).unwrap().modified().unwrap();
-            if SystemTime::now().duration_since(written).is_err() {
-                clock_last += 1;
-            }
-        }
-        stop.store(true, Ordering::Relaxed);
-        let saves = writer.join().unwrap();
-        eprintln!("DIAG-RACE calls={calls} saves={saves} clock_first_none={clock_first} clock_last_none={clock_last}");
-    }
-
-    #[test]
     fn saves_inside_the_window_put_off_the_index_until_they_stop() {
         let mut timers = timers(None);
         let start = Instant::now();
@@ -460,16 +412,45 @@ mod tests {
         assert!(timers.take_suggest());
     }
 
+    fn dated(path: &Path, at: SystemTime) {
+        fs::write(path, "saved").unwrap();
+        let file = fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(at).unwrap();
+    }
+
     #[test]
     fn a_file_written_just_now_counts_and_a_missing_one_does_not() {
+        let window = Duration::from_secs(60);
         let dir = tempfile::TempDir::new().unwrap();
         let note = dir.path().join("note.md");
         let gone = BTreeSet::from([dir.path().join("gone.md")]);
-        assert_eq!(since_last_write(&gone), None);
+        assert_eq!(since_last_write(&gone, window), None);
 
         fs::write(&note, "saved").unwrap();
-        let quiet = since_last_write(&BTreeSet::from([note]));
-        assert!(quiet.is_none_or(|quiet| quiet < Duration::from_secs(60)));
+        let quiet = since_last_write(&BTreeSet::from([note]), window).unwrap();
+        assert!(quiet < window);
+    }
+
+    /// What a save looks like when it lands just after the clock is read.
+    #[test]
+    fn a_file_dated_just_ahead_was_written_just_now() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let note = dir.path().join("note.md");
+        let window = Duration::from_secs(60);
+        dated(&note, SystemTime::now() + window / 2);
+
+        let quiet = since_last_write(&BTreeSet::from([note]), window);
+        assert_eq!(quiet, Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn a_file_dated_far_ahead_does_not_hold_up_the_index() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let note = dir.path().join("note.md");
+        let window = Duration::from_secs(60);
+        dated(&note, SystemTime::now() + window * 2);
+
+        assert_eq!(since_last_write(&BTreeSet::from([note]), window), None);
     }
 
     #[test]

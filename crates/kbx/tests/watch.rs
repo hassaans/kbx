@@ -97,6 +97,47 @@ fn saved_title(vault: &Fixture) -> String {
         .unwrap()
 }
 
+/// Saves to note 100 that keep track of whether they stayed a burst. The watch
+/// asks the files when the saves stopped, and the operating system dates those,
+/// so no clock a test could hand it reaches this far. A runner can still stall
+/// a test for a whole window between two saves. The saves have then really
+/// stopped and indexing is right, so each stall may cost one more write and
+/// anything else fails. The unit tests in `src/watch.rs` have the exact rule.
+struct Burst {
+    window: Duration,
+    began: Option<Instant>,
+    stalls: i64,
+}
+
+impl Burst {
+    fn new(window: Duration) -> Burst {
+        Burst {
+            window,
+            began: None,
+            stalls: 0,
+        }
+    }
+
+    fn save(&mut self, vault: &Fixture, n: u32) {
+        let began = Instant::now();
+        save(vault, n);
+        // From before one write to after the next, so it can't undercount.
+        if self.began.is_some_and(|at| at.elapsed() >= self.window) {
+            self.stalls += 1;
+        }
+        self.began = Some(began);
+    }
+
+    /// `writes` is `once_each`, but for what the stalls excuse.
+    fn assert_indexed_once(&self, vault: &Fixture) {
+        let mut written = writes(vault);
+        if let Some((_, count)) = written.first_mut() {
+            *count -= self.stalls.min(*count - 1);
+        }
+        assert_eq!(written, once_each(), "{} stalls", self.stalls);
+    }
+}
+
 /// A running `kbx watch`, killed when dropped.
 struct Watch {
     child: Child,
@@ -251,12 +292,13 @@ fn a_burst_of_saves_to_one_note_indexes_it_once() {
     audit(&vault);
     let watch = Watch::start(&vault, &["--debounce-ms", "3000", "--reconcile-secs", "0"]);
 
+    let mut burst = Burst::new(Duration::from_secs(3));
     for n in 0..1000 {
-        save(&vault, n);
+        burst.save(&vault, n);
     }
     watch.settle(&vault);
 
-    assert_eq!(writes(&vault), once_each());
+    burst.assert_indexed_once(&vault);
     assert_eq!(saved_title(&vault), "Save 999");
 }
 
@@ -266,33 +308,19 @@ fn saves_that_outlast_the_window_index_the_note_once() {
     audit(&vault);
     let watch = Watch::start(&vault, &["--debounce-ms", "2000", "--reconcile-secs", "0"]);
 
-    // However fast the runner, this burst is longer than the window, and each
-    // gap is far inside it.
+    // However fast the runner, this burst is longer than the window. The sleep
+    // only spaces the saves out: `Burst` notices if a gap wasn't inside the window.
+    let mut burst = Burst::new(Duration::from_secs(2));
     let start = Instant::now();
     let mut last = 0;
-    let mut previous = Instant::now();
-    let mut widest = Duration::ZERO;
     while start.elapsed() < Duration::from_secs(5) {
         last += 1;
-        save(&vault, last);
-        let gap = previous.elapsed();
-        previous = Instant::now();
-        widest = widest.max(gap);
-        if gap > Duration::from_millis(500) {
-            eprintln!(
-                "DIAG-GAP {:?} {} save {last} gap {gap:?}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                    .unwrap(),
-                vault.root().display()
-            );
-        }
+        burst.save(&vault, last);
         thread::sleep(Duration::from_millis(50));
     }
-    eprintln!("DIAG-WIDEST {widest:?} over {last} saves");
     watch.settle(&vault);
 
-    assert_eq!(writes(&vault), once_each());
+    burst.assert_indexed_once(&vault);
     assert_eq!(saved_title(&vault), format!("Save {last}"));
 }
 
