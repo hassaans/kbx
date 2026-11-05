@@ -40,7 +40,7 @@ for folder in "$root"/kbx-* "$root"/kbx-cli/node_modules/kbx-*; do
 done
 shopt -u nullglob
 if [[ ${#platforms[@]} -ne 1 ]]; then
-  fail "expected one platform package, found ${#platforms[@]}: ${platforms[*]:-none}"
+  fail "expected one platform package, found ${#platforms[@]}: ${platforms[*]:-none} (expected $package)"
 fi
 if [[ $(basename "${platforms[0]}") != "$package" ]]; then
   fail "expected $package, found ${platforms[0]}"

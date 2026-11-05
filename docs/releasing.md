@@ -85,8 +85,10 @@ install` works on macOS.
 It runs at the end of every release run, as the `smoke` job of `release.yml`,
 with the version from the tag. It waits for `npm-publish` and `cargo-publish`, and
 each of its jobs then waits up to 30 minutes for its package to show on the
-registry. A release that fails its smoke checks shows as a failed run, even though
-everything is out.
+registry. Platform packages can trail `kbx-cli` there even though they publish
+first, and npm silently skips an optional dependency it can't see yet, so each npm
+job waits for both `kbx-cli` and its platform package before it installs. A release
+that fails its smoke checks shows as a failed run, even though everything is out.
 
 `release.yml` calls it because nothing else would start it. The Release comes from
 the workflow's `GITHUB_TOKEN`, and GitHub starts no workflows from events that
