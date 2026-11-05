@@ -25,7 +25,8 @@ spells out: nobody has labelled a `qmd_knn` pair on a real vault.
   with `PRAGMA user_version` for its format and the model's id and revision beside the
   vectors. A section is embedded when its text is new and never again. Delete the file
   at any time; the next `kbx suggest` rebuilds it. Each batch is committed, so a run
-  that's stopped keeps its work.
+  that's stopped keeps its work. A file edited since `kbx index` is left out, with a
+  warning, until the next index: its lines no longer match the graph's hashes.
 
 `kbx suggest --dry-run` and `--eval` read the index without changing it, and with no
 index `qmd_knn` is skipped with a message. There's no `kbx search` command yet. The
@@ -115,7 +116,9 @@ has none yet and its 100 pairs all come from `alias_cooccur`, so they say nothin
   alone finds.
 - **The fixture has 6 labels,** and they were made up for tests.
 - **A late fix changed the query.** An earlier build chose BM25 words alphabetically and
-  scored 18 and 69 on the mirror. Every built-in number here is from the final code.
+  scored 18 and 69 on the mirror. Every built-in number here is from the final code. A last fix, which keeps a
+  note's own sections out of its rankings, left the mirror's pairs as they were and changed
+  one pair of 1,997 on the 10k vault, still all in topic, so nothing was graded again.
 - **One engine setting, tuned on nothing:** the fusion constant and pool size are the
   first values tried. The model was picked on these same vaults, from two candidates.
 
@@ -142,13 +145,14 @@ built-in runs had 20 to 30 notes edited since, which changes nothing here.
 | | QMD | Built-in |
 |---|---|---|
 | First run, including the one embed | 2,481 s (533 + 1,948) | 627 s |
-| Second run, unchanged | 8.9 s | 14.8 s |
+| Second run, unchanged | 8.9 s | 8.7 s |
 | After editing 10 notes | 41.5 s | 20.7 s |
 | Peak memory, first run | 6 GiB in qmd, 2.2 GiB in kbx | 3.2 GiB |
 | Index on disk | 131 MB | 140 MB |
 
-- **The second run is slower than QMD's cached one,** by about 6 seconds, because it
-  really searches.
+- **The second run is level with QMD's cached one,** though it really searches. It took
+  14.8 s on a busy machine and 8.7 s, three runs alike, on a quiet one. QMD's 8.9 s wasn't
+  measured again, so read the two as about equal, not as a win.
 - **Peak memory** was 3.8 GiB on the mirror, where a few long sections fill a batch.
 - **Linux and Windows have no Accelerate.** Candle's own matrix code reached 3,730
   tokens/s on this machine against 6,895 with it, so expect a first run about twice as
