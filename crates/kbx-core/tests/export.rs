@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use kbx_core::{
-    DEFAULT_NAMESPACE, Graph, ImportError, IndexOptions, NOTE_NAMESPACE, Ontology, Review, STRIKES,
-    cid, index_vault, parse_reviews, suppressed_pairs, turtle, unreject,
+    DEFAULT_NAMESPACE, Exclusions, Graph, ImportError, IndexOptions, NOTE_NAMESPACE, Ontology,
+    Review, STRIKES, cid, index_vault, parse_reviews, suppressed_pairs, turtle, unreject,
 };
 use oxrdf::{NamedOrBlankNode, Term, Triple};
 use oxttl::TurtleParser;
@@ -32,7 +32,14 @@ fn empty() -> Db {
 fn indexed(ontology: &str) -> Db {
     let mut db = empty();
     let vault = Path::new(VAULT).canonicalize().unwrap();
-    index_vault(&mut db.graph, &vault, ontology, &IndexOptions::default()).unwrap();
+    index_vault(
+        &mut db.graph,
+        &vault,
+        ontology,
+        &Exclusions::new(&vault, &[]).unwrap(),
+        &IndexOptions::default(),
+    )
+    .unwrap();
     db
 }
 

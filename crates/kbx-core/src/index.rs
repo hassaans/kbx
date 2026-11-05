@@ -10,6 +10,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
+use crate::exclude::{ExcludeError, Exclusions};
 use crate::graph::Graph;
 use crate::note::{Note, ParseError, parse_note, split_frontmatter};
 use crate::ontology::{Ontology, OntologyError};
@@ -80,6 +81,9 @@ pub enum IndexError {
     /// The working directory could not be read.
     #[error("{0}: {1}")]
     Io(PathBuf, io::Error),
+    /// `exclude` could not be read.
+    #[error(transparent)]
+    Exclude(#[from] ExcludeError),
 }
 
 /// How the index compares with what a run would build from now.
@@ -107,7 +111,20 @@ pub fn index_state(graph: &Graph, ontology_yaml: &str) -> rusqlite::Result<Index
     }
 }
 
+/// The paths in `graph` that `exclusions` has since ruled out. Until they're
+/// indexed again they're still there for anything that reads the graph.
+pub fn excluded_notes(graph: &Graph, exclusions: &Exclusions) -> rusqlite::Result<Vec<String>> {
+    let mut statement = graph.conn.prepare("SELECT path FROM files")?;
+    let paths = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let paths = paths.collect::<rusqlite::Result<Vec<_>>>()?;
+    let excluded = paths.into_iter();
+    Ok(excluded
+        .filter(|path| exclusions.why(path, false).is_some())
+        .collect())
+}
+
 /// Compiles the markdown files under `vault` into `graph`, in one transaction.
+/// What `exclusions` rules out is treated as gone, even when named in `options`.
 ///
 /// A file whose `content_hash` matches is not parsed or written. Links are
 /// stored as written, and `edges` is compared with what they now resolve to, so
@@ -116,6 +133,7 @@ pub fn index_vault(
     graph: &mut Graph,
     vault: &Path,
     ontology_yaml: &str,
+    exclusions: &Exclusions,
     options: &IndexOptions,
 ) -> Result<IndexReport, IndexError> {
     let ontology = Ontology::parse(ontology_yaml)?;
@@ -145,8 +163,15 @@ pub fn index_vault(
     let mut on_disk = BTreeSet::new();
     for selected in &selection {
         match fs::metadata(&selected.absolute) {
+            Ok(metadata)
+                if exclusions
+                    .why(&selected.relative, metadata.is_dir())
+                    .is_some() =>
+            {
+                debug!("{}: excluded", selected.relative);
+            }
             Ok(metadata) if metadata.is_dir() => {
-                walk(vault, &selected.relative, &mut on_disk);
+                walk(vault, &selected.relative, exclusions, &mut on_disk);
             }
             Ok(_) if is_note_path(&selected.relative) => {
                 on_disk.insert(selected.relative.clone());
@@ -256,11 +281,16 @@ pub(crate) fn slash_path(path: &Path) -> String {
     parts.join("/")
 }
 
-/// Collects the notes under `folder`. Hidden folders such as `.kbx` and
-/// `.obsidian` are left out, and symlinks aren't followed, so a link back up
-/// the tree can't loop. A folder that can't be read is as good as absent,
-/// which is how §1 enforces ACLs.
-pub(crate) fn walk(vault: &Path, folder: &str, found: &mut BTreeSet<String>) {
+/// Collects the notes under `folder`, which isn't excluded itself. What
+/// `exclusions` rules out is left out, and symlinks aren't followed, so a link
+/// back up the tree can't loop. A folder that can't be read is as good as
+/// absent, which is how §1 enforces ACLs.
+pub(crate) fn walk(
+    vault: &Path,
+    folder: &str,
+    exclusions: &Exclusions,
+    found: &mut BTreeSet<String>,
+) {
     let entries = match fs::read_dir(vault.join(folder)) {
         Ok(entries) => entries,
         Err(error) => {
@@ -275,8 +305,14 @@ pub(crate) fn walk(vault: &Path, folder: &str, found: &mut BTreeSet<String>) {
             _ => format!("{folder}/{name}"),
         };
         match entry.file_type() {
-            Ok(kind) if kind.is_dir() && !name.starts_with('.') => walk(vault, &path, found),
-            Ok(kind) if kind.is_file() && is_note_path(&path) => {
+            Ok(kind) if kind.is_dir() && exclusions.entry(&path, true).is_none() => {
+                walk(vault, &path, exclusions, found);
+            }
+            Ok(kind)
+                if kind.is_file()
+                    && is_note_path(&path)
+                    && exclusions.entry(&path, false).is_none() =>
+            {
                 found.insert(path);
             }
             _ => {}

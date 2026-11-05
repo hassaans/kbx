@@ -9,8 +9,8 @@ use std::process::ExitCode;
 
 use clap::ValueEnum;
 use kbx_core::{
-    Graph, IndexOptions, IndexState, JudgeConfig, Ontology, Project, Search as SearchBackend,
-    index_state, index_vault,
+    Exclusions, Graph, IndexOptions, IndexState, JudgeConfig, Ontology, Project,
+    Search as SearchBackend, excluded_notes, index_state, index_vault,
 };
 use kbx_gen::{
     Budget, Evaluation, QmdSearch, Run, Scope, Search, SearchCache, estimate_tokens, evaluate,
@@ -78,6 +78,10 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         IndexState::Stale => warn!("the index is out of date; run `kbx index`"),
         IndexState::Current => {}
     }
+    let exclusions = project.exclusions()?;
+    if !read_only {
+        forget_excluded(&project, &mut graph, &yaml, &exclusions)?;
+    }
     if let Some(id) = &options.note {
         crate::find_node(&graph, id)?;
     }
@@ -117,7 +121,15 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     if options.dry_run {
         println!("would store {} candidates", run.candidates.len());
         print_counts(&run);
-        print_batches(options.judge, &project, &graph, &run, &context, size)?;
+        print_batches(
+            options.judge,
+            &project,
+            &graph,
+            &exclusions,
+            &run,
+            &context,
+            size,
+        )?;
         if options.stage {
             println!("would stage up to {} proposals", run.candidates.len());
         }
@@ -133,12 +145,45 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
             budget_usd: options.budget_usd,
             spent_usd: 0.0,
         };
-        judge(options.judge, &project, &graph, &run, &context, plan)?;
+        judge(
+            options.judge,
+            &project,
+            &graph,
+            &exclusions,
+            &run,
+            &context,
+            plan,
+        )?;
         if options.stage {
             return stage(&project, &mut graph, &yaml, &run);
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Takes notes that were excluded after they were indexed out of the graph,
+/// before anything reads it: the generators, and the search index built from it.
+fn forget_excluded(
+    project: &Project,
+    graph: &mut Graph,
+    yaml: &str,
+    exclusions: &Exclusions,
+) -> Result<(), Box<dyn Error>> {
+    let excluded = excluded_notes(graph, exclusions)?;
+    if !excluded.is_empty() {
+        eprintln!(
+            "note: {} notes are now excluded; re-indexing",
+            excluded.len()
+        );
+        index_vault(
+            graph,
+            &project.vault,
+            yaml,
+            exclusions,
+            &IndexOptions::default(),
+        )?;
+    }
+    Ok(())
 }
 
 /// QMD, with what it found kept in the search cache where that can be trusted.
@@ -148,7 +193,7 @@ fn qmd_backend(
     searching: bool,
     read_only: bool,
 ) -> Result<Box<dyn Search>, Box<dyn Error>> {
-    let roots = project.config.qmd.searched();
+    let roots = project.searched(&project.exclusions()?);
     let usable = searching && qmd::program(project).is_file() && !roots.is_empty();
     let status = usable.then(|| qmd::status(project)).flatten();
     let mut cache = status
@@ -256,7 +301,8 @@ fn stage(
                 .collect(),
             ..IndexOptions::default()
         };
-        index_vault(graph, &project.vault, yaml, &options)?;
+        let exclusions = project.exclusions()?;
+        index_vault(graph, &project.vault, yaml, &exclusions, &options)?;
     }
     Ok(match report.refused.is_empty() {
         true => ExitCode::SUCCESS,
@@ -301,6 +347,7 @@ fn judge(
     choice: Judge,
     project: &Project,
     graph: &Graph,
+    exclusions: &Exclusions,
     run: &Run,
     context: &JudgeContext,
     plan: Plan,
@@ -318,6 +365,7 @@ fn judge(
             let routes = route(
                 graph,
                 &project.vault,
+                exclusions,
                 &run.candidates,
                 &config.overrides,
                 general,
@@ -460,6 +508,7 @@ fn print_batches(
     choice: Judge,
     project: &Project,
     graph: &Graph,
+    exclusions: &Exclusions,
     run: &Run,
     context: &JudgeContext,
     size: usize,
@@ -470,6 +519,7 @@ fn print_batches(
             let found = views(
                 graph,
                 &project.vault,
+                exclusions,
                 &run.candidates,
                 &config.overrides,
                 judge.id(),

@@ -530,6 +530,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     let context = JudgeContext::new(ontology, &yaml);
     let proposals: Vec<Proposal> = labels.pairs.iter().map(proposal).collect();
     let overrides = &project.config.judge.overrides;
+    let exclusions = project.exclusions()?;
     let mut entries = Vec::new();
     let mut spent = 0.0;
 
@@ -537,7 +538,21 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         .enable_all()
         .build()?;
     for judge in judges {
-        let found = views(&graph, &project.vault, &proposals, overrides, judge.id())?;
+        let vault = &project.vault;
+        let found = views(
+            &graph,
+            vault,
+            &exclusions,
+            &proposals,
+            overrides,
+            judge.id(),
+        )?;
+        if found.excluded > 0 {
+            eprintln!(
+                "note: {} labelled pairs have an excluded note, so no judge sees them",
+                found.excluded
+            );
+        }
         if found.unreadable > 0 {
             eprintln!(
                 "warning: {} labelled pairs have a note that isn't in this vault",
@@ -723,11 +738,12 @@ pub fn prepare(options: Preparing) -> Result<ExitCode, Box<dyn Error>> {
     let project = Project::discover(&env::current_dir()?)?;
     let (yaml, ontology) = read_ontology(&project)?;
     let graph = open_index(&project, &yaml)?;
+    let exclusions = project.exclusions()?;
     let search: Box<dyn Search> = match project.config.backend() {
         SearchBackend::Qmd => Box::new(QmdSearch::new(
             qmd::program(&project),
             project.qmd_index(),
-            project.config.qmd.searched(),
+            project.searched(&exclusions),
             &graph,
         )?),
         SearchBackend::Builtin => builtin::backend(&project, &graph, true, true)?,
@@ -756,12 +772,21 @@ pub fn prepare(options: Preparing) -> Result<ExitCode, Box<dyn Error>> {
     // to anything else keeps it from both.
     let overrides = &project.config.judge.overrides;
     let vault = project.vault.as_path();
-    let local = views(&graph, vault, &run.candidates, overrides, JudgeId::Ollama)?;
+    let candidates = &run.candidates;
+    let local = views(
+        &graph,
+        vault,
+        &exclusions,
+        candidates,
+        overrides,
+        JudgeId::Ollama,
+    )?;
     let local: HashSet<String> = local.ready.into_iter().map(|view| view.cid).collect();
     let cloud = views(
         &graph,
         vault,
-        &run.candidates,
+        &exclusions,
+        candidates,
         overrides,
         JudgeId::ClaudeCli,
     )?;

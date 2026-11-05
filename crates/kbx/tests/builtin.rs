@@ -292,3 +292,39 @@ fn init_refuses_to_contradict_a_vaults_backend() {
     vault.ok(&["init", "--search", "builtin"]);
     vault.ok(&["init"]);
 }
+
+#[test]
+fn a_folder_excluded_later_leaves_the_search_index_at_the_next_suggest() {
+    let vault = vault(FakePath::empty());
+    let word = "xylophonewatermelon";
+    let id = common::id(90);
+    vault.write(
+        "private/note.md",
+        &format!("---\nid: {id}\ntype: Concept\ntitle: Private\n---\n\n{word}\n"),
+    );
+    vault.ok(&["index"]);
+    assert!(with_model(&vault, &KNN).status.success());
+    let terms = |vault: &Fixture| -> i64 {
+        let connection = Connection::open(vault.root().join(INDEX)).unwrap();
+        let query = "SELECT count(*) FROM terms WHERE terms MATCH ?";
+        connection
+            .query_row(query, [word], |row| row.get(0))
+            .unwrap()
+    };
+    assert_eq!(terms(&vault), 1);
+
+    let file = vault.root().join("kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(
+        &file,
+        format!(
+            "exclude = [\"private\"]\n{}",
+            text.replacen("exclude =", "# exclude =", 1)
+        ),
+    )
+    .unwrap();
+    let output = with_model(&vault, &KNN);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(terms(&vault), 0);
+}

@@ -503,7 +503,9 @@ mod tests {
         let project = Project::discover(dir.path()).unwrap();
         let yaml = fs::read_to_string(&project.ontology).unwrap();
         let mut graph = Graph::open(&project.graph).unwrap();
-        index_vault(&mut graph, &project.vault, &yaml, &IndexOptions::default()).unwrap();
+        let exclusions = project.exclusions().unwrap();
+        let options = IndexOptions::default();
+        index_vault(&mut graph, &project.vault, &yaml, &exclusions, &options).unwrap();
         drop(graph);
         let session = Session::of(project).unwrap();
         let names = ["common_neighbors".to_string()];

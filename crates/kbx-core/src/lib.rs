@@ -13,6 +13,7 @@
 //! never touches a model and never prints.
 
 mod config;
+mod exclude;
 mod export;
 mod graph;
 mod index;
@@ -30,13 +31,14 @@ pub use config::{
     CONFIG_FILE, Config, ConfigError, EXAMPLE_ONTOLOGY, InitReport, JudgeBackend, JudgeConfig,
     Project, Qmd, Rates, Search, WriteConfig, init,
 };
+pub use exclude::{DEFAULT_EXCLUDE, ExcludeError, Excluded, Exclusions};
 pub use export::{
     DEFAULT_NAMESPACE, EdgeRow, ImportError, NOTE_NAMESPACE, Review, parse_reviews, turtle,
 };
 pub use graph::{Graph, GraphStats, Neighbor, Node};
 pub use index::{
-    IndexError, IndexOptions, IndexReport, IndexState, MENTIONS, index_state, index_vault,
-    is_note_path,
+    IndexError, IndexOptions, IndexReport, IndexState, MENTIONS, excluded_notes, index_state,
+    index_vault, is_note_path,
 };
 pub use link::Link;
 pub use lint::lint_vault;

@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use toml::Value;
 use toml_edit::{Array, DocumentMut, InlineTable, value};
 
+use crate::exclude::{DEFAULT_EXCLUDE, ExcludeError, Excluded, Exclusions};
 use crate::graph::Graph;
 use crate::ontology::{Ontology, OntologyError};
 use crate::path::canonical_path;
@@ -34,6 +35,11 @@ pub struct Config {
     /// The top-level folders that are ACL scopes.
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// What kbx leaves alone, as `.gitignore` patterns from the vault root.
+    /// Use [`exclude`](Config::exclude), which says what a file without this
+    /// key means.
+    #[serde(default)]
+    pub exclude: Option<Vec<String>>,
     /// The ontology file. A relative path starts at the vault root.
     pub ontology: String,
     /// The search backend. Use [`backend`](Config::backend), which says what
@@ -52,6 +58,11 @@ pub struct Config {
 }
 
 impl Config {
+    /// What kbx leaves alone. A file from before `exclude` gets the defaults.
+    pub fn exclude(&self) -> Vec<String> {
+        self.exclude.clone().unwrap_or_else(default_exclude)
+    }
+
     /// The search backend in use. `kbx init` always writes the key, so a file
     /// without one was written by hand: if it lists qmd collections it was set
     /// up for QMD, and stays there. Anything else gets the built-in engine.
@@ -62,6 +73,10 @@ impl Config {
             false => Search::Builtin,
         })
     }
+}
+
+fn default_exclude() -> Vec<String> {
+    DEFAULT_EXCLUDE.map(String::from).to_vec()
 }
 
 /// The `[write]` table of `kbx.toml`.
@@ -277,12 +292,14 @@ pub struct Project {
 }
 
 /// What [`init`] created, as opposed to found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitReport {
     /// `kbx.toml` was written.
     pub config: bool,
     /// The example ontology was written.
     pub ontology: bool,
+    /// The folders that a new `kbx.toml` didn't make scopes of, and why.
+    pub skipped: Vec<(String, Excluded)>,
 }
 
 /// Why a project could not be set up or loaded.
@@ -309,6 +326,9 @@ pub enum ConfigError {
     /// The database could not be created.
     #[error("{0}: {1}")]
     Database(PathBuf, rusqlite::Error),
+    /// `exclude` could not be read.
+    #[error(transparent)]
+    Exclude(#[from] ExcludeError),
 }
 
 impl Project {
@@ -349,15 +369,38 @@ impl Project {
         })
     }
 
-    /// The QMD settings once every scope has a collection.
-    pub fn planned_qmd(&self) -> Qmd {
-        self.config.qmd.with_scopes(&self.config.scopes)
+    /// What this vault leaves alone, as of now.
+    pub fn exclusions(&self) -> Result<Exclusions, ExcludeError> {
+        Exclusions::new(&self.vault, &self.config.exclude())
+    }
+
+    /// The QMD settings once every scope has a collection and nothing excluded
+    /// has one.
+    pub fn planned_qmd(&self) -> Result<Qmd, ConfigError> {
+        let exclusions = self.exclusions()?;
+        let allowed = |folder: &String| exclusions.why(folder, true).is_none();
+        let mut scopes = self.config.scopes.clone();
+        scopes.retain(allowed);
+        let mut qmd = self.config.qmd.clone();
+        let roots = &self.config.qmd.roots;
+        qmd.collections
+            .retain(|name| roots.get(name).is_none_or(allowed));
+        qmd.roots.retain(|_, root| allowed(root));
+        Ok(qmd.with_scopes(&scopes))
+    }
+
+    /// The collections `kbx suggest` searches: [`Qmd::searched`], without any
+    /// that `exclusions` has since ruled out.
+    pub fn searched(&self, exclusions: &Exclusions) -> BTreeMap<String, String> {
+        let mut roots = self.config.qmd.searched();
+        roots.retain(|_, root| exclusions.why(root, true).is_none());
+        roots
     }
 
     /// Records [`planned_qmd`](Project::planned_qmd) in `kbx.toml`, keeping
     /// the rest of the file as it is. Returns whether anything changed.
     pub fn record_collections(&mut self) -> Result<bool, ConfigError> {
-        let planned = self.planned_qmd();
+        let planned = self.planned_qmd()?;
         if planned == self.config.qmd {
             return Ok(false);
         }
@@ -415,10 +458,20 @@ pub fn init(
     let mut report = InitReport {
         config: false,
         ontology: false,
+        skipped: Vec::new(),
     };
     if !exists {
         let name = ontology.map_or(DEFAULT_ONTOLOGY.into(), |path| path.to_string_lossy());
-        let text = config_text(&name, &top_level_folders(dir)?, search);
+        let exclude = default_exclude();
+        let exclusions = Exclusions::new(dir, &exclude)?;
+        let mut scopes = Vec::new();
+        for folder in top_level_folders(dir)? {
+            match exclusions.why(&folder, true) {
+                Some(why) => report.skipped.push((folder, why)),
+                None => scopes.push(folder),
+            }
+        }
+        let text = config_text(&name, &scopes, &exclude, search);
         fs::write(&config_path, text).map_err(|e| ConfigError::Io(config_path.clone(), e))?;
         report.config = true;
 
@@ -436,11 +489,12 @@ pub fn init(
 
 /// The §10 layout. Written by hand to keep its order and spacing, which
 /// `toml` serialization would lose.
-fn config_text(ontology: &str, scopes: &[String], search: Search) -> String {
+fn config_text(ontology: &str, scopes: &[String], exclude: &[String], search: Search) -> String {
     let qmd = Qmd::default().with_scopes(scopes);
     let collections = name_list(&qmd.collections);
     let roots = root_table(&qmd.roots);
     let scopes = Value::from(scopes.to_vec());
+    let exclude = Value::from(exclude.to_vec());
     let ontology = Value::from(ontology);
     let search = match search {
         Search::Qmd => "qmd",
@@ -449,6 +503,9 @@ fn config_text(ontology: &str, scopes: &[String], search: Search) -> String {
     format!(
         r#"vault = "."
 scopes = {scopes}  # top-level folders = ACL scopes
+# Never read, indexed or shown to a judge, like .gitignore and hidden folders.
+# .gitignore patterns from the vault root; see docs/excluding.md.
+exclude = {exclude}
 ontology = {ontology}
 search = "{search}"  # or "qmd" or "builtin"
 qmd = {{ bin = "qmd", collections = {collections}, roots = {roots} }}
@@ -468,14 +525,14 @@ llama_server = {{ host = "http://127.0.0.1:8080" }}
     )
 }
 
-/// The folders directly in `dir`, without hidden ones such as `.obsidian`.
+/// The folders directly in `dir`, but for the one kbx made.
 fn top_level_folders(dir: &Path) -> Result<Vec<String>, ConfigError> {
     let entries = fs::read_dir(dir).map_err(|e| ConfigError::Io(dir.into(), e))?;
     let mut folders = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| ConfigError::Io(dir.into(), e))?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if entry.path().is_dir() && !name.starts_with('.') {
+        if entry.path().is_dir() && name != ".kbx" {
             folders.push(name);
         }
     }

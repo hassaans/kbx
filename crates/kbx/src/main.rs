@@ -488,6 +488,9 @@ fn run_init(ontology: Option<PathBuf>, search: Option<Search>) -> Result<ExitCod
     if report.config {
         println!("created kbx.toml");
     }
+    for (folder, why) in &report.skipped {
+        println!("skipped {folder}: {why}");
+    }
     if report.ontology {
         println!("created .kbx/ontology.yaml");
     }
@@ -507,8 +510,8 @@ fn run_init(ontology: Option<PathBuf>, search: Option<Search>) -> Result<ExitCod
     println!("found qmd at {}", qmd::ensure()?.display());
     // The vault works without search, so this doesn't fail the command.
     match qmd::set_up_collections(&mut project) {
-        Ok(created) => {
-            for name in created {
+        Ok(changes) => {
+            for name in changes.missing {
                 println!("created qmd collection {name}");
             }
         }
@@ -529,7 +532,8 @@ fn run_index(options: IndexOptions) -> Result<ExitCode, Box<dyn Error>> {
     let project = Project::discover(&env::current_dir()?)?;
     let ontology = read_ontology(&project)?;
     let mut graph = Graph::open(&project.graph)?;
-    let report = index_vault(&mut graph, &project.vault, &ontology, &options)?;
+    let exclusions = project.exclusions()?;
+    let report = index_vault(&mut graph, &project.vault, &ontology, &exclusions, &options)?;
     print_index_report(&report);
     Ok(ExitCode::SUCCESS)
 }
@@ -562,7 +566,8 @@ fn lint_project(
     paths: &[PathBuf],
 ) -> Result<ExitCode, Box<dyn Error>> {
     let ontology = read_ontology(project)?;
-    let findings = lint_vault(&project.vault, &ontology, paths)?;
+    let exclusions = project.exclusions()?;
+    let findings = lint_vault(&project.vault, &ontology, &exclusions, paths)?;
     let severity = |finding: &Finding| match finding.code.severity() {
         Severity::Warning if strict => Severity::Error,
         severity => severity,

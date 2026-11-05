@@ -83,6 +83,12 @@ search afresh; [docs/embedding-cache.md](docs/embedding-cache.md) has the detail
 Set `qmd.index` to use an index of your own; kbx then searches it but leaves updating
 it to you.
 
+kbx leaves some folders alone, as if they weren't there: hidden ones, what `.gitignore`
+files ignore, and what `exclude` in `kbx.toml` lists, which starts with `node_modules`
+and folders named like secrets such as `credentials`. They aren't scopes, aren't
+indexed, and no judge sees them. `kbx init` says which top-level folders it skipped.
+[docs/excluding.md](docs/excluding.md) has the rule and how to change the list.
+
 Logs go to stderr. Set `KBX_LOG=debug` to see each file that's skipped, and pass
 `--log json` to get one JSON object per line.
 
