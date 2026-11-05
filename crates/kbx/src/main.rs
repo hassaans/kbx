@@ -575,6 +575,10 @@ fn run_index(options: IndexOptions) -> Result<ExitCode, Box<dyn Error>> {
         &options,
     )?;
     print_index_report(&report);
+    print_left_out(&report);
+    if report.stored_nothing() {
+        return Err(stored_nothing(&report).into());
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -589,6 +593,43 @@ fn print_index_report(report: &IndexReport) {
         report.hidden,
         report.inferred
     );
+}
+
+/// Why files stayed out of the index, by cause, with a few paths for each.
+fn print_left_out(report: &IndexReport) {
+    let causes = report.causes();
+    if causes.is_empty() {
+        return;
+    }
+    let total = report.left_out_count();
+    println!("left out {}, by cause:", plural(total, "file"));
+    let width = causes.first().map_or(0, |(_, f)| f.count.to_string().len());
+    for (cause, files) in causes {
+        println!("  {:>width$}  {}: {cause}", files.count, cause.code());
+        for path in &files.examples {
+            println!("    {path}");
+        }
+        let more = files.count - files.examples.len();
+        if more > 0 {
+            println!("    and {more} more");
+        }
+    }
+}
+
+/// The error for a run that left the index with no notes. It goes by what the
+/// run found, because which causes a vault can hit changes with the parser.
+fn stored_nothing(report: &IndexReport) -> String {
+    let found = plural(report.left_out_count(), "markdown file");
+    match report.causes().first() {
+        Some((cause, files)) => format!(
+            "stored no notes from {found}; the most common cause is {} ({}): {cause}. \
+             To fix this, {}",
+            cause.code(),
+            plural(files.count, "file"),
+            cause.fix()
+        ),
+        None => format!("stored no notes from {found}"),
+    }
 }
 
 fn run_lint(

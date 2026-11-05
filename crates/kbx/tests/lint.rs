@@ -248,6 +248,7 @@ fn a_bad_path_is_an_error_not_a_finding() {
 #[test]
 fn anything_the_index_fails_on_is_note_invalid() {
     let vault = Fixture::new();
+    vault.ok(&["index"]);
     vault.write("scratch/list.md", "---\n- a\n---\nNot a mapping.\n");
     vault.write("scratch/unclosed.md", "---\nid: X\n");
     fs::write(vault.root().join("scratch/binary.md"), [0xff, 0xfe, 0x00]).unwrap();

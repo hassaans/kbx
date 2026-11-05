@@ -68,7 +68,7 @@ fn unindexed_vault() -> Fixture {
     vault.write(&note_path(1), "---\nid: [\n---\nNot a note.\n");
     vault.write(&note_path(2), "---\nid: [\n---\nNor here.\n");
     vault.ok(&["init", "--search", "qmd"]);
-    vault.ok(&["index"]);
+    assert!(!vault.kbx(&["index"]).status.success(), "it stored nothing");
     forget_calls(&vault);
     vault
 }

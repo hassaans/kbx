@@ -8,14 +8,15 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use kbx_core::{
-    ConfigError, Graph, IndexState, JudgeConfig, Ontology, Project, Search, index_state,
+    ConfigError, Graph, IndexState, JudgeConfig, Ontology, Project, Search, count_note_files,
+    index_state,
 };
 use kbx_gen::MODEL;
 use kbx_judge::{Availability, JudgeId, backend};
 use sysinfo::System;
 use tokio::runtime;
 
-use crate::qmd;
+use crate::{plural, qmd};
 
 const GIB: f64 = (1u64 << 30) as f64;
 
@@ -151,6 +152,7 @@ fn check_index(project: &Project, ontology: Option<&str>) -> Check {
     match state {
         Some(IndexState::Unbuilt) => (Status::Warn, "not built; run `kbx index`".to_string()),
         Some(IndexState::Stale) => (Status::Warn, format!("{counts}; stale, run `kbx index`")),
+        Some(IndexState::Current) | None if stats.nodes == 0 => empty_index(project, counts),
         Some(IndexState::Current) | None => (Status::Ok, counts),
     }
 }
@@ -236,6 +238,22 @@ fn check_types(project: &Project, yaml: &str) -> Check {
 fn quoted(classes: &[&str]) -> String {
     let quoted: Vec<String> = classes.iter().map(|class| format!("`{class}`")).collect();
     quoted.join(", ")
+}
+
+/// An index with no notes is right only for a vault with no markdown. Excluded
+/// files count, as `kbx index` fails on a vault of nothing else.
+fn empty_index(project: &Project, counts: String) -> Check {
+    match count_note_files(&project.vault) {
+        0 => (Status::Ok, counts),
+        files => {
+            let found = plural(files, "markdown file");
+            let why = "run `kbx index` to see why nothing was stored";
+            (
+                Status::Warn,
+                format!("{counts}; the vault has {found}, {why}"),
+            )
+        }
+    }
 }
 
 /// A row per backend, whatever is chosen and whether or not `judge.order` has

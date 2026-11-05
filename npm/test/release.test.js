@@ -430,7 +430,7 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
           echo "\${FAKE_KNN:-5} candidates"
           echo "  qmd_knn \${FAKE_KNN:-5}"
           ;;
-        index) echo "\${FAKE_INDEXED:-indexed 25, 0 unchanged, removed 0, 2 skipped, 2 failed, 2 hidden links}" ;;
+        index) echo "\${FAKE_INDEXED:-indexed 25, 0 unchanged, removed 0, 1 skipped, 2 failed, 2 hidden links, 0 inferred}"; echo "left out 3 files, by cause:" ;;
         lint)
           echo "\${FAKE_LINT:-12 errors, 1 warning}"
           exit "\${FAKE_LINT_STATUS:-1}"

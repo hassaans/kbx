@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 
-use common::{Fixture, id, stderr, stdout};
+use common::{FakePath, Fixture, id, stderr, stdout};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 
@@ -356,4 +356,37 @@ fn a_failed_kbx_run_leaves_stdout_clean() {
     let vault = indexed();
     let output = vault.kbx(&["suggest", "--note", "nope"]);
     assert_eq!(stdout(&output), "");
+}
+
+/// A vault whose only note fails to index, so its index is built and empty.
+fn empty_graph() -> Fixture {
+    let vault = Fixture::bare(FakePath::with_qmd());
+    vault.ok(&["init", "--search", "qmd"]);
+    vault.write("a.md", "---\nid: [\n---\n");
+    assert!(!vault.kbx(&["index"]).status.success());
+    vault
+}
+
+#[test]
+fn an_empty_graph_says_so_and_what_to_do_instead_of_0_candidates() {
+    let vault = empty_graph();
+    for args in [
+        vec!["suggest", "--judge", "none"],
+        vec!["suggest", "--judge", "none", "--dry-run"],
+        vec!["suggest", "--judge", "none", "--generators", "adamic_adar"],
+        vec!["suggest", "--eval"],
+    ] {
+        let said = vault.ok(&args);
+        assert!(said.contains("the graph is empty"), "{args:?}: {said}");
+        assert!(said.contains("kbx index"), "{args:?}: {said}");
+        assert!(!said.contains("0 candidates"), "{args:?}: {said}");
+    }
+}
+
+#[test]
+fn a_graph_with_notes_never_says_it_is_empty() {
+    let vault = indexed();
+    with_fake_qmd(&vault);
+    let said = ok_with_every_generator(&vault, &["suggest", "--judge", "none"]);
+    assert!(!said.contains("the graph is empty"), "{said}");
 }

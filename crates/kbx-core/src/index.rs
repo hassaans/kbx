@@ -13,7 +13,7 @@ use tracing::{debug, warn};
 use crate::exclude::{ExcludeError, Exclusions};
 use crate::graph::Graph;
 use crate::infer::TypeDefaults;
-use crate::note::{Note, parse_note_with, split_frontmatter};
+use crate::note::{Cause, Note, parse_note_with, split_frontmatter};
 use crate::ontology::{Ontology, OntologyError};
 use crate::path::{canonical_path, plain_path};
 use crate::vault::Resolver;
@@ -32,6 +32,9 @@ const DERIVED: &str = "derived";
 
 /// The `meta` key holding [`defaults_hash`] of the last run.
 const TYPE_DEFAULTS: &str = "type_defaults_hash";
+
+/// How many paths a run keeps for each cause.
+const EXAMPLES: usize = 3;
 
 /// What to index.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -67,6 +70,50 @@ pub struct IndexReport {
     pub hidden: usize,
     /// The paths behind `indexed` and `removed`, from the vault root.
     pub changed: BTreeSet<String>,
+    /// The notes in the whole index once the run ended.
+    pub notes: usize,
+    /// What's behind `skipped` and `failed`, and what `exclude` or `.gitignore`
+    /// kept out when nothing else explains a whole-vault run with no notes.
+    pub left_out: BTreeMap<Cause, LeftOut>,
+}
+
+impl IndexReport {
+    /// Files kept out of the index, whatever the cause.
+    pub fn left_out_count(&self) -> usize {
+        self.left_out.values().map(|files| files.count).sum()
+    }
+
+    fn leave_out(&mut self, path: &str, cause: Cause) {
+        let files = self.left_out.entry(cause).or_default();
+        files.count += 1;
+        if files.examples.len() < EXAMPLES {
+            files.examples.push(path.to_string());
+        }
+    }
+
+    /// What was left out, most common first. Equal counts keep the order of
+    /// [`Cause`], failures before skips, so the same vault always reads the same.
+    pub fn causes(&self) -> Vec<(&Cause, &LeftOut)> {
+        let mut causes: Vec<_> = self.left_out.iter().collect();
+        causes.sort_by_key(|(_, files)| std::cmp::Reverse(files.count));
+        causes
+    }
+
+    /// Markdown was found and the index holds no note. This looks at the whole
+    /// index, not the run: `kbx index bad.md` in a vault with notes in it
+    /// stored nothing, and the graph is still fine.
+    pub fn stored_nothing(&self) -> bool {
+        self.notes == 0 && self.left_out_count() > 0
+    }
+}
+
+/// The files a run left out for one cause.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LeftOut {
+    /// How many.
+    pub count: usize,
+    /// The first few, from the vault root, in path order.
+    pub examples: Vec<String>,
 }
 
 /// Why a run stopped. One bad note never does this: it counts as `failed`.
@@ -227,8 +274,27 @@ pub fn index_vault(
         row.get(0)
     })?;
     report.hidden = hidden as usize;
+    let notes: i64 = tx.query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))?;
+    report.notes = notes as usize;
     tx.commit()?;
+    // Excluded files are no news in a vault with notes, and the walk is only
+    // worth its cost here. A real failure is what to fix, however many are out.
+    if whole_vault && report.notes == 0 && report.left_out.is_empty() {
+        let mut files = Vec::new();
+        visible_notes(vault, "", &mut files);
+        files.sort();
+        for path in files {
+            if let Some(why) = exclusions.why(&path, false) {
+                report.leave_out(&path, Cause::Excluded(why.to_string()));
+            }
+        }
+    }
     Ok(report)
+}
+
+/// The cause of a file that never reached the parser.
+fn unreadable() -> Cause {
+    Cause::Invalid("the file can't be read as UTF-8 text".to_string())
 }
 
 /// A file or folder the run covers.
@@ -339,6 +405,35 @@ pub(crate) fn walk(
     }
 }
 
+/// How many markdown files `vault` holds outside hidden folders, whether or not
+/// `exclude` and `.gitignore` let the index read them.
+pub fn count_note_files(vault: &Path) -> usize {
+    let mut found = Vec::new();
+    visible_notes(vault, "", &mut found);
+    found.len()
+}
+
+/// Collects what [`walk`] would with nothing excluded but hidden paths.
+fn visible_notes(vault: &Path, folder: &str, found: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(vault.join(folder)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = match folder {
+            "" => name.clone(),
+            _ => format!("{folder}/{name}"),
+        };
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() && !name.starts_with('.') => {
+                visible_notes(vault, &path, found);
+            }
+            Ok(kind) if kind.is_file() && is_note_path(&path) => found.push(path),
+            _ => {}
+        }
+    }
+}
+
 /// Whether a path from the vault root, with `/` separators, is one the index
 /// reads: a markdown file outside hidden folders.
 pub fn is_note_path(path: &str) -> bool {
@@ -411,7 +506,7 @@ impl<'a> Run<'a> {
         let full = vault.join(path);
         let bytes = match fs::read(&full) {
             Ok(bytes) => bytes,
-            Err(error) => return self.fail(path, error),
+            Err(error) => return self.fail(path, error, unreadable()),
         };
         let content_hash = sha256(&bytes);
         let known = self.by_path.get(path);
@@ -421,7 +516,7 @@ impl<'a> Run<'a> {
         }
         let src = match std::str::from_utf8(&bytes) {
             Ok(src) => src,
-            Err(error) => return self.fail(path, error),
+            Err(error) => return self.fail(path, error, unreadable()),
         };
         match parse_note_with(path, src, self.defaults) {
             Ok(note) => {
@@ -429,14 +524,18 @@ impl<'a> Run<'a> {
                 let mtime = mtime.map_or(0, unix_seconds);
                 self.write_note(vault, &note, src, &content_hash, mtime)
             }
-            Err(error) => self.fail(path, error),
+            Err(error) => {
+                let cause = error.cause();
+                self.fail(path, error, cause)
+            }
         }
     }
 
     /// A note that can't be read has no rows, as if its file weren't there.
-    fn fail(&mut self, path: &str, error: impl Display) -> rusqlite::Result<()> {
+    fn fail(&mut self, path: &str, error: impl Display, cause: Cause) -> rusqlite::Result<()> {
         warn!("{path}: {error}");
         self.report.failed += 1;
+        self.report.leave_out(path, cause);
         self.forget(path)
     }
 
@@ -483,6 +582,7 @@ impl<'a> Run<'a> {
                     note.id
                 );
                 self.report.skipped += 1;
+                self.report.leave_out(&path, Cause::DuplicateId);
                 return Ok(());
             }
             if on_disk {

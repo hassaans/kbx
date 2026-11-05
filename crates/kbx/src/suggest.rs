@@ -83,6 +83,15 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     if !read_only {
         forget_excluded(&project, &mut graph, &yaml, &exclusions)?;
     }
+    // After the line above, which can be what empties the graph. The run goes
+    // on, as an empty graph still has to empty the search index.
+    let empty = graph.stats()?.nodes == 0;
+    if empty {
+        println!(
+            "the graph is empty, so there is nothing to suggest; \
+             run `kbx index`, which says why notes were left out"
+        );
+    }
     if let Some(id) = &options.note {
         crate::find_node(&graph, id)?;
     }
@@ -134,7 +143,9 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     }
     let context = JudgeContext::new(ontology, &yaml);
     if options.dry_run {
-        println!("would store {} candidates", run.candidates.len());
+        if !empty {
+            println!("would store {} candidates", run.candidates.len());
+        }
         print_counts(&run);
         print_batches(
             options.judge,
@@ -153,7 +164,9 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
             forget_sections(&graph)?;
         }
         store(&graph, &run)?;
-        println!("{} candidates", run.candidates.len());
+        if !empty {
+            println!("{} candidates", run.candidates.len());
+        }
         print_counts(&run);
         let plan = Plan {
             size,

@@ -122,6 +122,49 @@ fn an_unbuilt_index_is_a_warning() {
 }
 
 #[test]
+fn an_index_with_no_notes_in_a_vault_with_markdown_is_a_warning() {
+    let vault = Fixture::bare(FakePath::with_qmd());
+    vault.ok(&["init", "--search", "qmd"]);
+    vault.write("a.md", "---\nid: [\n---\n");
+    vault.write("b/c.md", "---\nid: [\n---\n");
+    assert!(!vault.kbx(&["index"]).status.success());
+
+    let output = vault.kbx(&["doctor"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert_eq!(status(&text, "index"), "warn", "{text}");
+    assert!(row(&text, "index").contains("0 notes"), "{text}");
+    assert!(row(&text, "index").contains("2 markdown files"), "{text}");
+    assert!(row(&text, "index").contains("kbx index"), "{text}");
+}
+
+#[test]
+fn an_empty_index_of_an_empty_vault_is_fine() {
+    let vault = Fixture::bare(FakePath::with_qmd());
+    vault.ok(&["init", "--search", "qmd"]);
+    vault.ok(&["index"]);
+    let output = vault.ok(&["doctor"]);
+    assert_eq!(status(&output, "index"), "ok", "{output}");
+}
+
+#[test]
+fn a_vault_of_only_excluded_markdown_is_a_warning_as_index_fails_on_it() {
+    let vault = Fixture::bare(FakePath::with_qmd());
+    vault.ok(&["init", "--search", "qmd"]);
+    vault.write("node_modules/pkg/README.md", "Plain text.\n");
+    assert!(!vault.kbx(&["index"]).status.success());
+
+    let output = vault.ok(&["doctor"]);
+
+    assert_eq!(status(&output, "index"), "warn", "{output}");
+    assert!(
+        row(&output, "index").contains("1 markdown file"),
+        "{output}"
+    );
+}
+
+#[test]
 fn an_index_built_from_another_ontology_is_a_warning() {
     let vault = Fixture::new();
     vault.ok(&["index"]);

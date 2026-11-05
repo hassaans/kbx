@@ -11,7 +11,7 @@ against the ontology and answers questions about it:
 ```sh
 kbx init                   # create .kbx/, kbx.toml and the example ontology
 kbx init --in-kbx          # the same with .kbx/kbx.toml, leaving the vault's root alone
-kbx index                  # compile changed notes into .kbx/graph.sqlite
+kbx index                  # compile changed notes into .kbx/graph.sqlite; says why any were left out, and exits 1 if the index ends up with no notes
 kbx index --full           # rebuild, ignoring the stored hashes
 kbx index notes/a.md       # limit the run to some files and folders
 kbx lint                   # check the vault; exits 1 if there are errors

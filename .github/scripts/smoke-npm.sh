@@ -93,8 +93,8 @@ no_qmd 'kbx init'
 
 run index 'kbx index' index
 [[ $status == 0 ]] || fail "kbx index exited $status"
-expected='indexed 25, 0 unchanged, removed 0, 2 skipped, 2 failed, 2 hidden links'
-[[ $(cat "$home/index.out") == "$expected" ]] || fail "kbx index printed $(cat "$home/index.out"), not $expected"
+expected='indexed 25, 0 unchanged, removed 0, 1 skipped, 2 failed, 2 hidden links, 0 inferred'
+[[ $(head -n 1 "$home/index.out") == "$expected" ]] || fail "kbx index printed $(head -n 1 "$home/index.out"), not $expected"
 
 # The fixture holds one of every finding on purpose, so lint has to fail on it.
 run lint 'kbx lint' lint

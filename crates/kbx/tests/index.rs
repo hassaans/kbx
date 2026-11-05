@@ -1024,7 +1024,8 @@ fn a_file_without_frontmatter_is_a_note_and_counts_as_inferred() {
     let vault = Vault::fixture();
     vault.write("scratch/plain.md", "Just text.\n");
     let out = vault.ok(&["index"]);
-    assert!(out.ends_with(", 1 inferred\n"), "{out}");
+    let counts = out.lines().next().unwrap();
+    assert!(counts.ends_with(", 1 inferred"), "{out}");
     assert_eq!(vault.count("files"), 26);
 }
 
@@ -1066,6 +1067,276 @@ fn a_malformed_note_warns_and_does_not_stop_the_run() {
         "{log}"
     );
     assert_eq!(vault.count("files"), 24, "files are the source of truth");
+}
+
+// --- what a run reports -----------------------------------------------------
+
+/// Frontmatter that no note can be read from.
+const BAD_YAML: &str = "---\nid: [unclosed\n---\n";
+const NESTED_TAGS: &str = "---\ntags:\n  deep: true\n---\n";
+
+/// The lines of the summary, from its heading on.
+fn summary(output: &Output) -> Vec<String> {
+    let text = String::from_utf8_lossy(&output.stdout);
+    let lines = text
+        .lines()
+        .skip_while(|line| !line.starts_with("left out"));
+    lines.map(str::to_string).collect()
+}
+
+fn last_line(output: &Output) -> String {
+    let log = String::from_utf8_lossy(&output.stderr);
+    log.lines().last().unwrap_or_default().to_string()
+}
+
+/// A vault where every file fails: five with bad YAML, two with a nested map,
+/// one never closing its frontmatter and one that isn't a mapping.
+fn nothing_stores() -> Vault {
+    let vault = Vault::initialised();
+    for n in 1..=5 {
+        vault.write(&format!("a/{n}.md"), BAD_YAML);
+    }
+    for n in 6..=7 {
+        vault.write(&format!("b/{n}.md"), NESTED_TAGS);
+    }
+    vault.write("c/open.md", "---\nid: X\n");
+    vault.write("d/list.md", "---\n- a\n---\n");
+    vault
+}
+
+#[test]
+fn a_run_that_stores_nothing_fails_and_names_the_most_common_cause() {
+    let vault = nothing_stores();
+    let output = vault.kbx(&["index"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(vault.count("files"), 0);
+    let error = last_line(&output);
+    assert!(error.starts_with("error: "), "{error}");
+    assert!(error.contains("9 markdown files"), "{error}");
+    assert!(error.contains("note.invalid"), "{error}");
+    assert!(error.contains("5 files"), "{error}");
+    assert!(error.contains("not valid YAML"), "{error}");
+    assert!(error.contains("kbx lint"), "{error}");
+}
+
+#[test]
+fn the_error_names_whatever_cause_the_vault_shows() {
+    let vault = Vault::initialised();
+    vault.write("a.md", NESTED_TAGS);
+    vault.write("b.md", NESTED_TAGS);
+    vault.write("c.md", BAD_YAML);
+
+    let output = vault.kbx(&["index"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let error = last_line(&output);
+    assert!(error.contains("nested map"), "{error}");
+    assert!(error.contains("`tags`"), "{error}");
+    assert!(!error.contains("note.invalid"), "{error}");
+}
+
+#[test]
+fn the_summary_groups_what_was_left_out_most_common_first() {
+    let vault = nothing_stores();
+    let output = vault.kbx(&["index"]);
+    let lines = summary(&output);
+    let text = lines.join("\n");
+
+    assert_eq!(lines[0], "left out 9 files, by cause:", "{text}");
+    let causes: Vec<&String> = lines[1..]
+        .iter()
+        .filter(|line| !line.starts_with("    "))
+        .collect();
+    assert_eq!(causes.len(), 4, "{text}");
+    assert!(causes[0].contains('5'), "{text}");
+    assert!(causes[0].contains("note.invalid"), "{text}");
+    assert!(causes[0].contains("not valid YAML"), "{text}");
+    assert!(
+        causes[1].contains('2') && causes[1].contains("nested map"),
+        "{text}"
+    );
+    assert!(causes[2].contains('1'), "{text}");
+    assert!(causes[2].contains("no closing"), "{text}");
+    assert!(causes[3].contains('1'), "{text}");
+    assert!(causes[3].contains("not a mapping"), "{text}");
+
+    assert!(text.contains("    c/open.md"), "{text}");
+    assert!(text.contains("    d/list.md"), "{text}");
+}
+
+#[test]
+fn the_summary_shows_three_example_paths_for_a_cause() {
+    let vault = nothing_stores();
+    let lines = summary(&vault.kbx(&["index"]));
+    let text = lines.join("\n");
+    for shown in ["a/1.md", "a/2.md", "a/3.md"] {
+        assert!(text.contains(&format!("    {shown}")), "{text}");
+    }
+    assert!(!text.contains("a/4.md"), "{text}");
+    assert!(text.contains("    and 2 more"), "{text}");
+}
+
+#[test]
+fn a_run_that_stores_some_exits_0_and_still_prints_the_summary() {
+    let vault = Vault::initialised();
+    for n in 1..=2 {
+        vault.write(&format!("good/{n}.md"), &note(n, "Good", "", "x"));
+    }
+    for n in 3..=4 {
+        vault.write(&format!("bad/{n}.md"), BAD_YAML);
+    }
+
+    let output = vault.kbx(&["index"]);
+
+    assert!(output.status.success());
+    assert_eq!(vault.count("files"), 2);
+    let text = summary(&output).join("\n");
+    assert!(text.starts_with("left out 2 files, by cause:"), "{text}");
+    assert!(text.contains("note.invalid"), "{text}");
+    assert!(text.contains("    bad/3.md"), "{text}");
+}
+
+#[test]
+fn notes_stored_by_an_earlier_run_count_as_stored() {
+    let vault = Vault::initialised();
+    vault.write("good.md", &note(1, "Good", "", "x"));
+    vault.write("bad.md", BAD_YAML);
+    vault.ok(&["index"]);
+
+    let output = vault.kbx(&["index"]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("indexed 0, 1 unchanged"), "{stdout}");
+    assert!(summary(&output)[0].contains("left out 1 file,"), "{stdout}");
+}
+
+// `kbx index {file} && kbx lint {file}` is the Obsidian recipe: the lint has to
+// run on the note that's broken.
+#[test]
+fn one_bad_note_named_in_a_vault_with_notes_exits_0() {
+    let vault = Vault::initialised();
+    vault.write("good.md", &note(1, "Good", "", "x"));
+    vault.ok(&["index"]);
+    vault.write("bad.md", BAD_YAML);
+
+    let output = vault.kbx(&["index", "bad.md"]);
+
+    assert!(output.status.success());
+    assert!(summary(&output)[0].contains("left out 1 file,"));
+}
+
+#[test]
+fn notes_that_all_stop_parsing_fail_the_run_that_removes_them() {
+    let vault = Vault::initialised();
+    vault.write("a.md", &note(1, "One", "", "x"));
+    vault.ok(&["index"]);
+    vault.write("a.md", BAD_YAML);
+
+    let output = vault.kbx(&["index"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("removed 1"), "{stdout}");
+}
+
+#[test]
+fn a_duplicate_id_is_grouped_under_its_lint_code() {
+    let vault = Vault::initialised();
+    vault.write("a.md", &note(1, "One", "", "x"));
+    vault.write("b.md", &note(1, "Two", "", "x"));
+
+    let output = vault.kbx(&["index"]);
+
+    assert!(output.status.success());
+    let text = summary(&output).join("\n");
+    assert!(text.contains("id.duplicate"), "{text}");
+    assert!(text.contains("    b.md"), "{text}");
+}
+
+#[test]
+fn a_vault_with_no_markdown_and_a_clean_vault_print_no_summary() {
+    let vault = Vault::initialised();
+    let output = vault.kbx(&["index"]);
+    assert!(
+        output.status.success(),
+        "nothing was found, so nothing failed"
+    );
+    assert_eq!(summary(&output), Vec::<String>::new());
+
+    vault.write("a.md", &note(1, "One", "", "x"));
+    let output = vault.kbx(&["index"]);
+    assert!(output.status.success());
+    assert_eq!(summary(&output), Vec::<String>::new());
+}
+
+#[test]
+fn a_vault_of_plain_markdown_is_stored_and_exits_0() {
+    let vault = Vault::initialised();
+    vault.write("a.md", "Plain text.\n");
+    vault.write("b/c.md", "# A heading\n\nMore text.\n");
+
+    let output = vault.kbx(&["index"]);
+
+    assert!(output.status.success(), "{}", last_line(&output));
+    assert_eq!(vault.count("files"), 2);
+    assert_eq!(summary(&output), Vec::<String>::new());
+}
+
+#[test]
+fn a_vault_of_only_excluded_markdown_fails_and_says_so() {
+    let vault = Vault::initialised();
+    vault.write("node_modules/a/README.md", "Plain text.\n");
+    vault.write("node_modules/b/README.md", "Plain text.\n");
+
+    let output = vault.kbx(&["index"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let error = last_line(&output);
+    assert!(error.contains("2 markdown files"), "{error}");
+    assert!(error.contains("excluded"), "{error}");
+    assert!(error.contains("`exclude`"), "{error}");
+    let text = summary(&output).join("\n");
+    assert!(text.contains("    node_modules/a/README.md"), "{text}");
+}
+
+#[test]
+fn a_real_failure_is_named_over_any_number_of_excluded_files() {
+    let vault = Vault::initialised();
+    for n in 1..=3 {
+        vault.write(&format!("node_modules/{n}.md"), "Plain text.\n");
+    }
+    vault.write("bad.md", BAD_YAML);
+
+    let output = vault.kbx(&["index"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let error = last_line(&output);
+    assert!(error.contains("note.invalid"), "{error}");
+    assert!(!error.contains("excluded"), "{error}");
+}
+
+#[test]
+fn excluded_files_are_no_news_in_a_vault_with_notes() {
+    let vault = Vault::initialised();
+    vault.write("a.md", "Plain text.\n");
+    vault.write("node_modules/b.md", "Plain text.\n");
+
+    let output = vault.kbx(&["index"]);
+
+    assert!(output.status.success());
+    assert_eq!(summary(&output), Vec::<String>::new());
+}
+
+#[test]
+fn a_named_path_with_nothing_to_read_is_not_an_excluded_vault() {
+    let vault = Vault::initialised();
+    vault.write("node_modules/a.md", "Plain text.\n");
+
+    let output = vault.kbx(&["index", "node_modules/a.md"]);
+
+    assert!(output.status.success(), "{}", last_line(&output));
 }
 
 #[test]
