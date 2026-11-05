@@ -270,11 +270,26 @@ fn saves_that_outlast_the_window_index_the_note_once() {
     // gap is far inside it.
     let start = Instant::now();
     let mut last = 0;
+    let mut previous = Instant::now();
+    let mut widest = Duration::ZERO;
     while start.elapsed() < Duration::from_secs(5) {
         last += 1;
         save(&vault, last);
+        let gap = previous.elapsed();
+        previous = Instant::now();
+        widest = widest.max(gap);
+        if gap > Duration::from_millis(500) {
+            eprintln!(
+                "DIAG-GAP {:?} {} save {last} gap {gap:?}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .unwrap(),
+                vault.root().display()
+            );
+        }
         thread::sleep(Duration::from_millis(50));
     }
+    eprintln!("DIAG-WIDEST {widest:?} over {last} saves");
     watch.settle(&vault);
 
     assert_eq!(writes(&vault), once_each());

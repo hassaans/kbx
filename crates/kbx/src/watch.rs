@@ -51,7 +51,17 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
             None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
         };
         match message {
-            Ok(Ok(batch)) => match current_exclusions(&project) {
+            Ok(Ok(batch)) => match {
+                eprintln!(
+                    "DIAG {:?} {} batch n={} first={:?} rescan={}",
+                    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap(),
+                    project.vault.display(),
+                    batch.len(),
+                    batch.first().map(|event| (event.kind, event.paths.clone())),
+                    batch.iter().any(|event| event.need_rescan()),
+                );
+                current_exclusions(&project)
+            } {
                 Ok(exclusions) => {
                     let (paths, rescan) = changed_paths(&project.vault, &exclusions, &batch);
                     if rescan {
@@ -68,6 +78,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
                 }
             },
             Ok(Err(errors)) => {
+                eprintln!("DIAG {} watcher errors {errors:?}", project.vault.display());
                 for error in errors {
                     warn!("{error}");
                 }
@@ -80,6 +91,14 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         if timers.take_index(Instant::now()) {
             // Windows can hold back the events of a burst until it ends, so
             // the files have the last word on whether the saves have stopped.
+            let diag_quiet = since_last_write(&saved);
+            eprintln!(
+                "DIAG {:?} {} take_index quiet={diag_quiet:?} window={:?} saved={}",
+                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap(),
+                project.vault.display(),
+                options.debounce,
+                saved.len(),
+            );
             match since_last_write(&saved).filter(|quiet| *quiet < options.debounce) {
                 Some(quiet) => timers.index_after(Instant::now(), options.debounce - quiet),
                 None => match update(&project, mem::take(&mut saved).into_iter().collect()) {
@@ -92,6 +111,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
             }
         }
         if timers.take_reconcile() {
+            eprintln!("DIAG {} reconcile pass", project.vault.display());
             match update(&project, Vec::new()) {
                 Ok(changed) => timers.after_reconcile(changed),
                 Err(error) => {

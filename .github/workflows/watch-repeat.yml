@@ -1,0 +1,40 @@
+name: TEMP watch repeat
+
+on:
+  push:
+    branches: [fix-the-flaky-windows-watch-test-saves-that-outlast-the-window-index-the-note-on]
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    name: diag windows ${{ matrix.shard }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --package kbx --locked --test watch --no-run
+      - shell: bash
+        run: |
+          fails=0
+          for i in $(seq 1 30); do
+            if cargo test --package kbx --locked --test watch -- --nocapture > iter.log 2>&1; then
+              echo "iteration $i ok: $(grep -a -E 'DIAG-WIDEST' iter.log)"
+            else
+              fails=$((fails+1))
+              echo "=== iteration $i FAILED ==="
+              grep -a -E 'panicked|left:|right:|DIAG-WIDEST|DIAG-GAP' iter.log
+              vault=$(grep -a -E 'window=2s' iter.log | sed -E 's/^DIAG [^ ]+ ([^ ]+) .*/\1/' | sort -u | head -1)
+              grep -a -F "$vault" iter.log | cut -c1-200
+              echo "=== end $i ==="
+            fi
+          done
+          echo "failures: $fails"
+          test "$fails" = 0
