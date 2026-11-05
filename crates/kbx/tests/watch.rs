@@ -513,3 +513,29 @@ fn a_note_excluded_while_watching_is_not_linted() {
         "{lines:?}"
     );
 }
+
+#[test]
+fn it_finds_a_config_in_kbx() {
+    let vault = Fixture::in_kbx();
+    vault.ok(&["index"]);
+    let watch = Watch::start(&vault, &[]);
+    assert!(!is_indexed(&vault, 100));
+    save(&vault, 1);
+    watch.wait_until("the save to be indexed", || is_indexed(&vault, 100));
+}
+
+#[test]
+fn editing_a_config_in_kbx_takes_a_folder_out_while_watching() {
+    let vault = Fixture::in_kbx();
+    vault.write("kept/note.md", &note(74, "Concept", "Kept for now."));
+    vault.ok(&["index"]);
+    let watch = Watch::start(&vault, &[]);
+
+    let file = vault.root().join(".kbx/kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    let kept = text.lines().filter(|line| !line.starts_with("exclude ="));
+    let kept = kept.collect::<Vec<_>>().join("\n");
+    fs::write(&file, format!("exclude = [\"kept\"]\n{kept}\n")).unwrap();
+
+    watch.wait_until("the note to leave", || !is_indexed(&vault, 74));
+}

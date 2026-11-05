@@ -32,6 +32,10 @@ for repeating a rejected relation isn't staged. The candidates stay in the
 database, so `kbx review` and `kbx review --json` show the same queue either way,
 and accepting or rejecting there takes the line out of the note.
 
+A candidate accepted with [`kbx accept --no-write`](review.md#accepting-without-writing)
+isn't staged either: it's decided. One already staged keeps its line until the
+acceptance is written.
+
 Staging again adds only what's new. A line you removed isn't put back, even
 before `kbx sync-stage` has seen that it's gone.
 

@@ -88,7 +88,8 @@ pub fn stage(
     let mut by_note: BTreeMap<String, Vec<Line>> = BTreeMap::new();
     for item in queue.items() {
         let cid = item.cid.as_str();
-        if !wanted.contains(cid) || held.contains(cid) || item.src_class.is_none() {
+        let decided = held.contains(cid) || item.unwritten;
+        if !wanted.contains(cid) || decided || item.src_class.is_none() {
             continue;
         }
         let (note, target, section) = match item.swapped(ontology) {
@@ -446,11 +447,13 @@ fn accept_as_written(
         dst_hash: trusted(&to.note.id)?,
         src_section: section(&from.note.id),
         dst_section: section(&to.note.id),
+        accepted_rel: stored.as_ref().and_then(|s| s.accepted_rel.clone()),
     };
     let accepting = Accepting {
         rel: key,
         reason: Some(MOVED),
         as_written: true,
+        preview: None,
     };
     let accepted = write_accepted(&tx, vault, ontology, cid, &candidate, accepting)?;
     tx.commit()?;

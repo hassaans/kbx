@@ -33,6 +33,67 @@ A decision that is refused, for example because a note changed since
 `kbx suggest`, shows why in red and leaves the candidate where it is. See
 [the frontmatter writer](frontmatter-writer.md) for what gets refused.
 
+## Accepting without writing
+
+```sh
+kbx accept <cid>… --rel see_also --no-write
+```
+
+This takes the decision and leaves every note alone, for a vault where you want to
+see the change first or where kbx may not write at all. It has every check and
+refusal of `kbx accept`. The decision goes in `reviews` as an acceptance, the
+candidate is marked as accepted, and a unified diff of each note goes to stdout:
+
+```diff
+accepted 6f1c…, not written: 01KBX…02 -see_also-> 01KBX…03
+--- a/engineering/01KBX…02-oauth-flow.md
++++ b/engineering/01KBX…02-oauth-flow.md
+@@ -3,4 +3,7 @@
+ type: Procedure
+ title: OAuth flow
++see_also: ["[[01KBX…03]]"]
++qmd:
++  metadata: {type: Procedure, tags: []}
+ ---
+```
+
+The flag isn't called `--dry-run` because `kbx suggest --dry-run` leaves the
+database alone, and this doesn't.
+
+The diff is the frontmatter writer's own output against the file on disk, so it's
+everything accepting would write, byte for byte, line endings included:
+
+- **The inverse** is a diff of its own, on the other note, because that's a
+  separate file with a change of its own. With `derived_only` there is no second
+  diff, and a line says `kbx index` derives the inverse.
+- **The `qmd.metadata` mirror** is in the diff of each note it would change.
+- **A staged candidate's line** shows as removed from `kbx.proposed`.
+- **Candidates in one run** that share a note make one diff for that note, as
+  accepting them in that order would write it. Separate runs each show their
+  change against the file as it is now, so a later diff doesn't include an earlier
+  one that's still unwritten.
+
+On a terminal, control characters in the diff are dropped, as in `kbx review`.
+Piped, it's exact.
+
+### What happens to it next
+
+| Command | What it does |
+|---|---|
+| `kbx accept <cid>` | Writes it, under the relation already accepted. `--rel` changes the relation, and the earlier one's row goes from `reviews`. |
+| `kbx accept <cid> --no-write` | Prints the diff again against the notes as they are now. |
+| `kbx reject <cid>`, `kbx defer <cid>` | Take the acceptance back, and then do what they always do. |
+| `kbx suggest` | Leaves the decision in place, and doesn't stage it. A run that finds the pair again moves the candidate's recorded hashes up to the notes. |
+
+The hash guard still applies. A note edited after the diff refuses the write,
+until `kbx index` and `kbx suggest` have run. `kbx accept --no-write` then shows
+the new diff. If you link the two notes yourself, the next `kbx suggest` drops the
+candidate and the decision in `reviews` stands.
+
+`kbx review` keeps such a candidate in the queue, in its place by score, with
+`accepted, not written: a writes it` in the header. So `a` there writes it, as any
+`a` writes to your notes: `--no-write` has no key.
+
 ## What is left out
 
 A pair with one or two strikes comes back on the next `kbx suggest`, often with
@@ -73,6 +134,9 @@ are the candidate's own order: the schema decides the direction on accepting.
   }
 ]
 ```
+
+A candidate accepted with `--no-write` also has `"accepted_unwritten": true`, and
+`rel` is the relation accepted. Any other candidate has no such key.
 
 A section-level candidate also has `src_anchor` and `dst_anchor`, where it has an
 anchor at that end, such as `01KBX…06#^burst`. See

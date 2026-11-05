@@ -50,6 +50,8 @@ pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
     match &found {
         Ok(project) => {
             report("vault", (Status::Ok, project.vault.display().to_string()));
+            let file = project.config_file.display().to_string();
+            report("config", (Status::Ok, file));
             let yaml = fs::read_to_string(&project.ontology).ok();
             let ontology = check_ontology(project, yaml.as_deref());
             // Staleness means nothing against a file `kbx index` would refuse.
@@ -59,9 +61,8 @@ pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
             report("exclude", check_exclude(project));
             report("index", index);
         }
-        Err(ConfigError::NotInitialised) => {
-            let detail = "no kbx.toml here or in any parent folder; run `kbx init`";
-            report("vault", (Status::Warn, detail.to_string()));
+        Err(error @ ConfigError::NotInitialised) => {
+            report("vault", (Status::Warn, error.to_string()));
         }
         Err(error) => report("vault", (Status::Fail, error.to_string())),
     }

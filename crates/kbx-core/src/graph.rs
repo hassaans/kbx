@@ -224,11 +224,18 @@ impl Graph {
 }
 
 /// Upgrades a database from before these columns. Its candidates keep NULL
-/// there: without hashes accepting one asks for a new `kbx suggest`, and without
-/// sections it's a note-level pair.
+/// there: without hashes accepting one asks for a new `kbx suggest`, without
+/// sections it's a note-level pair, and without `accepted_rel` it's undecided.
 fn add_candidate_columns(conn: &Connection) -> rusqlite::Result<()> {
     let columns = candidate_columns(conn)?;
-    for column in ["src_hash", "dst_hash", "src_section", "dst_section"] {
+    let added = [
+        "src_hash",
+        "dst_hash",
+        "src_section",
+        "dst_section",
+        "accepted_rel",
+    ];
+    for column in added {
         if !columns.contains(column) {
             conn.execute_batch(&format!("ALTER TABLE candidates ADD COLUMN {column} TEXT"))?;
         }
@@ -246,6 +253,11 @@ fn candidate_columns(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
 /// can't be upgraded, so one from an older kbx may not.
 pub(crate) fn has_candidate_sections(conn: &Connection) -> rusqlite::Result<bool> {
     Ok(candidate_columns(conn)?.contains("src_section"))
+}
+
+/// Whether `candidates` has `accepted_rel`, likewise.
+pub(crate) fn has_accepted_rel(conn: &Connection) -> rusqlite::Result<bool> {
+    Ok(candidate_columns(conn)?.contains("accepted_rel"))
 }
 
 /// `path` as a `file:` URI, which SQLite needs for its query parameters.

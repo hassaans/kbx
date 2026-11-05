@@ -13,7 +13,7 @@ use super::{
     Accepted, Decision, Deferred, OnDisk, Rejected, ReviewError, accept, defer, judged_rel,
     ordered, reject, runs_forward, section_anchor,
 };
-use crate::graph::{Graph, has_candidate_sections};
+use crate::graph::{Graph, has_accepted_rel, has_candidate_sections};
 use crate::note::split_frontmatter;
 use crate::ontology::{NONE, Ontology};
 
@@ -61,6 +61,9 @@ pub struct Item {
     /// The relation a decision would be about: the one [`accept`] would take
     /// from the verdicts, until [`Queue::edit`] changes it.
     pub rel: Option<String>,
+    /// [`Item::rel`] is accepted but in no note yet, by
+    /// [`accept_unwritten`](super::accept_unwritten). Accepting writes it.
+    pub unwritten: bool,
     /// The signals combined, from 0 to 1.
     pub score: f64,
     /// Every generator that found the pair, sorted.
@@ -136,9 +139,13 @@ impl Queue {
             true => "c.src_section, c.dst_section",
             false => "NULL, NULL",
         };
+        let accepted = match has_accepted_rel(connection)? {
+            true => "c.accepted_rel",
+            false => "NULL",
+        };
         let mut statement = connection.prepare(&format!(
             "SELECT c.cid, c.src, c.dst, s.title, d.title, c.score, c.generators, c.features,
-                 s.type, d.type, {sections}
+                 s.type, d.type, {sections}, {accepted}
              FROM candidates c
              LEFT JOIN files s ON s.id = c.src
              LEFT JOIN files d ON d.id = c.dst",
@@ -150,7 +157,9 @@ impl Queue {
             let item = item(connection, row)?;
             let repeat = item.rel.as_deref().and_then(|rel| ontology.lookup(rel));
             let pair = ordered(&item.src, &item.dst);
-            if repeat.is_some_and(|key| rejected.contains(&(pair, key.name.to_string()))) {
+            let repeated =
+                repeat.is_some_and(|key| rejected.contains(&(pair, key.name.to_string())));
+            if repeated && !item.unwritten {
                 hidden += 1;
             } else {
                 items.push(item);
@@ -316,8 +325,13 @@ fn item(connection: &Connection, row: &Row<'_>) -> rusqlite::Result<Item> {
     let generators: Option<String> = row.get(6)?;
     let features: Option<String> = row.get(7)?;
     let (verdict, rationale) = latest_verdict(connection, &cid)?.unwrap_or_default();
+    let accepted: Option<String> = row.get(12)?;
     Ok(Item {
-        rel: judged_rel(connection, &cid)?,
+        unwritten: accepted.is_some(),
+        rel: match accepted {
+            Some(rel) => Some(rel),
+            None => judged_rel(connection, &cid)?,
+        },
         src_anchor: address(connection, &src, src_section.as_deref())?,
         dst_anchor: address(connection, &dst, dst_section.as_deref())?,
         src_section,
