@@ -59,6 +59,16 @@ pub fn backend(
     Ok(Box::new(index.searcher(graph, embedder)?))
 }
 
+/// Empties an index that the graph has no notes for any more, since what it
+/// holds may be what was since excluded. Builds none.
+pub fn forget(project: &Project, graph: &Graph) -> Result<(), Box<dyn Error>> {
+    let path = project.graph.with_file_name(SEARCH_INDEX);
+    if path.is_file() {
+        SearchIndex::open(&path)?.sync(graph, &project.vault, None, &mut |_, _| {})?;
+    }
+    Ok(())
+}
+
 fn load_model() -> Result<Box<dyn Embedder>, EmbedError> {
     if !MODEL.is_present() {
         eprintln!(
