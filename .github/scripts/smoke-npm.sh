@@ -52,6 +52,8 @@ printed=$(kbx --version)
 echo "$printed"
 
 home=$(mktemp -d)
+# Every Windows profile has this, and kbx can't find its cache folder without it.
+mkdir -p "$home/AppData/Local"
 HOME=$home
 USERPROFILE=$(to_native "$home")
 export HOME USERPROFILE
