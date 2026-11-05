@@ -36,6 +36,14 @@ const GITIGNORE: &str = ".gitignore";
 /// a hidden name is one that no note can have.
 const NO_NOTES: &str = ".kbx-no-notes.md";
 
+/// A mask for a folder with nothing to go around.
+const EVERY_NOTE: &str = "**/*.md";
+
+/// The longest mask kbx gives qmd, in bytes, which is never fewer than the
+/// characters qmd counts. qmd's brace parser stops at 10,000, and on Windows
+/// qmd runs through `cmd.exe`, which takes 8,191 for the whole command.
+pub const MAX_MASK: usize = 6_000;
+
 /// Why a path is left alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Excluded {
@@ -55,6 +63,15 @@ impl fmt::Display for Excluded {
             Excluded::Ignored(file) => write!(f, "ignored by {file}"),
         }
     }
+}
+
+/// A glob for qmd. See [`Exclusions::note_mask`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteMask {
+    pub glob: String,
+    /// How many levels of folders it goes around what's excluded, if a glob
+    /// for all of them would be over [`MAX_MASK`]. `Some(0)` goes around nothing.
+    pub levels: Option<usize>,
 }
 
 /// `exclude` or `include` has a pattern that can't be read.
@@ -304,12 +321,49 @@ impl Exclusions {
     /// single excluded file: its hits come to nothing, as it has no note. In a
     /// folder only `include` opens, the glob takes just the notes it brings
     /// back, so that what `.gitignore` keeps from kbx isn't given to qmd.
-    pub fn note_glob(&self, folder: &str) -> String {
+    ///
+    /// A glob over [`MAX_MASK`] goes as many levels down as fit and takes
+    /// everything below them, or failing that every note. What that lets
+    /// through reaches qmd's local index, and its hits come to nothing too.
+    pub fn note_mask(&self, folder: &str) -> NoteMask {
         let folder = folder.trim_start_matches("./").trim_end_matches('/');
         let folder = if folder == "." { "" } else { folder };
+        let glob = self.glob_down(folder, usize::MAX);
+        if glob.len() <= MAX_MASK {
+            return NoteMask { glob, levels: None };
+        }
+        let mut mask = NoteMask {
+            glob: EVERY_NOTE.to_string(),
+            levels: Some(0),
+        };
+        // Enough levels are the whole glob again, so this ends.
+        for levels in 1.. {
+            let glob = self.glob_down(folder, levels);
+            if glob.len() > MAX_MASK {
+                break;
+            }
+            // With nothing excluded this far down, it's no narrower yet.
+            if glob != EVERY_NOTE {
+                mask = NoteMask {
+                    glob,
+                    levels: Some(levels),
+                };
+            }
+        }
+        mask
+    }
+
+    /// The glob of [`note_mask`](Exclusions::note_mask), for what doesn't need
+    /// to know if it stopped short.
+    pub fn note_glob(&self, folder: &str) -> String {
+        self.note_mask(folder).glob
+    }
+
+    /// The glob for `folder` that goes around what's excluded `levels` down.
+    fn glob_down(&self, folder: &str, levels: usize) -> String {
         let mut globs = Vec::new();
-        if !self.around(folder, "", &mut globs) {
-            return "**/*.md".to_string();
+        if !self.around(folder, "", levels, &mut globs) {
+            return EVERY_NOTE.to_string();
         }
         match &globs[..] {
             [] => NO_NOTES.to_string(),
@@ -321,8 +375,9 @@ impl Exclusions {
     /// Adds the globs for `folder`, or nothing and returns `false` if nothing
     /// under it is excluded. `inside` is `folder` from where the glob starts,
     /// with a trailing `/` unless it's empty. An opened folder has something
-    /// excluded by definition, and may add nothing at all.
-    fn around(&self, folder: &str, inside: &str, globs: &mut Vec<String>) -> bool {
+    /// excluded by definition, and may add nothing at all. A folder `levels`
+    /// down counts as clear unless it's excluded itself.
+    fn around(&self, folder: &str, inside: &str, levels: usize, globs: &mut Vec<String>) -> bool {
         let mut clear = Vec::new();
         let mut narrowed = Vec::new();
         let opened = self.opened(folder);
@@ -334,7 +389,10 @@ impl Exclusions {
             };
             let glob = format!("{inside}{}", escape_glob(&name));
             let excluded = self.entry(&path, true).is_some();
-            if excluded || self.around(&path, &format!("{glob}/"), &mut narrowed) {
+            let deeper = levels > 1;
+            if excluded
+                || deeper && self.around(&path, &format!("{glob}/"), levels - 1, &mut narrowed)
+            {
                 any = true;
             } else {
                 clear.push(format!("{glob}/**/*.md"));
@@ -748,5 +806,107 @@ mod tests {
         assert_eq!(rules.note_glob("a"), "{*.md,b/*.md,d/**/*.md}");
         assert_eq!(rules.note_glob("a/d"), "**/*.md");
         assert_eq!(rules.note_glob("."), "{*.md,a/*.md,a/b/*.md,a/d/**/*.md}");
+    }
+
+    /// `count` folders in `a`, each with `name-long-enough-to-matter-…/secrets`.
+    fn many_folders(dir: &TempDir, count: usize) {
+        for n in 0..count {
+            write(
+                dir,
+                &format!("a/name-long-enough-to-matter-{n:04}/secrets/k.md"),
+                "",
+            );
+            write(
+                dir,
+                &format!("a/name-long-enough-to-matter-{n:04}/notes/b.md"),
+                "",
+            );
+        }
+    }
+
+    #[test]
+    fn a_mask_that_fits_goes_all_the_way_around() {
+        let dir = TempDir::new().unwrap();
+        many_folders(&dir, 3);
+        let mask = rules(&dir, &["secrets"]).note_mask("a");
+        assert_eq!(mask.levels, None);
+        assert!(mask.glob.contains("notes/**/*.md"), "{}", mask.glob);
+    }
+
+    #[test]
+    fn a_mask_over_the_limit_stops_a_level_up_and_still_goes_around_what_it_reaches() {
+        let dir = TempDir::new().unwrap();
+        many_folders(&dir, 140);
+        write(&dir, "a/secrets/k.md", "");
+        let mask = rules(&dir, &["secrets"]).note_mask("a");
+        assert_eq!(mask.levels, Some(1));
+        assert!(mask.glob.len() <= MAX_MASK, "{}", mask.glob.len());
+        assert!(mask.glob.starts_with("{*.md,name-long"), "{}", mask.glob);
+        assert!(!mask.glob.contains("secrets"), "{}", mask.glob);
+    }
+
+    #[test]
+    fn a_mask_with_no_level_that_fits_takes_every_note() {
+        let dir = TempDir::new().unwrap();
+        many_folders(&dir, 400);
+        let rules = rules(&dir, &["secrets"]);
+        let mask = rules.note_mask("a");
+        assert_eq!(mask.levels, Some(0));
+        assert_eq!(mask.glob, "**/*.md");
+        assert_eq!(rules.note_glob("a"), "**/*.md");
+    }
+
+    #[test]
+    fn a_mask_can_fit_below_a_level_with_nothing_excluded() {
+        let dir = TempDir::new().unwrap();
+        for n in 0..140 {
+            write(
+                &dir,
+                &format!("a/b/name-long-enough-to-matter-{n:04}/secrets/k.md"),
+                "",
+            );
+            write(
+                &dir,
+                &format!("a/b/name-long-enough-to-matter-{n:04}/notes/c.md"),
+                "",
+            );
+        }
+        write(&dir, "a/b/secrets/k.md", "");
+        let mask = rules(&dir, &["secrets"]).note_mask("a");
+        assert_eq!(mask.levels, Some(2));
+        assert!(!mask.glob.contains("secrets"), "{}", mask.glob);
+    }
+
+    #[test]
+    fn a_long_list_of_restored_notes_gives_way_to_the_folder() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, ".gitignore", "team/private/\n");
+        for n in 0..400 {
+            write(
+                &dir,
+                &format!("team/private/keep-a-long-name-{n:04}.md"),
+                "",
+            );
+        }
+        write(&dir, "team/private/left.md", "");
+        write(&dir, "team/other/a.md", "");
+        write(&dir, "team/secrets/k.md", "");
+        let rules = with_include(&dir, &["secrets"], &["team/private/keep*.md"]);
+        let mask = rules.note_mask("team");
+        assert_eq!(mask.levels, Some(1));
+        assert_eq!(mask.glob, "{*.md,other/**/*.md,private/**/*.md}");
+    }
+
+    #[test]
+    fn a_folder_with_a_mask_over_the_limit_still_counts_as_restored() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, ".gitignore", "kept/\n");
+        for n in 0..400 {
+            write(&dir, &format!("kept/keep-a-long-name-{n:04}.md"), "");
+        }
+        write(&dir, "kept/left.md", "");
+        let rules = with_include(&dir, &[], &["kept/keep*.md"]);
+        assert_eq!(rules.note_mask("kept").levels, Some(0));
+        assert_eq!(rules.restored_folders(), ["kept"]);
     }
 }

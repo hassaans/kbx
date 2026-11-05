@@ -11,7 +11,11 @@ use common::{FakePath, Fixture, id, stderr, stdout};
 use rusqlite::Connection;
 
 /// A qmd that logs each call to `calls`, keeps collection names in
-/// `collections`, and answers each search with one hit on `answer`.
+/// `collections`, and answers each search with one hit on `answer`. As the real
+/// one does, it records a collection before reading its folder, so a failed add
+/// leaves the name behind, and it stops at a mask over 10,000 characters. A file
+/// `refuse-add-<folder>`, `refuse-remove-<name>` or `refuse-rename` makes that
+/// step fail.
 fn fake_qmd(answer: &str) -> FakePath {
     let path = FakePath::empty();
     let dir = path.dir().display().to_string();
@@ -40,10 +44,31 @@ case "$1 $2" in
     done < '{dir}/collections'
     echo "$name" >> '{dir}/collections'
     echo "$7" > "{dir}/mask-$name"
+    if [ "${{#7}}" -gt 10000 ]; then
+        echo "Input length: ${{#7}}, exceeds maximum allowed length: 10000" >&2
+        exit 1
+    fi
+    if [ -e "{dir}/refuse-add-$(/usr/bin/basename "$3")" ]; then
+        echo 'no room left' >&2
+        exit 1
+    fi
     ;;
 "collection remove")
+    if [ -e "{dir}/refuse-remove-$3" ]; then
+        echo 'index is locked' >&2
+        exit 1
+    fi
     /usr/bin/grep -vx "$3" '{dir}/collections' > '{dir}/collections.kept'
     /bin/mv '{dir}/collections.kept' '{dir}/collections'
+    ;;
+"collection rename")
+    if [ -e '{dir}/refuse-rename' ]; then
+        echo 'index is locked' >&2
+        exit 1
+    fi
+    /usr/bin/sed "s/^$3\$/$4/" '{dir}/collections' > '{dir}/collections.kept'
+    /bin/mv '{dir}/collections.kept' '{dir}/collections'
+    /bin/mv "{dir}/mask-$3" "{dir}/mask-$4"
     ;;
 query*) /bin/cat '{dir}/answer.json' ;;
 esac"#
@@ -496,14 +521,37 @@ fn removes(vault: &Fixture) -> Vec<String> {
         .collect()
 }
 
-/// The mask of the `collection add` naming `name`.
+/// The mask of the last `collection add` for `name`, which a replacement reads
+/// under another name first.
 fn mask_of(vault: &Fixture, name: &str) -> String {
     let adds = adds(vault);
-    let add = adds
-        .iter()
-        .rfind(|call| call.contains(&format!("--name {name} ")));
+    let add = adds.iter().rfind(|call| {
+        call.contains(&format!("--name {name} "))
+            || call.contains(&format!("--name {name}-kbx-new "))
+    });
     let add = add.unwrap_or_else(|| panic!("no collection {name} in {adds:?}"));
     add.rsplit_once("--mask ").unwrap().1.to_string()
+}
+
+/// The collections the fake qmd has now.
+fn collections(vault: &Fixture) -> Vec<String> {
+    let names = fs::read_to_string(vault.path.dir().join("collections")).unwrap();
+    names.lines().map(str::to_string).collect()
+}
+
+/// Makes the step named by `file` fail from now on.
+fn refuse(vault: &Fixture, file: &str) {
+    fs::write(vault.path.dir().join(file), "").unwrap();
+}
+
+fn allow(vault: &Fixture, file: &str) {
+    fs::remove_file(vault.path.dir().join(file)).unwrap();
+}
+
+fn row(printed: &str, name: &str) -> String {
+    let row = printed.lines().find(|line| line.starts_with(name));
+    let row = row.unwrap_or_else(|| panic!("no {name} row in:\n{printed}"));
+    row.to_string()
 }
 
 #[test]
@@ -697,4 +745,300 @@ fn a_named_index_keeps_its_collections_but_kbx_stops_searching_an_excluded_one()
     vault.ok(&["suggest", "--judge", "none", "--generators", "qmd_knn"]);
     let queries = calls_of(&vault, "query").join("\n");
     assert!(!queries.contains("-c credentials"), "{queries}");
+}
+
+/// `count` folders in `team-a`, each with an excluded folder, as the vault that
+/// found this had.
+fn many_excluded_folders(count: u32) -> Fixture {
+    let vault = two_scopes("[]");
+    for n in 0..count {
+        let folder = format!("team-a/company-with-a-long-name-{n:04}");
+        vault.write(
+            &format!("{folder}/secrets/keys.md"),
+            &note(1000 + n, "keys"),
+        );
+        vault.write(
+            &format!("{folder}/notes/{}.md", id(5000 + n)),
+            &note(5000 + n, "x"),
+        );
+    }
+    vault
+}
+
+#[test]
+fn a_scope_with_many_excluded_folders_gets_a_collection_and_keeps_the_top_ones_out() {
+    let vault = many_excluded_folders(150);
+    vault.write("team-a/secrets/keys.md", &note(3, "keys"));
+
+    let output = vault.kbx(&["init", "--search", "qmd"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(collections(&vault).contains(&"team-a".to_string()));
+    let mask = mask_of(&vault, "team-a");
+    assert!(mask.len() <= 6000, "{}", mask.len());
+    assert!(
+        mask.contains("company-with-a-long-name-0149/**/*.md"),
+        "{mask}"
+    );
+    assert!(!mask.contains("secrets"), "{mask}");
+    let warning = stderr(&output);
+    assert!(warning.contains("team-a"), "{warning}");
+    assert!(warning.contains("1 level"), "{warning}");
+}
+
+#[test]
+fn a_scope_too_wide_for_any_narrower_mask_gets_all_its_notes() {
+    let vault = many_excluded_folders(400);
+
+    let output = vault.kbx(&["init", "--search", "qmd"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(mask_of(&vault, "team-a"), "**/*.md");
+    assert!(stderr(&output).contains("team-a"), "{}", stderr(&output));
+    assert_eq!(collections(&vault).len(), 2);
+}
+
+#[test]
+fn doctor_says_which_mask_stops_short_and_leaves_it_alone() {
+    let vault = many_excluded_folders(400);
+    vault.ok(&["init", "--search", "qmd"]);
+    forget_calls(&vault);
+
+    let printed = vault.ok(&["doctor"]);
+
+    let masks = row(&printed, "masks");
+    assert!(masks.contains("warn"), "{masks}");
+    assert!(masks.contains("team-a"), "{masks}");
+    assert!(!masks.contains("team-b"), "{masks}");
+    assert!(row(&printed, "collections").contains(" ok "), "{printed}");
+
+    let printed = vault.ok(&["doctor", "--fix"]);
+    assert!(row(&printed, "masks").contains("team-a"), "{printed}");
+    assert!(adds(&vault).is_empty(), "the mask is already the right one");
+    assert!(removes(&vault).is_empty());
+}
+
+#[test]
+fn a_vault_with_short_masks_has_no_masks_row() {
+    let vault = two_scopes("[]");
+    vault.ok(&["init", "--search", "qmd"]);
+    let printed = vault.ok(&["doctor"]);
+    assert!(
+        !printed.lines().any(|l| l.starts_with("masks")),
+        "{printed}"
+    );
+}
+
+#[test]
+fn a_failed_add_goes_on_to_the_rest_and_leaves_nothing_behind() {
+    let vault = two_scopes("[]");
+    refuse(&vault, "refuse-add-team-a");
+
+    let output = vault.kbx(&["init", "--search", "qmd"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(collections(&vault), ["team-b"]);
+    assert!(stdout(&output).contains("created qmd collection team-b"));
+    assert!(!stdout(&output).contains("created qmd collection team-a"));
+    let warning = stderr(&output);
+    assert!(warning.contains("team-a"), "{warning}");
+    assert!(warning.contains("no room left"), "{warning}");
+    assert!(warning.contains("kbx doctor --fix"), "{warning}");
+
+    allow(&vault, "refuse-add-team-a");
+    vault.ok(&["doctor", "--fix"]);
+    assert_eq!(collections(&vault), ["team-b", "team-a"]);
+}
+
+#[test]
+fn every_failure_is_reported_at_the_end() {
+    let vault = two_scopes("[]");
+    vault.write("team-c/note.md", &note(3, "c"));
+    refuse(&vault, "refuse-add-team-a");
+    refuse(&vault, "refuse-add-Team B");
+
+    let output = vault.kbx(&["init", "--search", "qmd"]);
+
+    assert_eq!(collections(&vault), ["team-c"]);
+    let warning = stderr(&output);
+    assert!(warning.contains("team-a"), "{warning}");
+    assert!(warning.contains("team-b"), "{warning}");
+}
+
+/// `team-a` and `Team B`, both with a mask out of date, and an excluded
+/// `credentials` collection.
+fn two_masks_out_of_date() -> Fixture {
+    let vault = set_up_before_exclude();
+    vault.write("Team B/secrets/keys.md", &note(5, "keys"));
+    fs::remove_file(vault.path.dir().join("mask-team-b")).unwrap();
+    vault
+}
+
+#[test]
+fn a_new_mask_is_read_before_the_old_collection_goes() {
+    let vault = two_masks_out_of_date();
+
+    vault.ok(&["doctor", "--fix"]);
+
+    let log = calls_of(&vault, "collection");
+    let at = |wanted: &str| {
+        let found = log.iter().position(|call| call.contains(wanted));
+        found.unwrap_or_else(|| panic!("no {wanted} in {log:?}"))
+    };
+    assert!(at("--name team-a-kbx-new") < at("collection remove team-a"));
+    assert!(at("collection remove team-a") < at("collection rename team-a-kbx-new team-a"));
+    let mut names = collections(&vault);
+    names.sort();
+    assert_eq!(names, ["team-a", "team-b"]);
+    let mask = fs::read_to_string(vault.path.dir().join("mask-team-a")).unwrap();
+    assert_eq!(mask.trim(), "*.md");
+}
+
+#[test]
+fn a_failed_replacement_keeps_the_old_collection_and_the_loop_goes_on() {
+    let vault = two_masks_out_of_date();
+    refuse(&vault, "refuse-add-team-a");
+
+    let output = vault.kbx(&["doctor", "--fix"]);
+
+    assert!(!output.status.success(), "{}", stdout(&output));
+    let collection = row(&stdout(&output), "collections");
+    assert!(collection.contains("fail"), "{collection}");
+    assert!(collection.contains("team-a"), "{collection}");
+    assert!(collection.contains("narrowed team-b"), "{collection}");
+    assert!(
+        stderr(&output).contains("no room left"),
+        "{}",
+        stderr(&output)
+    );
+    let mut names = collections(&vault);
+    names.sort();
+    assert_eq!(names, ["team-a", "team-b"]);
+    assert!(!removes(&vault).iter().any(|c| c.ends_with(" team-a")));
+    assert!(!vault.path.dir().join("mask-team-a").exists());
+    assert_eq!(mask_of(&vault, "team-b"), "*.md");
+
+    allow(&vault, "refuse-add-team-a");
+    let printed = vault.ok(&["doctor", "--fix"]);
+    assert!(
+        row(&printed, "collections").contains("narrowed team-a"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn a_collection_left_with_a_mask_qmd_refused_is_replaced() {
+    let vault = two_scopes("[]");
+    vault.ok(&["init", "--search", "qmd"]);
+    let mask = vault.path.dir().join("mask-team-a");
+    fs::write(&mask, "x".repeat(20_000)).unwrap();
+    forget_calls(&vault);
+
+    vault.ok(&["doctor", "--fix"]);
+
+    assert!(adds(&vault).iter().all(|add| add.len() < 10_000));
+    assert_eq!(collections(&vault).len(), 2);
+}
+
+#[test]
+fn a_collection_that_will_not_go_keeps_its_place_and_the_new_one_is_dropped() {
+    let vault = two_masks_out_of_date();
+    refuse(&vault, "refuse-remove-team-a");
+
+    let output = vault.kbx(&["doctor", "--fix"]);
+
+    assert!(!output.status.success(), "{}", stdout(&output));
+    assert!(
+        stderr(&output).contains("index is locked"),
+        "{}",
+        stderr(&output)
+    );
+    let names = collections(&vault);
+    assert!(names.contains(&"team-a".to_string()), "{names:?}");
+    assert!(!names.contains(&"team-a-kbx-new".to_string()), "{names:?}");
+    assert_eq!(mask_of(&vault, "team-b"), "*.md");
+}
+
+#[test]
+fn an_excluded_collection_that_will_not_go_stays_in_kbx_toml() {
+    let vault = two_masks_out_of_date();
+    refuse(&vault, "refuse-remove-credentials");
+
+    let output = vault.kbx(&["doctor", "--fix"]);
+
+    assert!(!output.status.success(), "{}", stdout(&output));
+    assert_eq!(mask_of(&vault, "team-a"), "*.md");
+    assert_eq!(mask_of(&vault, "team-b"), "*.md");
+    let qmd = config(&vault)["qmd"].clone();
+    assert!(qmd["roots"].get("credentials").is_some(), "{qmd}");
+
+    allow(&vault, "refuse-remove-credentials");
+    vault.ok(&["doctor", "--fix"]);
+    assert!(config(&vault)["qmd"]["roots"].get("credentials").is_none());
+}
+
+#[test]
+fn a_replacement_stranded_by_a_failed_rename_is_cleared_up_next_time() {
+    let vault = two_masks_out_of_date();
+    refuse(&vault, "refuse-rename");
+
+    let output = vault.kbx(&["doctor", "--fix"]);
+
+    assert!(!output.status.success(), "{}", stdout(&output));
+    assert!(
+        stderr(&output).contains("team-a-kbx-new"),
+        "{}",
+        stderr(&output)
+    );
+
+    allow(&vault, "refuse-rename");
+    vault.ok(&["doctor", "--fix"]);
+    let mut names = collections(&vault);
+    names.sort();
+    assert_eq!(names, ["team-a", "team-b"]);
+    let printed = vault.ok(&["doctor"]);
+    assert!(row(&printed, "collections").contains(" ok "), "{printed}");
+}
+
+#[test]
+fn doctor_without_fix_still_exits_zero_on_what_it_would_fix() {
+    let vault = two_masks_out_of_date();
+    refuse(&vault, "refuse-add-team-a");
+    let printed = vault.ok(&["doctor"]);
+    assert!(row(&printed, "collections").contains("warn"), "{printed}");
+}
+
+#[test]
+fn doctor_fix_fails_when_qmd_cannot_list_its_collections() {
+    let vault = two_scopes("[]");
+    vault.ok(&["init", "--search", "qmd"]);
+    vault.path.tool("qmd", "echo 'disk full' >&2; exit 1");
+
+    let output = vault.kbx(&["doctor", "--fix"]);
+
+    assert!(!output.status.success(), "{}", stdout(&output));
+    assert!(row(&stdout(&output), "collections").contains("fail"));
+    assert!(vault.kbx(&["doctor"]).status.success());
+}
+
+#[test]
+fn a_failed_add_in_a_named_index_leaves_the_rest_of_it_alone() {
+    let vault = two_scopes("[]");
+    vault.ok(&["init", "--search", "qmd"]);
+    let file = vault.root().join(".kbx/kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(
+        &file,
+        text.replace(r#"bin = "qmd","#, r#"bin = "qmd", index = "shared","#),
+    )
+    .unwrap();
+    fs::write(vault.path.dir().join("collections"), "team-b\n").unwrap();
+    refuse(&vault, "refuse-add-team-a");
+    forget_calls(&vault);
+
+    let output = vault.kbx(&["doctor", "--fix"]);
+
+    assert!(!output.status.success(), "{}", stdout(&output));
+    assert_eq!(collections(&vault), ["team-b"]);
+    assert!(!removes(&vault).iter().any(|c| c.ends_with(" team-b")));
 }
