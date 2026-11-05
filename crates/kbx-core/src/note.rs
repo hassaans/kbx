@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::PathBuf;
 
 use serde_yaml::{Mapping, Value};
@@ -145,6 +146,69 @@ impl ParseError {
         match self {
             ParseError::Yaml(error) => error.location().map_or(1, |at| at.line()),
             _ => 1,
+        }
+    }
+
+    /// Why this leaves a file out of the index. Files with the same cause group
+    /// together, so unlike the message this says nothing about one file.
+    pub fn cause(&self) -> Cause {
+        match self {
+            ParseError::NestedMap(key) => Cause::NestedMap(key.clone()),
+            ParseError::Yaml(_) => Cause::Invalid("frontmatter is not valid YAML".to_string()),
+            other => Cause::Invalid(other.to_string()),
+        }
+    }
+}
+
+/// Why a file found by `kbx index` isn't in the index. To `kbx lint`,
+/// [`NestedMap`](Cause::NestedMap) and [`Invalid`](Cause::Invalid) are both
+/// `note.invalid`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Cause {
+    /// A key kbx reads holds a map.
+    NestedMap(String),
+    /// Anything else that stops a file being read as a note, as a phrase that
+    /// reads the same for every file it applies to.
+    Invalid(String),
+    /// The note claims an id that a lower path keeps.
+    DuplicateId,
+    /// `exclude` or a `.gitignore` keeps it out, as the rule says.
+    Excluded(String),
+}
+
+impl Cause {
+    /// The name in `kbx index`'s summary: the `kbx lint` code, where one is
+    /// specific enough to act on.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Cause::NestedMap(_) => "nested map",
+            Cause::Invalid(_) => "note.invalid",
+            Cause::DuplicateId => "id.duplicate",
+            Cause::Excluded(_) => "excluded",
+        }
+    }
+
+    /// What to do about it, as the end of a sentence.
+    pub fn fix(&self) -> String {
+        match self {
+            Cause::NestedMap(key) => format!("make `{key}` a single value or a plain list"),
+            Cause::Invalid(_) => "run `kbx lint` to see where each file goes wrong".to_string(),
+            Cause::DuplicateId => "give each note its own `id`".to_string(),
+            Cause::Excluded(_) => {
+                "change `exclude` in kbx.toml or the `.gitignore`, if they should be read"
+                    .to_string()
+            }
+        }
+    }
+}
+
+impl fmt::Display for Cause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Cause::NestedMap(key) => write!(f, "frontmatter key `{key}` holds a nested map"),
+            Cause::Invalid(reason) => f.write_str(reason),
+            Cause::DuplicateId => f.write_str("a note at a lower path has the same `id`"),
+            Cause::Excluded(why) => f.write_str(why),
         }
     }
 }

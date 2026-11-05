@@ -39,14 +39,14 @@ pub use export::{
 };
 pub use graph::{Graph, GraphStats, Neighbor, Node};
 pub use index::{
-    IndexError, IndexOptions, IndexReport, IndexState, MENTIONS, excluded_notes, index_state,
-    index_vault, is_note_path,
+    IndexError, IndexOptions, IndexReport, IndexState, LeftOut, MENTIONS, count_note_files,
+    excluded_notes, index_state, index_vault, is_note_path,
 };
 pub use infer::{DEFAULT_CLASS, Inferred, TypeDefaults, inferred_id};
 pub use link::Link;
 pub use lint::lint_vault;
 pub use note::{
-    Frontmatter, Note, ParseError, Property, RelationEntry, parse_note, parse_note_with,
+    Cause, Frontmatter, Note, ParseError, Property, RelationEntry, parse_note, parse_note_with,
     split_frontmatter,
 };
 pub use ontology::{
