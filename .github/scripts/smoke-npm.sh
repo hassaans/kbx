@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Installs a published kbx the way a user would and fails unless it works. Run it
-# on a machine with Node and without kbx or qmd.
+# Installs a published kbx the way a user would and fails unless it works: first
+# the default, which must never touch qmd, then the QMD option. `kbx suggest`
+# downloads the real model. Run it on a machine with Node and without kbx or qmd.
 set -euo pipefail
 
 usage="usage: smoke-npm.sh <version> <platform package> <vault>"
@@ -71,36 +72,24 @@ qmd_row() {
   sed -n 's/^qmd  *ok  *//p' "$home/$1.out"
 }
 
-# Before `kbx init`, which would install qmd itself.
-run doctor-1 'kbx doctor, first run' doctor
-[[ $status == 0 ]] || fail "the first doctor exited $status"
-[[ ! -s $home/doctor-1.err ]] || fail "the first doctor wrote to stderr"
-installed=$(qmd_row doctor-1)
-[[ -n $installed ]] || fail "the first doctor did not report qmd ok"
-command -v qmd >/dev/null || fail "qmd is not on PATH after the first doctor"
-npm ls -g @tobilu/qmd || fail "@tobilu/qmd is not in the global packages after the first doctor"
+no_qmd() {
+  if found=$(command -v qmd); then fail "$1 installed qmd, at $found"; fi
+  if npm ls -g @tobilu/qmd >/dev/null 2>&1; then fail "$1 installed @tobilu/qmd"; fi
+}
 
-run doctor-2 'kbx doctor, second run' doctor
-[[ $status == 0 ]] || fail "the second doctor exited $status"
-[[ ! -s $home/doctor-2.err ]] || fail "the second doctor wrote to stderr"
-present=$(qmd_row doctor-2)
-[[ $present == "$installed" ]] || fail "the second doctor found ${present:-no qmd}, not $installed"
+run doctor-1 'kbx doctor, outside a vault' doctor
+[[ $status == 0 ]] || fail "doctor outside a vault exited $status"
+[[ ! -s $home/doctor-1.err ]] || fail "doctor outside a vault wrote to stderr"
+no_qmd 'doctor outside a vault'
 
 cp -R "$vault" "$home/vault"
 cd "$home/vault"
 
 run init 'kbx init' init
 [[ $status == 0 ]] || fail "kbx init exited $status"
-[[ -f kbx.toml ]] || fail "kbx init made no kbx.toml"
-
-# Each top-level folder is a scope. Init only warns when qmd refuses a collection.
-scopes=0
-for folder in "$vault"/*/; do
-  scope=$(basename "$folder")
-  scopes=$((scopes + 1))
-  grep -qxF "created qmd collection $scope" "$home/init.out" ||
-    fail "kbx init created no qmd collection for $scope"
-done
+grep -qx 'search = "builtin".*' kbx.toml || fail "kbx init did not choose the built-in engine"
+if grep -q 'qmd collection' "$home/init.out"; then fail "kbx init set up qmd by default"; fi
+no_qmd 'kbx init'
 
 run index 'kbx index' index
 [[ $status == 0 ]] || fail "kbx index exited $status"
@@ -113,9 +102,57 @@ run lint 'kbx lint' lint
 summary=$(tail -n 1 "$home/lint.out")
 [[ $summary == '12 errors, 1 warning' ]] || fail "kbx lint printed $summary, not 12 errors, 1 warning"
 
-run doctor-3 'kbx doctor, in the vault' doctor
+run suggest 'kbx suggest, with the built-in engine' suggest --judge none --generators qmd_knn
+[[ $status == 0 ]] || fail "kbx suggest exited $status"
+grep -Eq '^ +qmd_knn +[1-9]' "$home/suggest.out" || fail "kbx suggest found no qmd_knn candidates"
+no_qmd 'kbx suggest'
+
+run doctor-2 'kbx doctor, in the vault' doctor
 [[ $status == 0 ]] || fail "doctor in the vault exited $status"
-grep -Eq '^vault +ok ' "$home/doctor-3.out" || fail "doctor in the vault did not find it"
-grep -Eq '^index +ok +25 notes' "$home/doctor-3.out" || fail "doctor in the vault did not report the index"
-grep -Eq "^collections +ok +$scopes in index " "$home/doctor-3.out" ||
-  fail "doctor in the vault did not report $scopes collections"
+grep -Eq '^vault +ok ' "$home/doctor-2.out" || fail "doctor in the vault did not find it"
+grep -Eq '^index +ok +25 notes' "$home/doctor-2.out" || fail "doctor in the vault did not report the index"
+grep -Eq '^search +ok +builtin, model ready' "$home/doctor-2.out" ||
+  fail "doctor in the vault did not report the built-in engine"
+no_qmd 'doctor in the vault'
+
+# The QMD option. Doctor installs qmd for a vault that asks for it, silently.
+cp -R "$home/vault" "$home/vault-qmd"
+cd "$home/vault-qmd"
+sed -i.bak 's/^search = .*/search = "qmd"/' kbx.toml
+rm kbx.toml.bak
+
+run doctor-3 'kbx doctor, search = "qmd", first run' doctor
+[[ $status == 0 ]] || fail "the first qmd doctor exited $status"
+[[ ! -s $home/doctor-3.err ]] || fail "the first qmd doctor wrote to stderr"
+installed=$(qmd_row doctor-3)
+[[ -n $installed ]] || fail "the first qmd doctor did not report qmd ok"
+command -v qmd >/dev/null || fail "qmd is not on PATH after the first qmd doctor"
+npm ls -g @tobilu/qmd || fail "@tobilu/qmd is not in the global packages after the first qmd doctor"
+
+run doctor-4 'kbx doctor, search = "qmd", second run' doctor
+[[ $status == 0 ]] || fail "the second qmd doctor exited $status"
+[[ ! -s $home/doctor-4.err ]] || fail "the second qmd doctor wrote to stderr"
+present=$(qmd_row doctor-4)
+[[ $present == "$installed" ]] || fail "the second qmd doctor found ${present:-no qmd}, not $installed"
+
+cp -R "$vault" "$home/vault-init"
+cd "$home/vault-init"
+
+run init-qmd 'kbx init --search qmd' init --search qmd
+[[ $status == 0 ]] || fail "kbx init --search qmd exited $status"
+grep -qx 'search = "qmd".*' kbx.toml || fail "kbx init --search qmd did not choose qmd"
+
+# Each top-level folder is a scope. Init only warns when qmd refuses a collection.
+scopes=0
+for folder in "$vault"/*/; do
+  scope=$(basename "$folder")
+  scopes=$((scopes + 1))
+  grep -qxF "created qmd collection $scope" "$home/init-qmd.out" ||
+    fail "kbx init --search qmd created no qmd collection for $scope"
+done
+
+run doctor-5 'kbx doctor, after kbx init --search qmd' doctor
+[[ $status == 0 ]] || fail "doctor on the qmd vault exited $status"
+grep -Eq '^search +ok +qmd' "$home/doctor-5.out" || fail "doctor on the qmd vault did not report qmd"
+grep -Eq "^collections +ok +$scopes in index " "$home/doctor-5.out" ||
+  fail "doctor on the qmd vault did not report $scopes collections"

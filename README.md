@@ -42,8 +42,8 @@ kbx export edges --jsonl   # the edges table, one JSON object per line
 kbx export reviews --jsonl # the reviews table; `kbx import reviews --jsonl` reads it back
 kbx export rdf             # the graph as Turtle; see docs/export.md
 kbx bakeoff                # score judge models against labels; see docs/judge-bakeoff.md
-kbx doctor                 # check the vault, the index, RAM, the judges, qmd and its collections
-kbx doctor --fix           # create the qmd collections that are missing
+kbx doctor                 # check the vault, the index, RAM, the judges and search
+kbx doctor --fix           # on QMD, create the qmd collections that are missing
 ```
 
 The pre-commit hook lints staged notes as they are on disk, so a file edited
@@ -52,11 +52,27 @@ after `git add` is linted as edited.
 Every lint finding is an error except `link.unstable`, a link by filename rather
 than id. That's a warning, because it's how most Obsidian vaults link.
 
-`kbx init` and `kbx doctor` install [QMD](https://www.npmjs.com/package/@tobilu/qmd),
-the search backend, with `npm i -g @tobilu/qmd` if it isn't on `PATH`. That needs
-Node >= 22.
+### Search
 
-Each vault gets its own qmd index, with one collection per scope, so your other
+`kbx suggest` has two search backends, and `search` in `kbx.toml` says which.
+`kbx doctor` prints the one in use.
+
+**`search = "builtin"`** is what `kbx init` writes. It's kbx's own engine, BM25 and a
+local embedding model, kept in `.kbx/search-index.sqlite`. It needs no Node and no
+qmd. It downloads the model (134 MB) on first use, and with no network it searches by
+keyword and says so. [docs/search-engine.md](docs/search-engine.md) has the details.
+
+**`search = "qmd"`** uses [QMD](https://www.npmjs.com/package/@tobilu/qmd). Pick it if
+your notes aren't in English, since the built-in model reads English only, or if you
+already run QMD and want its index. Start a vault with `kbx init --search qmd`. `kbx
+init` and `kbx doctor` then install it with `npm i -g @tobilu/qmd` if it isn't on
+`PATH`. That needs Node >= 22, which nothing else in kbx does.
+
+A vault made by an earlier kbx says `search = "qmd"` and stays on QMD. A `kbx.toml`
+with no `search` key uses QMD if it lists qmd collections, and the built-in engine if
+not. To move a vault, change the key; each backend keeps its own index.
+
+On QMD, each vault gets its own qmd index, with one collection per scope, so your other
 qmd collections are left alone. `qmd.roots` in `kbx.toml` says which folder each
 collection covers. `kbx suggest` brings the index up to date first, which
 downloads qmd's models (about 2 GB) the first time, then runs one search per
@@ -66,11 +82,6 @@ search only when its note, or a section it found, has changed. Delete that file 
 search afresh; [docs/embedding-cache.md](docs/embedding-cache.md) has the details.
 Set `qmd.index` to use an index of your own; kbx then searches it but leaves updating
 it to you.
-
-`search = "builtin"` in `kbx.toml` uses kbx's own engine instead, with no Node and no
-qmd: BM25 and a local embedding model, kept in `.kbx/search-index.sqlite`. It
-downloads the model on first use, and with no network it searches by keyword and
-says so. [docs/search-engine.md](docs/search-engine.md) has the details.
 
 Logs go to stderr. Set `KBX_LOG=debug` to see each file that's skipped, and pass
 `--log json` to get one JSON object per line.

@@ -1,13 +1,26 @@
 # The built-in search engine
 
-`search = "builtin"` in `kbx.toml` gives `qmd_knn` a search engine inside kbx: BM25
-and a local embedding model, with no Node and no qmd. `search = "qmd"` keeps the QMD
-path exactly as it was.
+`search = "builtin"` in `kbx.toml`, which `kbx init` writes, gives `qmd_knn` a search
+engine inside kbx: BM25 and a local embedding model, with no Node and no qmd.
+`search = "qmd"`, or `kbx init --search qmd`, keeps the QMD path exactly as it was.
 
 **The answer:** on the three vaults below it matches QMD within the tolerance, and a
 first run on the 10,000-note vault takes about 10 minutes instead of about 41. The
 evidence for quality is thin in one place, which [Limits](#limits-of-this-evidence)
 spells out: nobody has labelled a `qmd_knn` pair on a real vault.
+
+## Which backend a vault uses
+
+| `kbx.toml` | Backend |
+|---|---|
+| `search = "builtin"` or `search = "qmd"` | That one. Every vault from `kbx init` has the key, including those from earlier versions, which wrote `"qmd"`. |
+| No `search` key, `qmd.collections` or `qmd.roots` set | QMD: the file was set up for it, and moving would leave its collections behind unannounced. Earlier versions refused such a file. |
+| No `search` key, nothing about qmd | The built-in engine. |
+
+`kbx doctor` prints a `search` row naming the backend, and why when it was inferred. It
+looks for qmd and its collections only on QMD, and installs nothing outside a vault.
+To move a vault, change the key. The indexes are separate files, so moving back costs
+nothing, and `.kbx/search-index.sqlite` can be deleted once you're done with it.
 
 ## How it works
 

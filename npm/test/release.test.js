@@ -390,25 +390,45 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
       case $1 in
         --version) echo "kbx \${FAKE_VERSION:-1.2.3}" ;;
         doctor)
+          if [[ -f kbx.toml ]] && grep -q '^search = "qmd"' kbx.toml; then
+            [[ $FAKE_QMD_DOCTOR != noisy ]] || echo "added 300 packages" >&2
+            if [[ $FAKE_QMD_DOCTOR == fails ]]; then ${ROW} qmd fail "not installed"; exit 1; fi
+            if [[ $FAKE_QMD_DOCTOR == unhealthy ]]; then ${ROW} qmd ok "$here/qmd"; exit 1; fi
+            if [[ $FAKE_QMD_DOCTOR == moves && -e $here/qmd ]]; then ${ROW} qmd ok /elsewhere/qmd; exit 0; fi
+            if [[ $FAKE_QMD_DOCTOR != skips ]]; then touch "$here/qmd"; chmod +x "$here/qmd"; fi
+            ${ROW} search "\${FAKE_QMD_SEARCH_ROW:-ok}" qmd
+            ${ROW} qmd ok "$here/qmd"
+            ${ROW} collections "\${FAKE_COLLECTIONS_ROW:-ok}" "\${FAKE_COLLECTIONS:-4} in index kbx-abc"
+            exit 0
+          fi
           [[ $FAKE_DOCTOR != noisy ]] || echo "added 300 packages" >&2
-          if [[ $FAKE_DOCTOR == fails ]]; then ${ROW} qmd fail "not installed"; exit 1; fi
-          if [[ $FAKE_DOCTOR == unhealthy ]]; then ${ROW} qmd ok "$here/qmd"; exit 1; fi
-          if [[ $FAKE_DOCTOR == moves && -e $here/qmd ]]; then ${ROW} qmd ok /elsewhere/qmd; exit 0; fi
-          if [[ $FAKE_DOCTOR != skips ]]; then touch "$here/qmd"; chmod +x "$here/qmd"; fi
+          [[ $FAKE_DOCTOR != fails ]] || exit 1
+          if [[ $FAKE_DOCTOR == installs ]]; then touch "$here/qmd"; chmod +x "$here/qmd"; fi
           if [[ -f kbx.toml ]]; then
             ${ROW} vault ok "$PWD"
             ${ROW} index "\${FAKE_INDEX_ROW:-ok}" "25 notes, 58 edges, 29 sections, 2 hidden links"
+            ${ROW} search "\${FAKE_SEARCH_ROW:-ok}" "builtin, model ready"
           fi
-          ${ROW} qmd ok "$here/qmd"
-          [[ ! -f kbx.toml ]] || ${ROW} collections "\${FAKE_COLLECTIONS_ROW:-ok}" "\${FAKE_COLLECTIONS:-4} in index kbx-abc"
           ;;
         init)
-          touch kbx.toml
+          if [[ $2 == --search ]]; then
+            echo 'search = "qmd"' > kbx.toml
+            [[ $FAKE_QMD_INIT != fails ]] || exit 1
+            if [[ $FAKE_QMD_INIT == warns ]]; then echo "warning: qmd collections not created" >&2; exit 0; fi
+            for scope in decisions engineering lint operations; do
+              [[ $scope == "$FAKE_INIT_SKIPS" ]] || echo "created qmd collection $scope"
+            done
+            exit 0
+          fi
+          printf 'search = "%s"  # or "qmd" or "builtin"\\n' "\${FAKE_DEFAULT_SEARCH:-builtin}" > kbx.toml
           [[ $FAKE_INIT != fails ]] || exit 1
-          if [[ $FAKE_INIT == warns ]]; then echo "warning: qmd collections not created" >&2; exit 0; fi
-          for scope in decisions engineering lint operations; do
-            [[ $scope == "$FAKE_INIT_SKIPS" ]] || echo "created qmd collection $scope"
-          done
+          [[ $FAKE_INIT != collections ]] || echo "created qmd collection decisions"
+          ;;
+        suggest)
+          [[ $FAKE_SUGGEST != fails ]] || exit 1
+          if [[ $FAKE_SUGGEST == installs ]]; then touch "$here/qmd"; chmod +x "$here/qmd"; fi
+          echo "\${FAKE_KNN:-5} candidates"
+          echo "  qmd_knn \${FAKE_KNN:-5}"
           ;;
         index) echo "\${FAKE_INDEXED:-indexed 25, 0 unchanged, removed 0, 2 skipped, 2 failed, 2 hidden links}" ;;
         lint)
@@ -461,13 +481,15 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
     });
 
     describe('smoke-npm.sh', () => {
-      it('passes on a good install, and prints both doctor runs', (t) => {
+      it('passes on a good install, and prints every doctor run', (t) => {
         const result = smokeNpm(t);
         assert.equal(result.status, 0, result.stderr);
         assert.equal(result.calls[0], 'npm i -g kbx-cli@1.2.3');
         assert.equal(result.stdout.match(/^qmd +ok +/gm).length, 3);
-        assert.match(result.stdout, /kbx doctor, first run/);
-        assert.match(result.stdout, /kbx doctor, second run/);
+        assert.match(result.stdout, /kbx doctor, outside a vault/);
+        assert.match(result.stdout, /kbx doctor, in the vault/);
+        assert.match(result.stdout, /search = "qmd", first run/);
+        assert.match(result.stdout, /search = "qmd", second run/);
       });
 
       it('finds a platform package npm hoisted next to the shim', (t) => {
@@ -476,10 +498,19 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
         assert.match(result.stdout, /platform package: .*\/root\/kbx-linux-x64-gnu$/m);
       });
 
-      it('runs doctor before init, because init would install qmd', (t) => {
+      it('finishes the default before anything may install qmd', (t) => {
         const result = smokeNpm(t);
-        const order = result.calls.filter((call) => /^fake-kbx (doctor|init)/.test(call));
-        assert.deepEqual(order.slice(0, 3).map((call) => call.split(' ')[1]), ['doctor', 'doctor', 'init']);
+        const order = result.calls.filter((call) => /^fake-kbx (doctor|init|suggest)/.test(call));
+        assert.deepEqual(order.map((call) => call.split(' ').slice(1, 3).join(' ')), [
+          'doctor',
+          'init',
+          'suggest --judge',
+          'doctor',
+          'doctor',
+          'doctor',
+          'init --search',
+          'doctor',
+        ]);
       });
 
       // Each row: what goes wrong, and the words the job must fail with.
@@ -492,20 +523,31 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
         ],
         ['the wrong platform package is installed', { FAKE_PLATFORMS: 'kbx-darwin-arm64' }, /expected kbx-linux-x64-gnu/],
         ['kbx reports another version', { FAKE_VERSION: '1.2.2' }, /kbx --version printed kbx 1\.2\.2/],
-        ['the first doctor fails', { FAKE_DOCTOR: 'fails' }, /first doctor exited 1/],
-        ['doctor exits non-zero with qmd ok', { FAKE_DOCTOR: 'unhealthy' }, /first doctor exited 1/],
-        ['the install leaks into doctor\'s output', { FAKE_DOCTOR: 'noisy' }, /first doctor wrote to stderr/],
-        ['doctor says ok but installs nothing', { FAKE_DOCTOR: 'skips' }, /qmd is not on PATH after the first doctor/],
-        ['the second doctor reports another qmd', { FAKE_DOCTOR: 'moves' }, /second doctor found \/elsewhere\/qmd/],
+        ['doctor fails outside a vault', { FAKE_DOCTOR: 'fails' }, /doctor outside a vault exited 1/],
+        ['doctor is noisy outside a vault', { FAKE_DOCTOR: 'noisy' }, /doctor outside a vault wrote to stderr/],
+        ['doctor installs qmd by default', { FAKE_DOCTOR: 'installs' }, /doctor outside a vault installed qmd/],
         ['init fails', { FAKE_INIT: 'fails' }, /kbx init exited 1/],
-        ['init only warns about collections', { FAKE_INIT: 'warns' }, /no qmd collection for decisions/],
-        ['init misses one scope', { FAKE_INIT_SKIPS: 'lint' }, /no qmd collection for lint/],
-        ['doctor warns about collections', { FAKE_COLLECTIONS_ROW: 'warn' }, /did not report 4 collections/],
-        ['doctor counts other collections', { FAKE_COLLECTIONS: '3' }, /did not report 4 collections/],
+        ['init chooses qmd by default', { FAKE_DEFAULT_SEARCH: 'qmd' }, /did not choose the built-in engine/],
+        ['init sets up qmd by default', { FAKE_INIT: 'collections' }, /kbx init set up qmd by default/],
         ['index compiles the wrong notes', { FAKE_INDEXED: 'indexed 0, 0 unchanged' }, /kbx index printed/],
         ['lint finds nothing', { FAKE_LINT: '0 errors, 0 warnings', FAKE_LINT_STATUS: '0' }, /kbx lint exited 0/],
         ['lint finds other errors', { FAKE_LINT: '11 errors, 1 warning' }, /kbx lint printed/],
+        ['suggest fails', { FAKE_SUGGEST: 'fails' }, /kbx suggest exited 1/],
+        ['suggest finds nothing', { FAKE_KNN: '0' }, /found no qmd_knn candidates/],
+        ['suggest installs qmd', { FAKE_SUGGEST: 'installs' }, /kbx suggest installed qmd/],
         ['doctor does not see the index', { FAKE_INDEX_ROW: 'warn' }, /doctor in the vault/],
+        ['doctor does not report the engine', { FAKE_SEARCH_ROW: 'warn' }, /did not report the built-in engine/],
+        ['the first qmd doctor fails', { FAKE_QMD_DOCTOR: 'fails' }, /first qmd doctor exited 1/],
+        ['doctor exits non-zero with qmd ok', { FAKE_QMD_DOCTOR: 'unhealthy' }, /first qmd doctor exited 1/],
+        ['the install leaks into doctor\'s output', { FAKE_QMD_DOCTOR: 'noisy' }, /first qmd doctor wrote to stderr/],
+        ['doctor says ok but installs nothing', { FAKE_QMD_DOCTOR: 'skips' }, /qmd is not on PATH after the first qmd doctor/],
+        ['the second doctor reports another qmd', { FAKE_QMD_DOCTOR: 'moves' }, /second qmd doctor found \/elsewhere\/qmd/],
+        ['init --search qmd fails', { FAKE_QMD_INIT: 'fails' }, /kbx init --search qmd exited 1/],
+        ['init only warns about collections', { FAKE_QMD_INIT: 'warns' }, /no qmd collection for decisions/],
+        ['init misses one scope', { FAKE_INIT_SKIPS: 'lint' }, /no qmd collection for lint/],
+        ['doctor does not report qmd', { FAKE_QMD_SEARCH_ROW: 'warn' }, /did not report qmd/],
+        ['doctor warns about collections', { FAKE_COLLECTIONS_ROW: 'warn' }, /did not report 4 collections/],
+        ['doctor counts other collections', { FAKE_COLLECTIONS: '3' }, /did not report 4 collections/],
       ];
 
       for (const [name, env, message] of FAILURES) {
@@ -558,35 +600,65 @@ BINARY
       }
 
       const ROW_FAIL = `printf 'qmd           fail not installed\\n'`;
+      const ROW_OK = `printf 'search        ok   builtin; kbx suggest downloads its model\\n'`;
 
-      it('passes when doctor fails naming Node >= 22', (t) => {
-        const result = noNpm(t, `${ROW_FAIL}; echo '${MESSAGE}' >&2; exit 1`);
+      // A kbx whose `init` and default doctor work, with `onQmd` as its doctor
+      // for a vault with `search = "qmd"`, and `onDefault` for one without.
+      function kbx(onQmd, onDefault = `${ROW_OK}; exit 0`) {
+        return `
+          if [[ $1 == init ]]; then echo 'search = "builtin"' > kbx.toml; exit 0; fi
+          if grep -q '"qmd"' kbx.toml; then ${onQmd}; fi
+          ${onDefault}`;
+      }
+
+      const REFUSES = `${ROW_FAIL}; echo '${MESSAGE}' >&2; exit 1`;
+
+      it('passes when the default works and qmd fails naming Node >= 22', (t) => {
+        const result = noNpm(t, kbx(REFUSES));
         assert.equal(result.status, 0, result.stderr);
         assert.match(result.stdout, /Node >= 22/);
       });
 
-      it('takes every npm and node off the PATH doctor sees', (t) => {
-        const script = `
+      it('takes every npm and node off the PATH kbx sees', (t) => {
+        const script = kbx(`
           if type -P npm || type -P node; then echo found >&2; exit 0; fi
-          ${ROW_FAIL}; echo '${MESSAGE}' >&2; exit 1`;
+          ${REFUSES}`);
         const result = noNpm(t, script);
         assert.equal(result.status, 0, result.stderr);
       });
 
-      it('fails when doctor succeeds', (t) => {
-        const result = noNpm(t, `${ROW_FAIL}; echo '${MESSAGE}' >&2; exit 0`);
+      it('fails when the default fails without npm', (t) => {
+        const result = noNpm(t, kbx(REFUSES, REFUSES));
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /doctor on the default exited 1/);
+      });
+
+      it('fails when the default has no search row', (t) => {
+        const result = noNpm(t, kbx(REFUSES, 'exit 0'));
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /no built-in search row/);
+      });
+
+      it('fails when the default reports on qmd', (t) => {
+        const result = noNpm(t, kbx(REFUSES, `${ROW_OK}; ${ROW_FAIL}; exit 0`));
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /on the default printed a qmd row/);
+      });
+
+      it('fails when doctor succeeds on qmd', (t) => {
+        const result = noNpm(t, kbx(`${ROW_FAIL}; echo '${MESSAGE}' >&2; exit 0`));
         assert.equal(result.status, 1);
         assert.match(result.stderr, /doctor exited 0/);
       });
 
       it('fails when the message does not name Node >= 22', (t) => {
-        const result = noNpm(t, `${ROW_FAIL}; echo 'error: no qmd' >&2; exit 1`);
+        const result = noNpm(t, kbx(`${ROW_FAIL}; echo 'error: no qmd' >&2; exit 1`));
         assert.equal(result.status, 1);
         assert.match(result.stderr, /does not name Node >= 22/);
       });
 
       it('fails when the qmd row is not a failure', (t) => {
-        const result = noNpm(t, `echo '${MESSAGE}' >&2; exit 1`);
+        const result = noNpm(t, kbx(`echo '${MESSAGE}' >&2; exit 1`));
         assert.equal(result.status, 1);
         assert.match(result.stderr, /no failed qmd row/);
       });
