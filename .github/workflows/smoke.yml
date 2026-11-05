@@ -65,6 +65,7 @@ jobs:
         with:
           node-version: 22
       - run: .github/scripts/smoke-wait.sh npm kbx-cli "$VERSION"
+      - run: .github/scripts/smoke-wait.sh npm "${{ matrix.package }}" "$VERSION"
       - run: .github/scripts/smoke-npm.sh "$VERSION" "${{ matrix.package }}" tests/fixtures/vault
 
   no-npm:
