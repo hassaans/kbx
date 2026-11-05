@@ -23,6 +23,7 @@ jobs:
       - run: cargo test --package kbx --locked --test watch --no-run
       - shell: bash
         run: |
+          set +e +o pipefail
           # Load the runner so that stalls of the size CI once saw can happen.
           for j in 1 2 3 4 5 6 7 8; do (while true; do yes > /dev/null; done) & done
           for j in 1 2 3; do (while true; do dd if=/dev/zero of="$RUNNER_TEMP/load$j" bs=1M count=768 2>/dev/null; rm -f "$RUNNER_TEMP/load$j"; done) & done
