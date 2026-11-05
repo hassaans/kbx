@@ -499,7 +499,7 @@ mod tests {
     fn session() -> (TempDir, Session) {
         let dir = TempDir::new().unwrap();
         copy_dir(Path::new(FIXTURE), dir.path());
-        init(dir.path(), None).unwrap();
+        init(dir.path(), None, kbx_core::Search::Builtin).unwrap();
         let project = Project::discover(dir.path()).unwrap();
         let yaml = fs::read_to_string(&project.ontology).unwrap();
         let mut graph = Graph::open(&project.graph).unwrap();

@@ -57,7 +57,7 @@ fn assert_one_plain_path_per_scope(vault: &Fixture, added: &[String]) {
 #[test]
 fn init_gives_qmd_a_plain_path_for_each_scope() {
     let vault = fixture_vault();
-    let out = vault.ok(&["init"]);
+    let out = vault.ok(&["init", "--search", "qmd"]);
     for scope in SCOPES {
         assert!(
             out.contains(&format!("created qmd collection {scope}")),
@@ -70,7 +70,7 @@ fn init_gives_qmd_a_plain_path_for_each_scope() {
 #[test]
 fn doctor_fix_gives_qmd_the_same_plain_paths() {
     let vault = fixture_vault();
-    vault.ok(&["init"]);
+    vault.ok(&["init", "--search", "qmd"]);
     take_added(&vault);
     vault.kbx(&["doctor", "--fix"]);
     assert_one_plain_path_per_scope(&vault, &take_added(&vault));
@@ -80,7 +80,7 @@ fn doctor_fix_gives_qmd_the_same_plain_paths() {
 #[test]
 fn kbx_toml_records_no_verbatim_path() {
     let vault = fixture_vault();
-    vault.ok(&["init"]);
+    vault.ok(&["init", "--search", "qmd"]);
     vault.kbx(&["doctor", "--fix"]);
     let config = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
     assert!(!config.contains(r"?\"), "{config}");

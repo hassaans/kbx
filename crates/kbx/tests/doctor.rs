@@ -87,6 +87,10 @@ fn a_healthy_vault_reports_every_check_and_exits_0() {
     assert_eq!(status(&output, "ontology"), "ok");
     assert_eq!(status(&output, "index"), "ok");
     assert!(row(&output, "index").contains("25 notes"), "{output}");
+    assert_eq!(
+        row(&output, "search").split_whitespace().nth(2),
+        Some("qmd")
+    );
     assert_eq!(status(&output, "qmd"), "ok");
     assert!(
         row(&output, "qmd").contains(vault.path.program("qmd").to_str().unwrap()),
@@ -105,7 +109,7 @@ fn outside_a_vault_the_machine_checks_still_run() {
     let text = stdout(&output);
     assert_eq!(status(&text, "vault"), "warn", "{text}");
     assert!(row(&text, "vault").contains("kbx init"), "{text}");
-    assert_eq!(status(&text, "qmd"), "ok");
+    assert_eq!(status(&text, "search"), "ok");
     assert_eq!(status(&text, "ram"), "ok");
 }
 
@@ -258,7 +262,7 @@ fn init_installs_qmd_silently() {
     let path = FakePath::empty();
     working_npm(&path);
     let dir = TempDir::new().unwrap();
-    let output = path.kbx(dir.path(), &["init"]);
+    let output = path.kbx(dir.path(), &["init", "--search", "qmd"]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(npm_calls(&path), ["i -g @tobilu/qmd"]);
     assert_eq!(stderr(&output), "");
@@ -269,7 +273,7 @@ fn init_installs_qmd_silently() {
 fn init_without_node_exits_non_zero_and_leaves_a_working_vault() {
     let path = FakePath::empty();
     let dir = TempDir::new().unwrap();
-    let output = path.kbx(dir.path(), &["init"]);
+    let output = path.kbx(dir.path(), &["init", "--search", "qmd"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
         stderr(&output).contains("Node >= 22"),
@@ -285,7 +289,7 @@ fn init_with_a_failing_install_prints_the_same_report() {
     let path = FakePath::empty();
     failing_npm(&path);
     let dir = TempDir::new().unwrap();
-    let output = path.kbx(dir.path(), &["init"]);
+    let output = path.kbx(dir.path(), &["init", "--search", "qmd"]);
     assert_eq!(output.status.code(), Some(1));
     let text = stderr(&output);
     assert!(text.contains(&format!("`{MANUAL}` failed")), "{text}");

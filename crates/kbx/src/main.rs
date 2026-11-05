@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use kbx_core::{
-    Finding, Graph, IndexOptions, IndexReport, Neighbor, Node, Project, Severity, index_vault,
-    init, lint_vault,
+    Finding, Graph, IndexOptions, IndexReport, Neighbor, Node, Project, Search, Severity,
+    index_vault, init, lint_vault,
 };
 use serde_json::json;
 use tracing_subscriber::EnvFilter;
@@ -70,14 +70,35 @@ enum LintFormat {
     Json,
 }
 
+/// A value of `search` in `kbx.toml`.
+#[derive(Clone, Copy, ValueEnum)]
+enum SearchChoice {
+    /// The engine inside kbx: no Node, no qmd.
+    Builtin,
+    /// QMD, installed with npm if it's missing. Needs Node >= 22.
+    Qmd,
+}
+
+impl From<SearchChoice> for Search {
+    fn from(choice: SearchChoice) -> Search {
+        match choice {
+            SearchChoice::Builtin => Search::Builtin,
+            SearchChoice::Qmd => Search::Qmd,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
-    /// Create .kbx/, kbx.toml and the example ontology, install qmd if it's
-    /// missing, and create a qmd collection per scope.
+    /// Create .kbx/, kbx.toml and the example ontology. With `--search qmd`,
+    /// also install qmd if it's missing and create a qmd collection per scope.
     Init {
         /// Use this ontology file instead of the example.
         #[arg(long)]
         ontology: Option<PathBuf>,
+        /// The search backend of a new vault.
+        #[arg(long, value_enum)]
+        search: Option<SearchChoice>,
     },
     /// Compile the vault into .kbx/graph.sqlite, by content hash.
     Index {
@@ -278,8 +299,8 @@ enum Command {
         #[command(subcommand)]
         what: ImportWhat,
     },
-    /// Check the vault, the index, RAM, the judges and qmd, installing qmd if
-    /// it's missing.
+    /// Check the vault, the index, RAM, the judges and search. On QMD, install
+    /// qmd if it's missing.
     Doctor {
         /// Create the qmd collections that are missing.
         #[arg(long)]
@@ -358,7 +379,7 @@ fn main() -> ExitCode {
     }
 
     let result = match cli.command {
-        Command::Init { ontology } => run_init(ontology),
+        Command::Init { ontology, search } => run_init(ontology, search.map(Search::from)),
         Command::Index { full, paths } => run_index(IndexOptions {
             full,
             paths,
@@ -461,18 +482,30 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_init(ontology: Option<PathBuf>) -> Result<ExitCode, Box<dyn Error>> {
+fn run_init(ontology: Option<PathBuf>, search: Option<Search>) -> Result<ExitCode, Box<dyn Error>> {
     let dir = env::current_dir()?;
-    let report = init(&dir, ontology.as_deref())?;
+    let report = init(&dir, ontology.as_deref(), search.unwrap_or(Search::Builtin))?;
     if report.config {
         println!("created kbx.toml");
     }
     if report.ontology {
         println!("created .kbx/ontology.yaml");
     }
+    let mut project = Project::load(&dir.join(kbx_core::CONFIG_FILE))?;
+    let backend = project.config.backend();
+    if search.is_some_and(|wanted| wanted != backend) {
+        let file = project.config_file.display();
+        return Err(format!("{file} already chooses another backend; edit `search` there").into());
+    }
+    if backend == Search::Builtin {
+        println!(
+            "searching with the built-in engine; `kbx suggest` downloads its model ({} MB) once",
+            kbx_gen::MODEL.megabytes
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
     println!("found qmd at {}", qmd::ensure()?.display());
     // The vault works without search, so this doesn't fail the command.
-    let mut project = Project::load(&dir.join(kbx_core::CONFIG_FILE))?;
     match qmd::set_up_collections(&mut project) {
         Ok(created) => {
             for name in created {

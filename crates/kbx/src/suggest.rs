@@ -84,7 +84,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
 
     let wants_knn = |names: &Vec<String>| names.iter().any(|name| name == "qmd_knn");
     let searching = options.generators.as_ref().is_none_or(wants_knn);
-    let search = match project.config.search {
+    let search = match project.config.backend() {
         SearchBackend::Qmd => qmd_backend(&project, &graph, searching, read_only)?,
         SearchBackend::Builtin => builtin::backend(&project, &graph, searching, read_only)?,
     };

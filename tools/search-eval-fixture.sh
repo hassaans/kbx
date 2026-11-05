@@ -12,8 +12,7 @@ repo=$(cd "$(dirname "$0")/.." && pwd)
 
 cp -R "$repo/tests/fixtures/vault/." "$vault"
 cd "$vault"
-"$kbx" init > /dev/null
-sed -i.bak "s/^search = .*/search = \"$backend\"/" kbx.toml && rm kbx.toml.bak
+"$kbx" init --search "$backend" > /dev/null
 "$kbx" index > /dev/null 2>&1 || true
 python3 - "$repo/tests/fixtures/bakeoff/synthetic-labels.jsonl" <<'PY'
 import json, sqlite3, sys
