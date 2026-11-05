@@ -18,6 +18,9 @@ use tokenizers::{PaddingParams, Tokenizer, TruncationParams};
 /// them: for a machine with no network, and for the tests.
 pub const MODEL_DIR_VAR: &str = "KBX_MODEL_DIR";
 
+/// Names a mirror to download the model's files from, in place of Hugging Face.
+pub const MODEL_URL_VAR: &str = "KBX_MODEL_URL";
+
 /// Longer than this says nothing more: the model reads [`MAX_TOKENS`] of it.
 const MAX_CHARS: usize = 8000;
 
@@ -98,10 +101,12 @@ impl Model {
         if env::var_os(MODEL_DIR_VAR).is_some() || self.is_present() {
             return Ok(dir);
         }
-        let base = format!(
-            "https://huggingface.co/{}/resolve/{}",
-            self.repo, self.revision
-        );
+        let base = env::var(MODEL_URL_VAR).unwrap_or_else(|_| {
+            format!(
+                "https://huggingface.co/{}/resolve/{}",
+                self.repo, self.revision
+            )
+        });
         fs::create_dir_all(&dir).map_err(|error| EmbedError::Io(dir.clone(), error))?;
         for file in &self.files {
             let path = dir.join(file.name);

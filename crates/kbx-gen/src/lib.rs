@@ -31,7 +31,8 @@ pub use alias::AliasCooccur;
 pub use builtin::{BuiltinSearch, SearchIndex, SyncError, Synced};
 pub use cache::{CachedSearch, SearchCache, vault_state};
 pub use embed::{
-    BertEmbedder, EmbedError, Embedder, MODEL, MODEL_DIR_VAR, Model, ModelFile, Pooling, download,
+    BertEmbedder, EmbedError, Embedder, MODEL, MODEL_DIR_VAR, MODEL_URL_VAR, Model, ModelFile,
+    Pooling, download,
 };
 pub use eval::{Evaluation, Score, evaluate, score};
 pub use kbx_core::cid;

@@ -89,7 +89,7 @@ impl SearchIndex {
     /// [`sync`](SearchIndex::sync) would have embedding to do.
     pub fn needs_embedding(&self, g: &Graph, model: &str) -> rusqlite::Result<bool> {
         if self.stored_model()?.as_deref() != Some(model) {
-            return Ok(has_sections(g)?);
+            return has_sections(g);
         }
         let embedded = self.embedded()?;
         Ok(places(g)?
