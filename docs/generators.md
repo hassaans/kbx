@@ -54,6 +54,8 @@ the same cid, since a cid doesn't depend on which generator found a pair.
 - **A typed edge wins** where it joins the same two notes as an inline link. In
   `two_hop_bridge` the heavier of the two counts, which at the default is the typed
   edge for every relation in the example ontology.
+- **A relation accepted in `.kbx/` is a typed edge,** and counts exactly as one in
+  the frontmatter does.
 - **`qmd_knn` is unchanged.** "Least linked first" still means typed degree, so the
   notes it searches stay the same.
 

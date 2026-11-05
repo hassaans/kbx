@@ -795,6 +795,52 @@ fn a_note_with_too_many_inline_links_is_a_list() {
 }
 
 #[test]
+fn a_relation_accepted_in_kbx_counts_like_one_in_the_frontmatter() {
+    let depends_on = format!("depends_on: [\"{}\"]\n", link(1));
+    let stated = around_one(&depends_on, &link(1));
+
+    let mut accepted = around_one("", &link(1));
+    for (src, dst) in [(2, 1), (3, 1), (7, 6), (8, 6)] {
+        accepted
+            .graph
+            .connection()
+            .execute(
+                "INSERT INTO accepted (src, dst, rel) VALUES (?, ?, 'depends_on')",
+                [id(src), id(dst)],
+            )
+            .unwrap();
+    }
+    index_vault(
+        &mut accepted.graph,
+        &accepted.root,
+        ONTOLOGY,
+        &Exclusions::new(&accepted.root, &[]).unwrap(),
+        &Default::default(),
+        &IndexOptions {
+            full: true,
+            ..IndexOptions::default()
+        },
+    )
+    .unwrap();
+    let from_kbx: i64 = accepted
+        .graph
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE origin = 'kbx' AND weight IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(from_kbx, 4);
+
+    for generator in STRUCTURAL {
+        let found = accepted.run(generator);
+        assert!(found.contains_key(&pair(2, 3)), "{}", generator.name());
+        assert_eq!(found, stated.run(generator), "{}", generator.name());
+    }
+}
+
+#[test]
 fn inline_links_do_not_change_which_notes_qmd_knn_searches_first() {
     let dir = TempDir::new().unwrap();
     let both = format!("Words. {} {}", link(2), link(3));
