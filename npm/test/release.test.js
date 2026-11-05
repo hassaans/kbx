@@ -439,6 +439,13 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
       });
     }
 
+    it('expects platform packages that exist', () => {
+      const workflow = fs.readFileSync(path.join(REPO, '.github', 'workflows', 'smoke.yml'), 'utf8');
+      const expected = [...workflow.matchAll(/package: (\S+)/g)].map((match) => match[1]);
+      assert.deepEqual(expected, ['kbx-linux-x64-gnu', 'kbx-darwin-arm64', 'kbx-windows-x64']);
+      for (const pkg of expected) assert.ok(TARGETS.some((row) => row.pkg === pkg), pkg);
+    });
+
     describe('smoke-npm.sh', () => {
       it('passes on a good install, and prints both doctor runs', (t) => {
         const result = smokeNpm(t);

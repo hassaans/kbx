@@ -51,7 +51,7 @@ jobs:
           - os: macos-latest
             package: kbx-darwin-arm64
           - os: windows-latest
-            package: kbx-win32-x64-msvc
+            package: kbx-windows-x64
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
