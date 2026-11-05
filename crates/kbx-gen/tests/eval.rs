@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use kbx_core::{Exclusions, Graph, IndexOptions, Ontology, Review, cid, index_vault};
+use kbx_core::{
+    DEFAULT_MENTION_WEIGHT, Exclusions, Graph, IndexOptions, Ontology, Review, cid, index_vault,
+};
 use kbx_gen::{Candidate, GenError, Generator, Proposal, Scope, TypePairPrior, evaluate, score};
 use rusqlite::params;
 use serde_json::{Map, json};
@@ -179,6 +181,7 @@ impl Setup {
             vault: Path::new(VAULT),
             ontology: &self.ontology,
             note: None,
+            mention_weight: DEFAULT_MENTION_WEIGHT,
         }
     }
 

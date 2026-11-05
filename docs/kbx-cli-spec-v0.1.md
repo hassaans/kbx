@@ -58,6 +58,11 @@ below; the project's fixed decisions override it where they differ:
   `kbx sync-stage` included, which refuse without it. `kbx apply` writes what's
   already kept in `.kbx/`, and `kbx mark-reviewed` sets the lock in either mode.
   See `docs/review.md` and `docs/frontmatter-writer.md`.
+- §5's `common_neighbors`, `adamic_adar` and `two_hop_bridge` also read inline
+  links, at `generators.mention_weight` in `kbx.toml` (0.25, and 0 for typed
+  edges alone). A typed pair scores as it did. A note with too many inline links
+  is a list, and its inline links are ignored rather than damped. See
+  `docs/generators.md`.
 
 ---
 

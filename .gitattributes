@@ -1,6 +1,7 @@
 # These bytes feed content and ontology hashes, so they must match on every
 # platform.
 tests/fixtures/** text eol=lf
+crates/kbx-gen/tests/fixtures/** text eol=lf
 schema/** text eol=lf
 prompts/** text eol=lf
 crates/kbx-core/assets/** text eol=lf

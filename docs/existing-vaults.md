@@ -94,3 +94,7 @@ Links resolve as usual, so `[[Alpha Plan]]` in a body becomes a `mentions` edge.
 `kbx lint` doesn't call a link by filename `link.unstable` when the target's id
 is inferred: the path is all that id stands on, so there's nothing steadier to
 link by.
+
+The structural generators read those edges, so a vault with nothing but inline
+links gets `common_neighbors`, `adamic_adar` and `two_hop_bridge` candidates from
+the start: see [the generators](generators.md).

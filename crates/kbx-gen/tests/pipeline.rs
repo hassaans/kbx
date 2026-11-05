@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
-use kbx_core::{Exclusions, Graph, IndexOptions, Ontology, STRIKES, index_vault};
+use kbx_core::{
+    DEFAULT_MENTION_WEIGHT, Exclusions, Graph, IndexOptions, Ontology, STRIKES, index_vault,
+};
 use kbx_gen::{
     Budget, Candidate, GenError, Generator, Hit, Query, Scope, Search, SearchError, cid,
     estimate_tokens, generators, store, suggest,
@@ -83,6 +85,7 @@ impl Setup {
             vault: Path::new(VAULT),
             ontology: &self.ontology,
             note,
+            mention_weight: DEFAULT_MENTION_WEIGHT,
         }
     }
 

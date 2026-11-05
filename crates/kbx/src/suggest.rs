@@ -124,6 +124,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         vault: &project.vault,
         ontology: &ontology,
         note: options.note.as_deref(),
+        mention_weight: project.config.generators.mention_weight,
     };
     if options.eval {
         let named = options.generators.is_some();

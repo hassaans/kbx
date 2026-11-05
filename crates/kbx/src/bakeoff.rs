@@ -753,6 +753,7 @@ pub fn prepare(options: Preparing) -> Result<ExitCode, Box<dyn Error>> {
         vault: &project.vault,
         ontology: &ontology,
         note: None,
+        mention_weight: project.config.generators.mention_weight,
     };
     // The usual budget keeps the best scores, and the point is all of them.
     let everything = Budget {

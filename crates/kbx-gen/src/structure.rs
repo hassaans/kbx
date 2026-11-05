@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use kbx_core::Graph;
 use serde_json::json;
@@ -12,7 +12,17 @@ const HUB_DAMPING: f64 = 0.1;
 /// The one relation a hub may bridge (§5).
 const PART_OF: &str = "part_of";
 
-/// Unlinked pairs with shared typed neighbours, scored by how many.
+/// The snapshot the structural generators read: with inline links, unless
+/// their weight is 0.
+fn load(g: &Graph, scope: &Scope<'_>) -> rusqlite::Result<Snapshot> {
+    let snapshot = Snapshot::load(g)?;
+    Ok(match scope.mention_weight > 0.0 {
+        true => snapshot,
+        false => snapshot.without_inline(),
+    })
+}
+
+/// Unlinked pairs with shared neighbours, scored by how many.
 #[derive(Debug, Clone, Copy)]
 pub struct CommonNeighbors;
 
@@ -21,13 +31,13 @@ impl Generator for CommonNeighbors {
         "common_neighbors"
     }
 
-    fn run(&self, g: &Graph, _: &Scope<'_>) -> Result<Vec<Candidate>, GenError> {
-        let snapshot = Snapshot::load(g)?;
-        Ok(from_shared(&snapshot, |_| 1.0))
+    fn run(&self, g: &Graph, scope: &Scope<'_>) -> Result<Vec<Candidate>, GenError> {
+        let snapshot = load(g, scope)?;
+        Ok(from_shared(&snapshot, scope.mention_weight, |_| 1.0))
     }
 }
 
-/// Unlinked pairs with shared typed neighbours, each worth `1 / ln(degree)`.
+/// Unlinked pairs with shared neighbours, each worth `1 / ln(degree)`.
 #[derive(Debug, Clone, Copy)]
 pub struct AdamicAdar;
 
@@ -36,46 +46,73 @@ impl Generator for AdamicAdar {
         "adamic_adar"
     }
 
-    fn run(&self, g: &Graph, _: &Scope<'_>) -> Result<Vec<Candidate>, GenError> {
-        let snapshot = Snapshot::load(g)?;
+    fn run(&self, g: &Graph, scope: &Scope<'_>) -> Result<Vec<Candidate>, GenError> {
+        let snapshot = load(g, scope)?;
         // A shared neighbour has at least two neighbours, so ln is above 0.
-        Ok(from_shared(&snapshot, |id| {
-            1.0 / (snapshot.degree(id) as f64).ln()
+        Ok(from_shared(&snapshot, scope.mention_weight, |degree| {
+            1.0 / (degree as f64).ln()
         }))
     }
 }
 
 /// A candidate for each unlinked pair of neighbours of some note, with `worth`
-/// summed over the notes they share and hubs damped.
-fn from_shared(snapshot: &Snapshot, worth: impl Fn(&str) -> f64) -> Vec<Candidate> {
-    let mut shared: BTreeMap<(&str, &str), Vec<&str>> = BTreeMap::new();
-    for (via, members) in &snapshot.neighbors {
-        let members: Vec<&str> = members.iter().map(String::as_str).collect();
-        for (i, a) in members.iter().enumerate() {
-            for b in &members[i + 1..] {
+/// of its degree summed over the notes they share and hubs damped.
+///
+/// A pair sharing a note by typed edges alone counts as if inline links didn't
+/// exist. Otherwise the note's degree takes them in, and each inline end
+/// multiplies what it's worth by `mention_weight`.
+fn from_shared(
+    snapshot: &Snapshot,
+    mention_weight: f64,
+    worth: impl Fn(usize) -> f64,
+) -> Vec<Candidate> {
+    let vias: BTreeSet<&String> = snapshot
+        .neighbors
+        .keys()
+        .chain(snapshot.inline.keys())
+        .collect();
+    let mut shared: BTreeMap<(&str, &str), Vec<(&str, f64)>> = BTreeMap::new();
+    for via in vias {
+        let typed_ends = ends(snapshot.neighbors.get(via), 0);
+        let inline_ends = ends(snapshot.inline.get(via), 1);
+        let mut members: Vec<_> = typed_ends.chain(inline_ends).collect();
+        members.sort_unstable();
+        let typed = match snapshot.hubs.contains(via) {
+            true => worth(snapshot.degree(via)) * HUB_DAMPING,
+            false => worth(snapshot.degree(via)),
+        };
+        let loose = worth(snapshot.reach(via));
+        for (i, (a, inline_a)) in members.iter().enumerate() {
+            for (b, inline_b) in &members[i + 1..] {
                 if !snapshot.linked(a, b) {
-                    shared.entry((a, b)).or_default().push(via);
+                    let value = match inline_a + inline_b {
+                        0 => typed,
+                        inline => loose * mention_weight.powi(inline),
+                    };
+                    shared.entry((a, b)).or_default().push((via, value));
                 }
             }
         }
     }
-    let candidate = |((a, b), via): ((&str, &str), Vec<&str>)| {
-        let damped = |id: &&str| match snapshot.hubs.contains(*id) {
-            true => worth(id) * HUB_DAMPING,
-            false => worth(id),
-        };
-        Candidate {
-            src: a.to_string(),
-            dst: b.to_string(),
-            score: via.iter().map(damped).sum(),
-            features: json!({ "via": via }),
-        }
+    let candidate = |((a, b), via): ((&str, &str), Vec<(&str, f64)>)| Candidate {
+        src: a.to_string(),
+        dst: b.to_string(),
+        score: via.iter().map(|(_, value)| value).sum(),
+        features: json!({ "via": via.iter().map(|(id, _)| id).collect::<Vec<_>>() }),
     };
     shared.into_iter().map(candidate).collect()
 }
 
+/// The notes in `set`, each with how many inline ends it stands for.
+fn ends(set: Option<&BTreeSet<String>>, inline: i32) -> impl Iterator<Item = (&str, i32)> {
+    let ids = set.into_iter().flatten();
+    ids.map(move |id| (id.as_str(), inline))
+}
+
 /// `A→X←B` with A and B unlinked, scored by the product of the two relation
-/// weights, summed over each X. A hub is an X only by `part_of`.
+/// weights, summed over each X. A hub is an X only by `part_of`. An inline link
+/// weighs `mention_weight`, unless a typed edge joins the same two notes and
+/// weighs more, and is never `part_of`.
 #[derive(Debug, Clone, Copy)]
 pub struct TwoHopBridge;
 
@@ -84,19 +121,21 @@ impl Generator for TwoHopBridge {
         "two_hop_bridge"
     }
 
-    fn run(&self, g: &Graph, _: &Scope<'_>) -> Result<Vec<Candidate>, GenError> {
-        let snapshot = Snapshot::load(g)?;
+    fn run(&self, g: &Graph, scope: &Scope<'_>) -> Result<Vec<Candidate>, GenError> {
+        let snapshot = load(g, scope)?;
+        let typed = snapshot
+            .forward
+            .iter()
+            .filter(|edge| !snapshot.hubs.contains(&edge.dst) || edge.rel == PART_OF)
+            .map(|edge| (&edge.src, &edge.dst, edge.weight));
+        let inline = snapshot
+            .mentions
+            .iter()
+            .map(|(src, dst)| (src, dst, scope.mention_weight));
         let mut into: BTreeMap<&str, BTreeMap<&str, f64>> = BTreeMap::new();
-        for edge in &snapshot.forward {
-            if snapshot.hubs.contains(&edge.dst) && edge.rel != PART_OF {
-                continue;
-            }
-            let weight = into
-                .entry(&edge.dst)
-                .or_default()
-                .entry(&edge.src)
-                .or_default();
-            *weight = weight.max(edge.weight);
+        for (src, dst, weight) in typed.chain(inline) {
+            let best = into.entry(dst).or_default().entry(src).or_default();
+            *best = best.max(weight);
         }
 
         let mut bridged: BTreeMap<(&str, &str), (f64, Vec<&str>)> = BTreeMap::new();

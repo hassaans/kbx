@@ -5,7 +5,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer};
 use sha2::{Digest, Sha256};
 use toml::Value;
 use toml_edit::{Array, DocumentMut, InlineTable, Key, value};
@@ -23,6 +24,11 @@ pub const CONFIG_FILE: &str = "kbx.toml";
 /// `schema/ontology.example.yaml`, because `cargo publish` packages only the
 /// crate.
 pub const EXAMPLE_ONTOLOGY: &str = include_str!("../assets/ontology.example.yaml");
+
+/// What an inline link counts for next to a typed edge of weight 1, in the
+/// structural generators. Under `see_also`, the weakest relation of the example
+/// ontology. See `docs/generators.md`.
+pub const DEFAULT_MENTION_WEIGHT: f64 = 0.25;
 
 /// The folder kbx keeps its own files in, at the vault root.
 const KBX_DIR: &str = ".kbx";
@@ -67,6 +73,9 @@ pub struct Config {
     /// What kbx writes into notes, which by default is nothing.
     #[serde(default)]
     pub write: WriteConfig,
+    /// How the candidate generators read the graph.
+    #[serde(default)]
+    pub generators: GeneratorsConfig,
 }
 
 impl Config {
@@ -112,6 +121,35 @@ fn default_type() -> String {
 pub struct ScopeConfig {
     /// The class of a note here with no `type` key. Unset means the global one.
     pub default_type: Option<String>,
+}
+
+/// The `[generators]` table of `kbx.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct GeneratorsConfig {
+    /// What an inline link counts for in the structural generators, from 0 to
+    /// 1. At 0 they read typed edges alone.
+    #[serde(deserialize_with = "unit_weight")]
+    pub mention_weight: f64,
+}
+
+impl Default for GeneratorsConfig {
+    fn default() -> GeneratorsConfig {
+        GeneratorsConfig {
+            mention_weight: DEFAULT_MENTION_WEIGHT,
+        }
+    }
+}
+
+fn unit_weight<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    let weight = f64::deserialize(deserializer)?;
+    if (0.0..=1.0).contains(&weight) {
+        Ok(weight)
+    } else {
+        Err(D::Error::custom(format!(
+            "mention_weight must be from 0 to 1, not {weight}"
+        )))
+    }
 }
 
 /// The `[write]` table of `kbx.toml`.
