@@ -1,4 +1,5 @@
 mod bakeoff;
+mod builtin;
 mod doctor;
 mod export;
 mod hook;
