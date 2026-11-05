@@ -45,8 +45,8 @@ function resolveBinary(pkg) {
     return require.resolve(`${pkg}/bin/${file}`);
   } catch {
     fail(
-      `${pkg} is not installed. It comes with kbx as one of its optional dependencies, ` +
-        'so reinstall kbx without --omit=optional or --no-optional.',
+      `${pkg} is not installed. It comes with kbx-cli as one of its optional dependencies, ` +
+        'so reinstall kbx-cli without --omit=optional or --no-optional.',
     );
   }
 }

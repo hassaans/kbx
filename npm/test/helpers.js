@@ -8,7 +8,7 @@ const zlib = require('node:zlib');
 
 const REPO = path.resolve(__dirname, '..', '..');
 const NPM_DIR = path.join(REPO, 'npm');
-const SHIM = path.join(NPM_DIR, 'kbx', 'bin', 'kbx.js');
+const SHIM = path.join(NPM_DIR, 'kbx-cli', 'bin', 'kbx.js');
 
 // One row per release target: what the shim sees, and what it should run.
 const TARGETS = [

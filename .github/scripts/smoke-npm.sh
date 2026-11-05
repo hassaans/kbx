@@ -28,11 +28,15 @@ for tool in kbx qmd; do
   fi
 done
 
-npm i -g "kbx@$version"
+npm i -g "kbx-cli@$version"
 
 root=$(to_bash "$(npm root -g)")
 shopt -s nullglob
-platforms=("$root"/kbx-* "$root"/kbx/node_modules/kbx-*)
+platforms=()
+# The shim's own folder matches kbx-* too.
+for folder in "$root"/kbx-* "$root"/kbx-cli/node_modules/kbx-*; do
+  [[ $(basename "$folder") == kbx-cli ]] || platforms+=("$folder")
+done
 shopt -u nullglob
 if [[ ${#platforms[@]} -ne 1 ]]; then
   fail "expected one platform package, found ${#platforms[@]}: ${platforms[*]:-none}"

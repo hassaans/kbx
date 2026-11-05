@@ -13,7 +13,7 @@ const BINARY = process.env.KBX_BINARY && path.resolve(process.env.KBX_BINARY);
 const HOST = TARGETS.find(
   (row) => row.platform === process.platform && row.arch === process.arch,
 );
-const { version } = require('../kbx/package.json');
+const { version } = require('../kbx-cli/package.json');
 
 // .cmd files can only be started through a shell on Windows.
 function exec(command, args) {
@@ -27,7 +27,7 @@ describe('global install from local tarballs', () => {
     (t) => {
       const dir = tempDir(t);
       const prefix = path.join(dir, 'prefix');
-      const shim = pack('kbx', dir);
+      const shim = pack('kbx-cli', dir);
       const platform = pack(HOST.pkg, dir, BINARY);
 
       const installed = exec('npm', ['i', '-g', '--ignore-scripts', '--prefix', prefix, shim, platform]);
@@ -40,7 +40,7 @@ describe('global install from local tarballs', () => {
       assert.ok(fs.existsSync(path.join(modules, HOST.pkg, 'package.json')));
       for (const other of TARGETS.filter((row) => row !== HOST)) {
         assert.equal(fs.existsSync(path.join(modules, other.pkg)), false);
-        assert.equal(fs.existsSync(path.join(modules, 'kbx', 'node_modules', other.pkg)), false);
+        assert.equal(fs.existsSync(path.join(modules, 'kbx-cli', 'node_modules', other.pkg)), false);
       }
 
       const result = exec(kbx, ['--version']);

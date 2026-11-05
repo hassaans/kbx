@@ -127,7 +127,7 @@ jobs:
           for binary in binaries/*; do
             npm/pack.sh "$(basename "$binary" .exe)" dist "$binary"
           done
-          npm/pack.sh kbx dist
+          npm/pack.sh kbx-cli dist
       - name: Run the binary from its tarball
         run: |
           mkdir smoke
@@ -139,7 +139,7 @@ jobs:
       # anything goes out.
       - name: Dry-run the npm publish
         run: |
-          for pkg in kbx-darwin-arm64 kbx-darwin-x64 kbx-linux-x64-gnu kbx-linux-arm64-gnu kbx-windows-x64 kbx; do
+          for pkg in kbx-darwin-arm64 kbx-darwin-x64 kbx-linux-x64-gnu kbx-linux-arm64-gnu kbx-windows-x64 kbx-cli; do
             .github/scripts/publish-npm.sh "$pkg" "$VERSION" "dist/$pkg-$VERSION.tgz" --dry-run
           done
         env:
@@ -200,7 +200,7 @@ jobs:
           path: dist
       - name: Publish the platform packages, then the shim
         run: |
-          for pkg in kbx-darwin-arm64 kbx-darwin-x64 kbx-linux-x64-gnu kbx-linux-arm64-gnu kbx-windows-x64 kbx; do
+          for pkg in kbx-darwin-arm64 kbx-darwin-x64 kbx-linux-x64-gnu kbx-linux-arm64-gnu kbx-windows-x64 kbx-cli; do
             .github/scripts/publish-npm.sh "$pkg" "$VERSION" "dist/$pkg-$VERSION.tgz"
           done
         env:

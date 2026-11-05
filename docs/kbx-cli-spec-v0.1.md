@@ -6,10 +6,11 @@ below; the project's fixed decisions override it where they differ:
 - No MCP server (§9, M5) in this project; `crates/kbx-mcp` is not created.
 - The binary crate is `crates/kbx` (not `kbx-cli`); the binary and crates.io
   name is `kbx`.
-- npm: unscoped shim `kbx` plus platform packages `kbx-darwin-arm64`,
-  `kbx-darwin-x64`, `kbx-linux-x64-gnu`, `kbx-linux-arm64-gnu`,
-  `kbx-windows-x64` (not `@kbx/cli-*`); hand-written GitHub Actions,
-  no cargo-dist, no Homebrew, no postinstall.
+- npm: unscoped shim `kbx-cli`, which installs the `kbx` command, plus platform
+  packages `kbx-darwin-arm64`, `kbx-darwin-x64`, `kbx-linux-x64-gnu`,
+  `kbx-linux-arm64-gnu`, `kbx-windows-x64` (not `@kbx/cli-*`); hand-written
+  GitHub Actions, no cargo-dist, no Homebrew, no postinstall. npm refuses the
+  name `kbx` as too similar to existing packages (see docs/releasing.md).
 - Search: QMD (`@tobilu/qmd`) is the v0 backend, installed silently when
   missing, and stays a supported option for good; a built-in engine becomes
   the default later. `kbx.toml` carries `search = "qmd"`.
@@ -70,7 +71,7 @@ kbx/
 │   ├── kbx-mcp/               # MCP stdio server (rmcp)
 │   └── kbx-cli/               # clap binary; the only crate that prints
 ├── npm/
-│   ├── kbx/                   # JS shim package: bin/kbx.js resolves the platform binary
+│   ├── kbx-cli/               # JS shim package: bin/kbx.js resolves the platform binary
 │   ├── kbx-darwin-arm64/      # optionalDependency packages, one per target, binary only
 │   ├── kbx-darwin-x64/
 │   ├── kbx-linux-x64-gnu/
@@ -375,13 +376,13 @@ allow_resolve = false
 
 Pattern used by esbuild, Biome and Turborepo: a tiny JS package plus one binary package per platform.
 
-- `npm/kbx/package.json`: `"bin": {"kbx": "bin/kbx.js"}`, `"optionalDependencies": {"@kbx/cli-darwin-arm64": "x.y.z", …}` pinned to the same version.
+- `npm/kbx-cli/package.json`: `"bin": {"kbx": "bin/kbx.js"}`, `"optionalDependencies": {"@kbx/cli-darwin-arm64": "x.y.z", …}` pinned to the same version.
 - `bin/kbx.js` maps `process.platform`/`process.arch` (plus glibc vs musl via `detect-libc`) to the package name, resolves the binary with `require.resolve`, and `execFileSync`s it with inherited stdio. Fails with a clear message listing supported targets.
 - Platform packages contain only the binary and set `"os"`/`"cpu"` so npm installs exactly one.
 - Build and publish with **cargo-dist** (`dist init --installer npm`) or a GitHub Actions matrix (`cross` for Linux arm64/musl); `release.yml` publishes platform packages first, then the shim.
 - Also ship `cargo install kbx` and Homebrew via cargo-dist for people without Node. The npm route exists because QMD users already have Node/Bun.
 
-Install: `npm i -g @kbx/cli` → `kbx doctor`.
+Install: `npm i -g kbx-cli` → `kbx doctor`.
 
 ## 12. Hardware and runtime envelope
 

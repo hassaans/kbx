@@ -1,9 +1,10 @@
-# kbx
+# kbx-cli
 
-Turn a markdown vault into a typed knowledge graph.
+Turn a markdown vault into a typed knowledge graph. This package installs the
+`kbx` command.
 
 ```sh
-npm i -g kbx
+npm i -g kbx-cli
 kbx doctor
 ```
 

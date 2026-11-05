@@ -9,7 +9,7 @@ const { describe, it } = require('node:test');
 const { NPM_DIR, REPO, TARGETS, tempDir } = require('./helpers');
 
 const SCRIPTS = path.join(REPO, '.github', 'scripts');
-const VERSION = require('../kbx/package.json').version;
+const VERSION = require('../kbx-cli/package.json').version;
 const TAG = `v${VERSION}`;
 
 // Every tool that can publish. A test that doesn't fake one gets a stub that
@@ -157,7 +157,7 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
       fs.copyFileSync(path.join(REPO, 'Cargo.toml'), path.join(root, 'Cargo.toml'));
       fs.mkdirSync(path.join(root, 'npm'));
       fs.copyFileSync(path.join(NPM_DIR, 'check-versions.js'), path.join(root, 'npm', 'check-versions.js'));
-      for (const name of ['kbx', ...TARGETS.map((row) => row.pkg)]) {
+      for (const name of ['kbx-cli', ...TARGETS.map((row) => row.pkg)]) {
         fs.mkdirSync(path.join(root, 'npm', name));
         fs.writeFileSync(path.join(root, 'npm', name, 'package.json'), '{"version":"0.0.0"}');
       }
@@ -423,7 +423,10 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
         'i -g')
           cp "$here/fake-kbx" "$here/kbx"
           [[ -z $FAKE_INSTALL_FAILS ]] || exit 1
-          for pkg in \${FAKE_PLATFORMS-${PLATFORM}}; do mkdir -p "$here/root/kbx/node_modules/$pkg"; done
+          mkdir -p "$here/root/kbx-cli"
+          parent=$here/root/kbx-cli/node_modules
+          [[ -z $FAKE_HOISTED ]] || parent=$here/root
+          for pkg in \${FAKE_PLATFORMS-${PLATFORM}}; do mkdir -p "$parent/$pkg"; done
           ;;
         'root -g') echo "$here/root" ;;
         'ls -g') [[ -e $here/qmd ]] ;;
@@ -451,14 +454,26 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
       for (const pkg of expected) assert.ok(TARGETS.some((row) => row.pkg === pkg), pkg);
     });
 
+    it('waits for the shim on npm and for kbx on crates.io', () => {
+      const workflow = fs.readFileSync(path.join(REPO, '.github', 'workflows', 'smoke.yml'), 'utf8');
+      const waits = [...workflow.matchAll(/smoke-wait\.sh (\S+) (\S+) /g)].map((match) => `${match[1]} ${match[2]}`);
+      assert.deepEqual(waits, ['npm kbx-cli', `npm ${PLATFORM}`, 'crates kbx']);
+    });
+
     describe('smoke-npm.sh', () => {
       it('passes on a good install, and prints both doctor runs', (t) => {
         const result = smokeNpm(t);
         assert.equal(result.status, 0, result.stderr);
-        assert.equal(result.calls[0], 'npm i -g kbx@1.2.3');
+        assert.equal(result.calls[0], 'npm i -g kbx-cli@1.2.3');
         assert.equal(result.stdout.match(/^qmd +ok +/gm).length, 3);
         assert.match(result.stdout, /kbx doctor, first run/);
         assert.match(result.stdout, /kbx doctor, second run/);
+      });
+
+      it('finds a platform package npm hoisted next to the shim', (t) => {
+        const result = smokeNpm(t, { FAKE_HOISTED: '1' });
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /platform package: .*\/root\/kbx-linux-x64-gnu$/m);
       });
 
       it('runs doctor before init, because init would install qmd', (t) => {
@@ -582,19 +597,19 @@ BINARY
 
       it('returns once npm has the version', (t) => {
         const npm = `[[ $(grep -c '^npm' "$CALLS") -ge 2 ]] && echo 1.2.3 || exit 1`;
-        const result = run(t, 'smoke-wait.sh', ['npm', 'kbx', '1.2.3'], { tools: { npm }, env: FAST });
+        const result = run(t, 'smoke-wait.sh', ['npm', 'kbx-cli', '1.2.3'], { tools: { npm }, env: FAST });
         assert.equal(result.status, 0, result.stderr);
-        assert.deepEqual(result.calls, ['npm view kbx@1.2.3 version', 'npm view kbx@1.2.3 version']);
+        assert.deepEqual(result.calls, ['npm view kbx-cli@1.2.3 version', 'npm view kbx-cli@1.2.3 version']);
       });
 
       it('fails when npm never has the version', (t) => {
-        const result = run(t, 'smoke-wait.sh', ['npm', 'kbx', '1.2.3'], {
+        const result = run(t, 'smoke-wait.sh', ['npm', 'kbx-cli', '1.2.3'], {
           tools: { npm: 'echo 1.2.2' },
           env: FAST,
         });
         assert.equal(result.status, 1);
         assert.equal(result.calls.length, 3);
-        assert.match(result.stderr, /kbx 1\.2\.3 is not on npm/);
+        assert.match(result.stderr, /kbx-cli 1\.2\.3 is not on npm/);
       });
 
       it('returns once the crates.io index has the version', (t) => {
@@ -637,6 +652,15 @@ describe('release.yml', () => {
   it('builds one binary per npm platform package', () => {
     const packages = [...workflow.matchAll(/^ +package: (\S+)\r?$/gm)].map((match) => match[1]);
     assert.deepEqual(packages.sort(), TARGETS.map((row) => row.pkg).sort());
+  });
+
+  it('packs the shim, then dry-runs and publishes it after the platform packages', () => {
+    assert.match(workflow, /^ +npm\/pack\.sh kbx-cli dist\r?$/m);
+    const loops = [...workflow.matchAll(/^ +for pkg in (.+); do\r?$/gm)].map((match) => match[1].split(' '));
+    assert.equal(loops.length, 2);
+    for (const packages of loops) {
+      assert.deepEqual(packages, [...TARGETS.map((row) => row.pkg), 'kbx-cli']);
+    }
   });
 
   it('publishes to npm and crates.io independently', () => {

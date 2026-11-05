@@ -16,7 +16,7 @@ const skipOnWindows = { skip: process.platform === 'win32' && 'the fake binary i
 // a platform package whose binary is that shell script.
 function install(t, target, script) {
   const dir = tempDir(t);
-  const shim = path.join(dir, 'node_modules', 'kbx', 'bin', 'kbx.js');
+  const shim = path.join(dir, 'node_modules', 'kbx-cli', 'bin', 'kbx.js');
   fs.mkdirSync(path.dirname(shim), { recursive: true });
   fs.copyFileSync(SHIM, shim);
   if (script !== undefined) {
@@ -135,5 +135,6 @@ describe('a supported target without its package', () => {
     assert.equal(result.status, 1);
     assert.match(result.stderr, /kbx-linux-x64-gnu is not installed/);
     assert.match(result.stderr, /optional dependencies/);
+    assert.match(result.stderr, /reinstall kbx-cli /);
   });
 });

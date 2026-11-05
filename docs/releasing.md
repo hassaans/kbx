@@ -4,7 +4,7 @@ Pushing a `v*` tag runs `.github/workflows/release.yml`. It builds the five
 targets, tests each one on its own platform, and then publishes a GitHub Release
 with the five binaries attached. After that, two jobs run side by side:
 
-- `npm-publish`: the five platform packages, then the `kbx` shim
+- `npm-publish`: the five platform packages, then the `kbx-cli` shim
 - `cargo-publish`: `kbx-core`, `kbx-gen`, `kbx-judge` and `kbx` on crates.io,
   waiting for each crate to reach the index before the next
 
@@ -31,7 +31,7 @@ npm refuses `NPM_TOKEN`. crates.io has no such check, so a bad
    - the `kbx-core` dependency in `crates/kbx/Cargo.toml`, and any other
      dependency between workspace crates
    - `version` in the six `npm/*/package.json` files
-   - the five `optionalDependencies` pins in `npm/kbx/package.json`
+   - the five `optionalDependencies` pins in `npm/kbx-cli/package.json`
 2. Update `Cargo.lock`, and check that nothing has drifted:
 
    ```sh
@@ -70,12 +70,12 @@ A manual run only publishes if it's started on a tag with `dry_run` turned off.
 ## Check a release
 
 `.github/workflows/smoke.yml` installs a published version on clean runners. On
-Linux, macOS and Windows it installs `kbx@<version>` from npm, checks that exactly
-one platform package came with it, runs `kbx doctor` twice to see qmd installed
-and then found, and runs `kbx init`, `kbx index` and `kbx lint` on a copy of the
-fixture vault, where `kbx init` has to create a qmd collection per scope. Other
-jobs check that `kbx doctor` names Node >= 22 when npm isn't on `PATH`, and that
-`cargo install` works on macOS.
+Linux, macOS and Windows it installs `kbx-cli@<version>` from npm, checks that
+exactly one platform package came with it, runs `kbx doctor` twice to see qmd
+installed and then found, and runs `kbx init`, `kbx index` and `kbx lint` on a
+copy of the fixture vault, where `kbx init` has to create a qmd collection per
+scope. Other jobs check that `kbx doctor` names Node >= 22 when npm isn't on
+`PATH`, and that `cargo install` works on macOS.
 
 Start it by hand after a tagged release:
 
@@ -129,8 +129,21 @@ What to do depends on where it stopped:
   GitHub Release plus four orphan platform packages (`kbx-darwin-arm64`,
   `kbx-darwin-x64`, `kbx-linux-x64-gnu` and `kbx-linux-arm64-gnu`). The `kbx` shim
   never went out, and neither did the crates, because `cargo-publish` ran after
-  `npm-publish` then. The Windows package is `kbx-windows-x64` from v0.1.2, and
-  v0.1.2 is the first version meant to reach both registries in full.
+  `npm-publish` then. The Windows package is `kbx-windows-x64` from v0.1.2.
+
+  v0.1.2 went the same way: the GitHub Release, the four crates and the five
+  platform packages are out at 0.1.2, but npm refused the shim with `E403 Package
+  name too similar to existing packages ky,koa,mobx,knex,zx,rax,rx,sax,shx,tsx`.
+  That's npm's typosquatting rule, which compares a new unscoped name with popular
+  packages, so short names are the ones it catches. It can't be appealed from our
+  side. So there's no `kbx` on npm, and the 0.1.2 platform packages have no shim
+  that depends on them. The shim is `kbx-cli` from v0.1.3, and the command it
+  installs is still `kbx`. v0.1.3 is the first version meant to reach both
+  registries in full.
+
+  Don't try a short unscoped name again. Check any new package name by hand too:
+  the rule runs only on the registry during a real publish, so `npm publish
+  --dry-run`, the release dry run and the tests can't catch it.
 
 A re-run can't pick up an edit to `release.yml` or `.github/scripts/` either: it
 always uses the files at the tag.
