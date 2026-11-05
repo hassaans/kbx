@@ -1042,3 +1042,55 @@ fn a_failed_add_in_a_named_index_leaves_the_rest_of_it_alone() {
     assert_eq!(collections(&vault), ["team-b"]);
     assert!(!removes(&vault).iter().any(|c| c.ends_with(" team-b")));
 }
+
+#[test]
+fn a_replacement_never_takes_the_name_of_a_scope() {
+    let vault = two_scopes("[]");
+    vault.write("team-a-kbx-new/note.md", &note(3, "other scope"));
+    vault.ok(&["init", "--search", "qmd"]);
+    vault.write("team-a/secrets/keys.md", &note(4, "keys"));
+    fs::remove_file(vault.path.dir().join("mask-team-a")).unwrap();
+    let other = fs::read_to_string(vault.path.dir().join("mask-team-a-kbx-new")).unwrap();
+    forget_calls(&vault);
+
+    vault.ok(&["doctor", "--fix"]);
+
+    assert!(
+        !removes(&vault)
+            .iter()
+            .any(|c| c.ends_with(" team-a-kbx-new"))
+    );
+    let mut names = collections(&vault);
+    names.sort();
+    assert_eq!(names, ["team-a", "team-a-kbx-new", "team-b"]);
+    let dir = vault.path.dir();
+    assert_eq!(
+        fs::read_to_string(dir.join("mask-team-a-kbx-new")).unwrap(),
+        other
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("mask-team-a")).unwrap().trim(),
+        "*.md"
+    );
+}
+
+#[test]
+fn a_replacement_that_is_already_there_is_not_swapped_in() {
+    let vault = two_masks_out_of_date();
+    let names = vault.path.dir().join("collections");
+    let mut listed = fs::read_to_string(&names).unwrap();
+    listed.push_str("team-a-kbx-new\n");
+    fs::write(&names, listed).unwrap();
+    refuse(&vault, "refuse-remove-team-a-kbx-new");
+
+    let output = vault.kbx(&["doctor", "--fix"]);
+
+    assert!(!output.status.success(), "{}", stdout(&output));
+    assert!(!removes(&vault).iter().any(|c| c.ends_with(" team-a")));
+    assert!(
+        calls_of(&vault, "collection")
+            .iter()
+            .all(|c| !c.contains(" rename ") || !c.contains("team-a"))
+    );
+    assert!(collections(&vault).contains(&"team-a".to_string()));
+}

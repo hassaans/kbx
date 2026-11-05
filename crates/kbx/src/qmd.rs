@@ -210,10 +210,17 @@ pub fn set_up_collections(project: &mut Project) -> Result<Changes, String> {
     }
     let project = &*project;
     attempt(&mut changes.missing, &mut failed, |name| {
-        add_collection(project, &exclusions, name, &planned.roots[name])
+        add_collection(project, &exclusions, name, &planned.roots[name]).map(|_| ())
     });
     attempt(&mut changes.narrowing, &mut failed, |name| {
-        replace_collection(project, &exclusions, name, &planned.roots[name])
+        let replacement = replacement_name(name, &planned.roots);
+        replace_collection(
+            project,
+            &exclusions,
+            name,
+            &replacement,
+            &planned.roots[name],
+        )
     });
     changes.failed = failed;
     Ok(changes)
@@ -242,14 +249,15 @@ fn remove_collection(project: &Project, name: &str) -> Result<(), String> {
     Err(failure(&output))
 }
 
-/// qmd records a collection before it reads the folder, so one that fails is
-/// taken out again. Left there, it would pass for a collection with its notes.
+/// Returns whether this run added it. qmd records a collection before it reads
+/// the folder, so one that fails is taken out again. Left there, it would pass
+/// for a collection with its notes.
 fn add_collection(
     project: &Project,
     exclusions: &Exclusions,
     name: &str,
     root: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mask = exclusions.note_glob(root);
     let folder = project.vault.join(root);
     let folder = canonical_path(&folder).unwrap_or(folder);
@@ -267,28 +275,41 @@ fn add_collection(
     // Another run got there first, which is what was wanted.
     let exists = String::from_utf8_lossy(&output.stderr).contains("already exists.");
     if output.status.success() || exists {
-        return Ok(());
+        return Ok(!exists);
     }
     let _ = remove_collection(project, name);
     Err(failure(&output))
 }
 
+/// The name to read a replacement of `name` under, which no planned collection
+/// has. It keeps the ending, so that one left behind is known for what it is.
+fn replacement_name(name: &str, planned: &BTreeMap<String, String>) -> String {
+    let mut replacement = format!("{name}{REPLACEMENT}");
+    while planned.contains_key(&replacement) {
+        replacement.push_str(REPLACEMENT);
+    }
+    replacement
+}
+
 /// Makes a collection again with the mask it should have now. qmd has no way to
 /// change a mask or to add over a name, so the new one is read under another
-/// name, and until that has worked the old one isn't touched.
+/// name, and until that has worked the old one isn't touched. One already
+/// there isn't this run's, so nothing says it has the right notes.
 fn replace_collection(
     project: &Project,
     exclusions: &Exclusions,
     name: &str,
+    replacement: &str,
     root: &str,
 ) -> Result<(), String> {
-    let replacement = format!("{name}{REPLACEMENT}");
-    add_collection(project, exclusions, &replacement, root)?;
+    if !add_collection(project, exclusions, replacement, root)? {
+        return Err(format!("{replacement} is already in qmd"));
+    }
     if let Err(error) = remove_collection(project, name) {
-        let _ = remove_collection(project, &replacement);
+        let _ = remove_collection(project, replacement);
         return Err(error);
     }
-    let output = run(project, &["collection", "rename", &replacement, name])?;
+    let output = run(project, &["collection", "rename", replacement, name])?;
     if output.status.success() {
         return Ok(());
     }
