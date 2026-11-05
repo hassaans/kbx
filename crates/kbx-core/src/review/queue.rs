@@ -10,8 +10,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde_json::{Map, Value};
 
 use super::{
-    Accepted, Decision, Deferred, OnDisk, Rejected, ReviewError, accept, defer, judged_rel,
-    ordered, reject, runs_forward, section_anchor,
+    Accepted, Decision, Deferred, OnDisk, Preview, Rejected, ReviewError, accept, accept_unwritten,
+    defer, judged_rel, ordered, reject, runs_forward, section_anchor,
 };
 use crate::graph::{Graph, has_accepted_rel, has_candidate_sections};
 use crate::note::split_frontmatter;
@@ -61,8 +61,8 @@ pub struct Item {
     /// The relation a decision would be about: the one [`accept`] would take
     /// from the verdicts, until [`Queue::edit`] changes it.
     pub rel: Option<String>,
-    /// [`Item::rel`] is accepted but in no note yet, by
-    /// [`accept_unwritten`](super::accept_unwritten). Accepting writes it.
+    /// [`Item::rel`] is accepted but in no note yet, by [`accept_unwritten`].
+    /// Accepting writes it.
     pub unwritten: bool,
     /// The signals combined, from 0 to 1.
     pub score: f64,
@@ -173,6 +173,14 @@ impl Queue {
         })
     }
 
+    /// The queue with nothing left to do on an acceptance: without
+    /// `[write] frontmatter` it's all there will be, so such a candidate is
+    /// decided and leaves the queue.
+    pub fn without_accepted(mut self) -> Queue {
+        self.items.retain(|item| !item.unwritten);
+        self
+    }
+
     /// The relations [`Queue::edit`] can pick from.
     pub fn relations(ontology: &Ontology) -> Vec<&str> {
         let words = ontology.judge.vocabulary.iter().map(String::as_str);
@@ -220,6 +228,22 @@ impl Queue {
     ) -> Result<Accepted, ReviewError> {
         let item = self.current().ok_or(ReviewError::EmptyQueue)?;
         let accepted = accept(g, vault, ontology, &item.cid, item.decision(reason))?;
+        self.items.remove(self.at);
+        Ok(accepted)
+    }
+
+    /// [`accept_unwritten`]s the current item, under the relation it shows.
+    pub fn accept_unwritten(
+        &mut self,
+        g: &Graph,
+        vault: &Path,
+        ontology: &Ontology,
+        reason: Option<&str>,
+    ) -> Result<Accepted, ReviewError> {
+        let item = self.current().ok_or(ReviewError::EmptyQueue)?;
+        let mut preview = Preview::default();
+        let decision = item.decision(reason);
+        let accepted = accept_unwritten(g, vault, ontology, &item.cid, decision, &mut preview)?;
         self.items.remove(self.at);
         Ok(accepted)
     }

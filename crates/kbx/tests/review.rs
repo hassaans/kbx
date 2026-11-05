@@ -18,7 +18,7 @@ struct Pair {
 }
 
 fn suggested() -> Fixture {
-    let vault = Fixture::new();
+    let vault = Fixture::new().writing();
     vault.ok(&["index"]);
     suggest(&vault);
     vault
@@ -262,7 +262,7 @@ fn unreject_needs_a_cid_or_list() {
 
 #[test]
 fn deciding_before_the_first_index_says_to_run_it() {
-    let vault = Fixture::new();
+    let vault = Fixture::new().writing();
     let output = vault.kbx(&["reject", "abc"]);
     assert!(!output.status.success());
     assert!(stderr(&output).contains("kbx index"), "{}", stderr(&output));
@@ -425,7 +425,7 @@ fn a_relation_rejected_once_does_not_return_with_its_cached_verdict() {
 
 #[test]
 fn review_json_before_the_first_index_says_to_run_it() {
-    let vault = Fixture::new();
+    let vault = Fixture::new().writing();
     let output = vault.kbx(&["review", "--json"]);
     assert!(!output.status.success());
     assert!(stderr(&output).contains("kbx index"), "{}", stderr(&output));
@@ -433,7 +433,7 @@ fn review_json_before_the_first_index_says_to_run_it() {
 
 #[test]
 fn review_json_does_not_create_a_missing_database() {
-    let vault = Fixture::new();
+    let vault = Fixture::new().writing();
     let graph = vault.root().join(".kbx/graph.sqlite");
     fs::remove_file(&graph).unwrap();
     let output = vault.kbx(&["review", "--json"]);
@@ -452,7 +452,7 @@ fn review_without_a_terminal_points_at_json() {
 
 #[test]
 fn review_of_an_empty_queue_needs_no_terminal() {
-    let vault = Fixture::new();
+    let vault = Fixture::new().writing();
     vault.ok(&["index"]);
     assert!(vault.ok(&["review"]).contains("nothing to review"));
     assert_eq!(queue(&vault), Vec::<Value>::new());

@@ -87,7 +87,7 @@ cd "$home/vault"
 
 run init 'kbx init' init
 [[ $status == 0 ]] || fail "kbx init exited $status"
-grep -qx 'search = "builtin".*' kbx.toml || fail "kbx init did not choose the built-in engine"
+grep -qx 'search = "builtin".*' .kbx/kbx.toml || fail "kbx init did not choose the built-in engine"
 if grep -q 'qmd collection' "$home/init.out"; then fail "kbx init set up qmd by default"; fi
 no_qmd 'kbx init'
 
@@ -118,8 +118,8 @@ no_qmd 'doctor in the vault'
 # The QMD option. Doctor installs qmd for a vault that asks for it, silently.
 cp -R "$home/vault" "$home/vault-qmd"
 cd "$home/vault-qmd"
-sed -i.bak 's/^search = .*/search = "qmd"/' kbx.toml
-rm kbx.toml.bak
+sed -i.bak 's/^search = .*/search = "qmd"/' .kbx/kbx.toml
+rm .kbx/kbx.toml.bak
 
 run doctor-3 'kbx doctor, search = "qmd", first run' doctor
 [[ $status == 0 ]] || fail "the first qmd doctor exited $status"
@@ -140,7 +140,7 @@ cd "$home/vault-init"
 
 run init-qmd 'kbx init --search qmd' init --search qmd
 [[ $status == 0 ]] || fail "kbx init --search qmd exited $status"
-grep -qx 'search = "qmd".*' kbx.toml || fail "kbx init --search qmd did not choose qmd"
+grep -qx 'search = "qmd".*' .kbx/kbx.toml || fail "kbx init --search qmd did not choose qmd"
 
 # Each top-level folder is a scope. Init only warns when qmd refuses a collection.
 scopes=0

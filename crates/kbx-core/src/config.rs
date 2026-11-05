@@ -64,7 +64,7 @@ pub struct Config {
     /// How to judge candidates.
     #[serde(default)]
     pub judge: JudgeConfig,
-    /// What accepting writes.
+    /// What kbx writes into notes, which by default is nothing.
     #[serde(default)]
     pub write: WriteConfig,
 }
@@ -117,6 +117,12 @@ pub struct ScopeConfig {
 /// The `[write]` table of `kbx.toml`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub struct WriteConfig {
+    /// Write enrichment into the notes' frontmatter: accepted relations and
+    /// their inverses, `kbx.proposed`, `kbx.reviewed` and the `qmd.metadata`
+    /// mirror. Off by default, when all of it stays in `.kbx/`: see
+    /// `docs/frontmatter-writer.md`.
+    #[serde(default)]
+    pub frontmatter: bool,
     /// Propose section-level pairs and write their anchors into relation
     /// targets. Off by default: an anchored link breaks some tools, see
     /// `docs/sections.md`.
@@ -326,24 +332,6 @@ pub struct Project {
     pub graph: PathBuf,
 }
 
-/// Where [`init`] puts a new `kbx.toml`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigLocation {
-    /// `kbx.toml`, next to the notes.
-    Root,
-    /// `.kbx/kbx.toml`, which leaves the vault's root as it was.
-    KbxFolder,
-}
-
-impl ConfigLocation {
-    fn path(self, dir: &Path) -> PathBuf {
-        match self {
-            ConfigLocation::Root => dir.join(CONFIG_FILE),
-            ConfigLocation::KbxFolder => dir.join(KBX_DIR).join(CONFIG_FILE),
-        }
-    }
-}
-
 /// What [`init`] created, as opposed to found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitReport {
@@ -366,10 +354,6 @@ pub enum ConfigError {
     /// A folder has both config files, and neither can be said to win.
     #[error("two config files: {0} and {1}; keep one")]
     TwoConfigs(PathBuf, PathBuf),
-    /// `kbx init --in-kbx` found a `kbx.toml` at the root, and a second would
-    /// be [`ConfigError::TwoConfigs`].
-    #[error("{0} already exists; move it to {KBX_DIR}/{CONFIG_FILE} instead")]
-    ConfigAtRoot(PathBuf),
     /// `--ontology` was passed but a `kbx.toml` already says which one to use.
     #[error("{CONFIG_FILE} already exists; edit its `ontology` key instead")]
     AlreadyInitialised,
@@ -405,6 +389,27 @@ impl Project {
             }
         }
         Err(ConfigError::NotInitialised)
+    }
+
+    /// Whether the config file is at the root rather than in `.kbx/`. It still
+    /// works there, and `kbx doctor` says to move it.
+    pub fn config_at_root(&self) -> bool {
+        self.config_file.parent().and_then(Path::file_name) != Some(OsStr::new(KBX_DIR))
+    }
+
+    /// Moves a config file from the root into `.kbx/`, where it means the same.
+    /// Refuses to replace one that's there. Returns where it went.
+    pub fn move_config(&mut self) -> Result<PathBuf, ConfigError> {
+        let base = config_base(&self.config_file).to_path_buf();
+        let target = config_inside(&base);
+        if target.exists() {
+            return Err(ConfigError::TwoConfigs(target, self.config_file.clone()));
+        }
+        let folder = base.join(KBX_DIR);
+        fs::create_dir_all(&folder).map_err(|e| ConfigError::Io(folder, e))?;
+        fs::rename(&self.config_file, &target).map_err(|e| ConfigError::Io(target.clone(), e))?;
+        self.config_file = target.clone();
+        Ok(target)
     }
 
     /// Reads a `kbx.toml`.
@@ -487,14 +492,19 @@ impl Project {
 
 /// The config file of `dir`: `.kbx/kbx.toml`, or else `kbx.toml`.
 fn config_in(dir: &Path) -> Result<Option<PathBuf>, ConfigError> {
-    let inside = ConfigLocation::KbxFolder.path(dir);
-    let root = ConfigLocation::Root.path(dir);
+    let inside = config_inside(dir);
+    let root = dir.join(CONFIG_FILE);
     match (inside.is_file(), root.is_file()) {
         (true, true) => Err(ConfigError::TwoConfigs(inside, root)),
         (true, false) => Ok(Some(inside)),
         (false, true) => Ok(Some(root)),
         (false, false) => Ok(None),
     }
+}
+
+/// Where the config file of `dir` belongs.
+fn config_inside(dir: &Path) -> PathBuf {
+    dir.join(KBX_DIR).join(CONFIG_FILE)
 }
 
 /// The folder a config file's relative paths start at. The file means the same
@@ -519,24 +529,19 @@ fn root_table(roots: &BTreeMap<String, String>) -> InlineTable {
     table
 }
 
-/// Sets up `dir` as a vault: `.kbx/`, `kbx.toml`, the ontology and the
-/// database. Never overwrites a file, so running it again changes nothing.
-/// `ontology` is used where it is, relative to `dir`, rather than copied, and
-/// `search` is what a new `kbx.toml` says. `location` says where a new one goes:
-/// one already in `.kbx/` is used whatever it says.
+/// Sets up `dir` as a vault: `.kbx/` with `kbx.toml`, the ontology and the
+/// database in it, and nothing else. Never overwrites a file, so running it
+/// again changes nothing, and a `kbx.toml` at the root stays in use. `ontology`
+/// is used where it is, relative to `dir`, rather than copied, and `search` is
+/// what a new `kbx.toml` says.
 pub fn init(
     dir: &Path,
     ontology: Option<&Path>,
     search: Search,
-    location: ConfigLocation,
 ) -> Result<InitReport, ConfigError> {
     let found = config_in(dir)?;
-    let root = ConfigLocation::Root.path(dir);
-    if location == ConfigLocation::KbxFolder && found.as_ref() == Some(&root) {
-        return Err(ConfigError::ConfigAtRoot(root));
-    }
     let exists = found.is_some();
-    let config_path = found.unwrap_or_else(|| location.path(dir));
+    let config_path = found.unwrap_or_else(|| config_inside(dir));
     if exists && ontology.is_some() {
         return Err(ConfigError::AlreadyInitialised);
     }
@@ -617,6 +622,11 @@ ollama = {{ model = "qwen3:14b", host = "http://127.0.0.1:11434" }}
 llama_server = {{ host = "http://127.0.0.1:8080" }}
 
 [judge.overrides]
+
+# kbx keeps accepted relations in .kbx and leaves your notes alone. To write them
+# into frontmatter instead, see docs/frontmatter-writer.md:
+# [write]
+# frontmatter = true
 "#
     )
 }

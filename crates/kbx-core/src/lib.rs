@@ -7,8 +7,9 @@
 //! [`lint_vault`] checks one against the ontology. [`accept`], [`reject`],
 //! [`defer`] and [`unreject`] record review decisions, a [`Queue`] takes them
 //! one candidate at a time, and [`add_relation`] writes accepted relations to
-//! frontmatter. [`accept_unwritten`] records an acceptance and leaves the notes
-//! alone, with a [`Preview`] of what writing it would do. [`stage`] puts candidates under `kbx.proposed` for editors, and
+//! frontmatter. [`accept_unwritten`] keeps an acceptance in the database and
+//! leaves the notes alone, with a [`Preview`] of what writing it would do, and
+//! [`apply`] writes those to the notes later. [`stage`] puts candidates under `kbx.proposed` for editors, and
 //! [`sync_stage`] takes back what was decided there. [`Graph::edges`],
 //! [`Graph::reviews`] and [`turtle`] export what the database holds. This crate
 //! never touches a model and never prints.
@@ -30,8 +31,8 @@ mod vault;
 mod writer;
 
 pub use config::{
-    CONFIG_FILE, Config, ConfigError, ConfigLocation, EXAMPLE_ONTOLOGY, InitReport, JudgeBackend,
-    JudgeConfig, Project, Qmd, Rates, ScopeConfig, Search, WriteConfig, init,
+    CONFIG_FILE, Config, ConfigError, EXAMPLE_ONTOLOGY, InitReport, JudgeBackend, JudgeConfig,
+    Project, Qmd, Rates, ScopeConfig, Search, WriteConfig, init,
 };
 pub use exclude::{DEFAULT_EXCLUDE, ExcludeError, Excluded, Exclusions};
 pub use export::{
@@ -54,10 +55,11 @@ pub use ontology::{
 };
 pub use path::{canonical_path, find_on_path};
 pub use review::{
-    Accepted, Decision, Deferred, Item, JUDGE_ERROR, Preview, Queue, Rejected, ReviewError,
-    STRIKES, StageReport, Synced, Unrejected, accept, accept_unwritten, cid, defer, excerpt,
-    excerpt_of, locked_notes, mark_reviewed, ordered, reject, section_anchor, section_cid,
-    section_excerpt, stage, suppressed_pairs, sync_stage, unreject, unstage,
+    Accepted, AcceptedRelation, Applied, Decision, Deferred, Item, JUDGE_ERROR, Preview, Queue,
+    Rejected, ReviewError, STRIKES, StageReport, Synced, Unrejected, accept, accept_unwritten,
+    accepted_relations, apply, cid, defer, excerpt, excerpt_of, hold_reviewed, locked_notes,
+    mark_reviewed, ordered, reject, section_anchor, section_cid, section_excerpt, stage,
+    suppressed_pairs, sync_stage, unreject, unstage, written_paths,
 };
 pub use section::{Block, Section, section_key};
 pub use vault::{Finding, FindingCode, Resolved, ResolvedVia, Resolver, Severity, Vault};

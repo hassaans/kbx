@@ -179,8 +179,6 @@ fn a_commit_with_a_note_failing_lint_is_blocked_and_shows_the_findings() {
 #[test]
 fn the_hook_lints_a_vault_whose_config_is_in_kbx() {
     let repo = Repo::new();
-    let root = repo.vault_dir();
-    fs::rename(root.join("kbx.toml"), root.join(".kbx/kbx.toml")).unwrap();
     repo.installed();
 
     repo.stage("notes/bad.md", &failing());

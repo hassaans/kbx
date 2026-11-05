@@ -48,7 +48,7 @@ run builtin 'kbx doctor without npm, the default' doctor
 grep -Eq '^search +ok +builtin' "$work/builtin.out" || fail "doctor printed no built-in search row"
 if grep -Eq '^qmd ' "$work/builtin.out"; then fail "doctor on the default printed a qmd row"; fi
 
-sed -i.bak 's/^search = .*/search = "qmd"/' kbx.toml
+sed -i.bak 's/^search = .*/search = "qmd"/' .kbx/kbx.toml
 
 run qmd 'kbx doctor without npm, search = "qmd"' doctor
 [[ $status == 1 ]] || fail "doctor exited $status, not 1"

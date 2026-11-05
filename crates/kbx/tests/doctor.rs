@@ -323,7 +323,7 @@ fn init_without_node_exits_non_zero_and_leaves_a_working_vault() {
         "{}",
         stderr(&output)
     );
-    assert!(dir.path().join("kbx.toml").is_file());
+    assert!(dir.path().join(".kbx/kbx.toml").is_file());
     assert!(dir.path().join(".kbx/graph.sqlite").is_file());
 }
 

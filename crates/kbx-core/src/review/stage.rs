@@ -522,10 +522,25 @@ pub fn mark_reviewed(
     tx.execute(
         "INSERT INTO locks (id, reviewed, baseline, current) VALUES (?1, ?2, ?3, ?3)
          ON CONFLICT(id) DO UPDATE SET reviewed = excluded.reviewed,
-             baseline = excluded.baseline, current = excluded.current",
+             baseline = excluded.baseline, current = excluded.current, held = 0",
         params![note, date, user_content(text)],
     )?;
     commit_write(tx, vault, &file, new)
+}
+
+/// [`mark_reviewed`], with the lock kept in `.kbx/` and the note left alone. It
+/// works the same: the note's content lifts it.
+pub fn hold_reviewed(g: &Graph, vault: &Path, note: &str, date: &str) -> Result<(), ReviewError> {
+    let connection = g.connection();
+    let file = read(connection, vault, note)?
+        .ok_or_else(|| ReviewError::SourceUnavailable(note.to_string()))?;
+    connection.execute(
+        "INSERT INTO locks (id, reviewed, baseline, current, held) VALUES (?1, ?2, ?3, ?3, 1)
+         ON CONFLICT(id) DO UPDATE SET reviewed = excluded.reviewed,
+             baseline = excluded.baseline, current = excluded.current, held = 1",
+        params![note, date, user_content(&file.text)],
+    )?;
+    Ok(())
 }
 
 /// The notes under a `kbx.reviewed` lock: reviewed, and unchanged since.

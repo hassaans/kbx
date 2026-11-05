@@ -170,12 +170,12 @@ fn an_empty_graph_issues_no_embedding_work_until_it_has_notes() {
 #[test]
 fn notes_outside_every_collection_issue_no_embedding_work() {
     let vault = vault();
-    let config = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    let config = fs::read_to_string(vault.root().join(".kbx/kbx.toml")).unwrap();
     let moved = config
         .replace("= \"team-a\"", "= \"archive-a\"")
         .replace("= \"team-b\"", "= \"archive-b\"");
     assert_ne!(moved, config);
-    vault.write("kbx.toml", &moved);
+    vault.write(".kbx/kbx.toml", &moved);
 
     let said = vault.ok(&["suggest", "--judge", "none"]);
     assert!(said.contains("no note is in a searched folder"), "{said}");
@@ -271,13 +271,13 @@ fn an_index_qmd_lost_is_refreshed_even_on_an_unchanged_vault() {
 #[test]
 fn a_named_index_that_changed_repeats_the_searches() {
     let vault = vault();
-    let config = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    let config = fs::read_to_string(vault.root().join(".kbx/kbx.toml")).unwrap();
     let named = config.replace(
         "qmd = { bin = \"qmd\",",
         "qmd = { index = \"shared\", bin = \"qmd\",",
     );
     assert_ne!(named, config);
-    vault.write("kbx.toml", &named);
+    vault.write(".kbx/kbx.toml", &named);
     suggest(&vault);
     forget_calls(&vault);
 

@@ -446,7 +446,7 @@ mod prepare {
     #[test]
     fn a_pair_pinned_away_from_any_judge_is_left_out() {
         let vault = indexed();
-        let config = vault.root().join("kbx.toml");
+        let config = vault.root().join(".kbx/kbx.toml");
         let text = fs::read_to_string(&config).unwrap();
         fs::write(&config, format!("{text}\"decisions\" = \"ollama\"\n")).unwrap();
         let decisions = [14, 15, 16].map(|n| Value::from(id(n)));
@@ -583,7 +583,7 @@ mod sections {
             ),
         );
         if anchors {
-            let config = vault.root().join("kbx.toml");
+            let config = vault.root().join(".kbx/kbx.toml");
             let text = fs::read_to_string(&config).unwrap();
             fs::write(config, format!("{text}\n[write]\nsection_anchors = true\n")).unwrap();
         }

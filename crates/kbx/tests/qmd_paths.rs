@@ -82,6 +82,6 @@ fn kbx_toml_records_no_verbatim_path() {
     let vault = fixture_vault();
     vault.ok(&["init", "--search", "qmd"]);
     vault.kbx(&["doctor", "--fix"]);
-    let config = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    let config = fs::read_to_string(vault.root().join(".kbx/kbx.toml")).unwrap();
     assert!(!config.contains(r"?\"), "{config}");
 }

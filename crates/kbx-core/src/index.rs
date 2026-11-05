@@ -24,11 +24,13 @@ pub const MENTIONS: &str = "mentions";
 
 /// Bump when the same file should compile to different rows, which makes the
 /// next run rebuild.
-const PIPELINE_VERSION: &str = "3";
+const PIPELINE_VERSION: &str = "4";
 
 const FRONTMATTER: &str = "frontmatter";
 const INLINE: &str = "inline";
 const DERIVED: &str = "derived";
+/// The `origin` of a relation accepted but in no note.
+const KBX: &str = "kbx";
 
 /// The `meta` key holding [`defaults_hash`] of the last run.
 const TYPE_DEFAULTS: &str = "type_defaults_hash";
@@ -40,7 +42,8 @@ const EXAMPLES: usize = 3;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IndexOptions {
     /// Ignore the stored hashes. With no `paths`, rebuilds every table that
-    /// comes from the files; `candidates`, `verdicts` and `reviews` don't.
+    /// comes from the files; `candidates`, `verdicts`, `reviews` and `accepted`
+    /// don't.
     pub full: bool,
     /// Limit the run to these files and folders, relative to the working
     /// directory. Empty means the whole vault.
@@ -637,10 +640,16 @@ impl<'a> Run<'a> {
 
     /// Keeps `locks` in line with `kbx.reviewed`. A date it hasn't seen sets the
     /// baseline; the same date keeps it, so that a rebuild can't relock a note.
+    /// A lock held in `.kbx/` has no date in the note, and follows its content;
+    /// a date in the note takes it over.
     fn sync_lock(&self, note: &Note, src: &str) -> rusqlite::Result<()> {
         let Some(date) = reviewed(note) else {
             self.tx
-                .execute("DELETE FROM locks WHERE id = ?", [&note.id])?;
+                .execute("DELETE FROM locks WHERE id = ? AND held = 0", [&note.id])?;
+            self.tx.execute(
+                "UPDATE locks SET current = ? WHERE id = ?",
+                params![user_content(src), note.id],
+            )?;
             return Ok(());
         };
         self.tx.execute(
@@ -648,7 +657,7 @@ impl<'a> Run<'a> {
              ON CONFLICT(id) DO UPDATE SET current = excluded.current,
                  baseline = CASE WHEN reviewed = excluded.reviewed THEN baseline
                      ELSE excluded.baseline END,
-                 reviewed = excluded.reviewed",
+                 reviewed = excluded.reviewed, held = 0",
             params![note.id, date, user_content(src)],
         )?;
         Ok(())
@@ -912,8 +921,118 @@ fn relink(tx: &Transaction<'_>, ontology: &Ontology) -> rusqlite::Result<()> {
         )?;
     }
 
+    fold_accepted(tx, &mut wanted, ontology, &ids)?;
     derive_inverses(&mut wanted, ontology);
     write_edges(tx, &wanted)
+}
+
+/// Adds the relations accepted in `.kbx/` to the frontmatter's. A note that
+/// states one, from either end, wins: its row goes, and from then on the note
+/// is all there is to the relation, so taking the link out takes the relation
+/// out. One with a note missing from the index waits there and has no edge.
+fn fold_accepted(
+    tx: &Transaction<'_>,
+    wanted: &mut BTreeMap<EdgeKey, EdgeRow>,
+    ontology: &Ontology,
+    ids: &[String],
+) -> rusqlite::Result<()> {
+    let notes: BTreeSet<&String> = ids.iter().collect();
+    let mut statement = tx.prepare("SELECT src, dst, rel FROM accepted")?;
+    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    let rows = rows.collect::<rusqlite::Result<Vec<(String, String, String)>>>()?;
+    for (src, dst, rel) in rows {
+        if !notes.contains(&src) || !notes.contains(&dst) {
+            continue;
+        }
+        let forward = (src.clone(), dst.clone(), rel.clone(), FRONTMATTER);
+        let backward = mirror(ontology, &rel)
+            .map(|name| (dst.clone(), src.clone(), name.to_string(), FRONTMATTER));
+        if wanted.contains_key(&forward) || backward.is_some_and(|key| wanted.contains_key(&key)) {
+            tx.execute(
+                "DELETE FROM accepted WHERE src = ? AND dst = ? AND rel = ?",
+                [&src, &dst, &rel],
+            )?;
+            continue;
+        }
+        let (key, row) = accepted_edge(ontology, src, dst, rel);
+        wanted.insert(key, row);
+    }
+    Ok(())
+}
+
+fn accepted_edge(ontology: &Ontology, src: String, dst: String, rel: String) -> (EdgeKey, EdgeRow) {
+    let relation = ontology.lookup(&rel);
+    let row = EdgeRow {
+        inverse_of: relation.filter(|r| r.inverted).map(|r| r.name.to_string()),
+        weight: relation.map(|r| r.relation.weight),
+        src_section: None,
+        line: None,
+    };
+    ((src, dst, rel, KBX), row)
+}
+
+/// The key that reads `rel` from the other end.
+pub(crate) fn mirror<'a>(ontology: &'a Ontology, rel: &str) -> Option<&'a str> {
+    let relation = ontology.lookup(rel)?;
+    Some(match relation.inverted {
+        true => relation.name,
+        false => relation.relation.inverse.as_str(),
+    })
+}
+
+/// Adds the edges of one accepted relation as [`relink`] would, which a run
+/// that finds nothing changed doesn't get to.
+pub(crate) fn link_accepted(
+    tx: &Transaction<'_>,
+    ontology: &Ontology,
+    src: &str,
+    dst: &str,
+    rel: &str,
+) -> rusqlite::Result<()> {
+    let (key, row) = accepted_edge(ontology, src.into(), dst.into(), rel.into());
+    let mut wanted = BTreeMap::from([(key, row)]);
+    derive_inverses(&mut wanted, ontology);
+    for ((src, dst, rel, origin), edge) in &wanted {
+        // The note at the other end may state the mirror itself.
+        let stated: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM edges WHERE src = ?1 AND dst = ?2 AND rel = ?3
+                 AND origin IN ('frontmatter', 'kbx'))",
+            [src, dst, rel],
+            |row| row.get(0),
+        )?;
+        if *origin == DERIVED && stated {
+            continue;
+        }
+        tx.execute(
+            "INSERT OR IGNORE INTO edges (src, dst, rel, inverse_of, weight, origin) VALUES (?, ?, ?, ?, ?, ?)",
+            params![src, dst, rel, edge.inverse_of, edge.weight, origin],
+        )?;
+    }
+    Ok(())
+}
+
+/// Takes out what [`link_accepted`] put in. A mirror the frontmatter holds up
+/// stays.
+pub(crate) fn unlink_accepted(
+    tx: &Transaction<'_>,
+    ontology: &Ontology,
+    src: &str,
+    dst: &str,
+    rel: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "DELETE FROM edges WHERE src = ? AND dst = ? AND rel = ? AND origin = 'kbx'",
+        [src, dst, rel],
+    )?;
+    if let Some(name) = mirror(ontology, rel) {
+        tx.execute(
+            "DELETE FROM edges WHERE src = ?1 AND dst = ?2 AND rel = ?3 AND origin = 'derived'
+             AND NOT EXISTS (SELECT 1 FROM edges WHERE src = ?2 AND dst = ?1 AND rel = ?4
+                 AND origin = 'frontmatter')",
+            [dst, src, name, rel],
+        )?;
+    }
+    Ok(())
 }
 
 pub(crate) fn load_resolver(conn: &Connection) -> rusqlite::Result<(Resolver, Vec<String>)> {
@@ -938,12 +1057,14 @@ pub(crate) fn load_resolver(conn: &Connection) -> rusqlite::Result<(Resolver, Ve
     Ok((resolver, ids))
 }
 
-/// Adds the mirror of each frontmatter edge, unless the target note states it
-/// itself. `inverse_of` is set on a row that reads a relation backwards.
+/// Adds the mirror of each stated edge, unless the target note states it itself
+/// or it's accepted that way too. `inverse_of` is set on a row that reads a
+/// relation backwards.
 fn derive_inverses(wanted: &mut BTreeMap<EdgeKey, EdgeRow>, ontology: &Ontology) {
     let mut derived = Vec::new();
     for ((src, dst, rel, origin), row) in wanted.iter() {
-        let Some(relation) = ontology.lookup(rel).filter(|_| *origin == FRONTMATTER) else {
+        let stated = *origin == FRONTMATTER || *origin == KBX;
+        let Some(relation) = ontology.lookup(rel).filter(|_| stated) else {
             continue;
         };
         let (mirror, inverse_of) = if relation.inverted {
@@ -951,8 +1072,8 @@ fn derive_inverses(wanted: &mut BTreeMap<EdgeKey, EdgeRow>, ontology: &Ontology)
         } else {
             (relation.relation.inverse.as_str(), Some(relation.name))
         };
-        let stated = (dst.clone(), src.clone(), mirror.to_string(), FRONTMATTER);
-        if !wanted.contains_key(&stated) {
+        let stated = |origin| (dst.clone(), src.clone(), mirror.to_string(), origin);
+        if !wanted.contains_key(&stated(FRONTMATTER)) && !wanted.contains_key(&stated(KBX)) {
             let edge = EdgeRow {
                 inverse_of: inverse_of.map(str::to_string),
                 weight: row.weight,

@@ -390,7 +390,7 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
       case $1 in
         --version) echo "kbx \${FAKE_VERSION:-1.2.3}" ;;
         doctor)
-          if [[ -f kbx.toml ]] && grep -q '^search = "qmd"' kbx.toml; then
+          if [[ -f .kbx/kbx.toml ]] && grep -q '^search = "qmd"' .kbx/kbx.toml; then
             [[ $FAKE_QMD_DOCTOR != noisy ]] || echo "added 300 packages" >&2
             if [[ $FAKE_QMD_DOCTOR == fails ]]; then ${ROW} qmd fail "not installed"; exit 1; fi
             if [[ $FAKE_QMD_DOCTOR == unhealthy ]]; then ${ROW} qmd ok "$here/qmd"; exit 1; fi
@@ -404,15 +404,16 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
           [[ $FAKE_DOCTOR != noisy ]] || echo "added 300 packages" >&2
           [[ $FAKE_DOCTOR != fails ]] || exit 1
           if [[ $FAKE_DOCTOR == installs ]]; then touch "$here/qmd"; chmod +x "$here/qmd"; fi
-          if [[ -f kbx.toml ]]; then
+          if [[ -f .kbx/kbx.toml ]]; then
             ${ROW} vault ok "$PWD"
             ${ROW} index "\${FAKE_INDEX_ROW:-ok}" "25 notes, 58 edges, 29 sections, 2 hidden links"
             ${ROW} search "\${FAKE_SEARCH_ROW:-ok}" "builtin, model ready"
           fi
           ;;
         init)
+          mkdir -p .kbx
           if [[ $2 == --search ]]; then
-            echo 'search = "qmd"' > kbx.toml
+            echo 'search = "qmd"' > .kbx/kbx.toml
             [[ $FAKE_QMD_INIT != fails ]] || exit 1
             if [[ $FAKE_QMD_INIT == warns ]]; then echo "warning: qmd collections not created" >&2; exit 0; fi
             for scope in decisions engineering lint operations; do
@@ -420,7 +421,7 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
             done
             exit 0
           fi
-          printf 'search = "%s"  # or "qmd" or "builtin"\\n' "\${FAKE_DEFAULT_SEARCH:-builtin}" > kbx.toml
+          printf 'search = "%s"  # or "qmd" or "builtin"\\n' "\${FAKE_DEFAULT_SEARCH:-builtin}" > .kbx/kbx.toml
           [[ $FAKE_INIT != fails ]] || exit 1
           [[ $FAKE_INIT != collections ]] || echo "created qmd collection decisions"
           ;;
@@ -614,8 +615,8 @@ BINARY
       // for a vault with `search = "qmd"`, and `onDefault` for one without.
       function kbx(onQmd, onDefault = `${ROW_OK}; exit 0`) {
         return `
-          if [[ $1 == init ]]; then echo 'search = "builtin"' > kbx.toml; exit 0; fi
-          if grep -q '"qmd"' kbx.toml; then ${onQmd}; fi
+          if [[ $1 == init ]]; then mkdir -p .kbx; echo 'search = "builtin"' > .kbx/kbx.toml; exit 0; fi
+          if grep -q '"qmd"' .kbx/kbx.toml; then ${onQmd}; fi
           ${onDefault}`;
       }
 

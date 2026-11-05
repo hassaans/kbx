@@ -72,7 +72,7 @@ fn forget_calls(vault: &Fixture) {
 }
 
 fn config(vault: &Fixture) -> toml::Value {
-    let text = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    let text = fs::read_to_string(vault.root().join(".kbx/kbx.toml")).unwrap();
     toml::from_str(&text).unwrap()
 }
 
@@ -142,14 +142,14 @@ fn init_creates_a_collection_per_scope_and_records_its_root() {
 fn rerunning_init_duplicates_nothing() {
     let vault = two_scopes("[]");
     vault.ok(&["init", "--search", "qmd"]);
-    let before = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    let before = fs::read_to_string(vault.root().join(".kbx/kbx.toml")).unwrap();
     forget_calls(&vault);
 
     let output = vault.kbx(&["init", "--search", "qmd"]);
     assert!(output.status.success());
     assert!(stderr(&output).is_empty(), "{}", stderr(&output));
     assert!(adds(&vault).is_empty(), "{:?}", calls(&vault));
-    let after = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    let after = fs::read_to_string(vault.root().join(".kbx/kbx.toml")).unwrap();
     assert_eq!(before, after);
 }
 
@@ -179,7 +179,7 @@ fn scopes_with_one_slug_get_two_collections() {
 fn a_scope_added_later_gets_its_collection_and_the_file_keeps_its_comments() {
     let vault = two_scopes("[]");
     vault.ok(&["init", "--search", "qmd"]);
-    let file = vault.root().join("kbx.toml");
+    let file = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&file).unwrap();
     let scopes = "scopes = [\"Team B\", \"team-a\"]";
     assert!(text.contains(scopes), "{text}");
@@ -200,7 +200,7 @@ fn a_scope_added_later_gets_its_collection_and_the_file_keeps_its_comments() {
 fn a_kbx_toml_from_before_roots_is_brought_up_to_date() {
     let vault = two_scopes("[]");
     vault.write(
-        "kbx.toml",
+        ".kbx/kbx.toml",
         "vault = \".\"\nscopes = [\"Team B\", \"team-a\"]\nontology = \".kbx/ontology.yaml\"\n\
          search = \"qmd\"\nqmd = { bin = \"qmd\", collections = [\"Team B\", \"team-a\"] }\n",
     );
@@ -231,7 +231,7 @@ fn a_qmd_that_cannot_add_collections_leaves_init_working_and_says_so() {
         "{}",
         stderr(&output)
     );
-    assert!(vault.root().join("kbx.toml").is_file());
+    assert!(vault.root().join(".kbx/kbx.toml").is_file());
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn doctor_reports_missing_collections_and_fix_creates_them() {
 fn doctor_warns_about_a_collection_with_no_root() {
     let vault = two_scopes("[]");
     vault.ok(&["init", "--search", "qmd"]);
-    let file = vault.root().join("kbx.toml");
+    let file = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&file).unwrap();
     let text = text.replace("collections = [", "collections = [\"mine\", ");
     fs::write(&file, text).unwrap();
@@ -309,7 +309,7 @@ fn a_relative_qmd_bin_is_refreshed_like_one_on_path() {
     let tools = vault.root().join("tools");
     fs::create_dir(&tools).unwrap();
     fs::rename(vault.path.program("qmd"), tools.join("qmd")).unwrap();
-    let file = vault.root().join("kbx.toml");
+    let file = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&file).unwrap();
     fs::write(
         &file,
@@ -340,7 +340,7 @@ fn an_index_named_in_kbx_toml_is_searched_but_never_updated() {
     let vault = two_scopes("[]");
     vault.ok(&["init", "--search", "qmd"]);
     vault.ok(&["index"]);
-    let file = vault.root().join("kbx.toml");
+    let file = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&file).unwrap();
     let text = text.replace("bin = \"qmd\",", "bin = \"qmd\", index = \"index\",");
     fs::write(&file, text).unwrap();
@@ -381,7 +381,7 @@ fn with_no_collections_qmd_knn_is_skipped_without_running_qmd() {
     let vault = two_scopes("[]");
     vault.ok(&["init", "--search", "qmd"]);
     vault.ok(&["index"]);
-    let file = vault.root().join("kbx.toml");
+    let file = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&file).unwrap();
     let start = text.find("qmd = {").unwrap();
     let end = start + text[start..].find('\n').unwrap();
@@ -564,7 +564,7 @@ fn set_up_before_exclude() -> Fixture {
     vault.write("credentials/keys.md", &note(3, "keys"));
     vault.write("team-a/secrets/keys.md", &note(4, "keys"));
     vault.ok(&["init", "--search", "qmd"]);
-    let file = vault.root().join("kbx.toml");
+    let file = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&file).unwrap();
     let text = text.replace(
         r#"qmd = { bin = "qmd", collections = ["#,
@@ -627,7 +627,7 @@ fn doctor_fix_removes_an_excluded_collection_and_narrows_the_rest() {
 #[test]
 fn a_named_index_keeps_its_collections_but_kbx_stops_searching_an_excluded_one() {
     let vault = set_up_before_exclude();
-    let file = vault.root().join("kbx.toml");
+    let file = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&file).unwrap();
     fs::write(
         &file,

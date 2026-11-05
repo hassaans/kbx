@@ -27,7 +27,13 @@ use crate::path::without_verbatim_prefix;
 ///
 /// `locks` holds each `kbx.reviewed`: `baseline` is the note's content when the
 /// date was first seen and `current` its content now, so equal means locked.
-/// The frontmatter has room for a date alone (§3).
+/// The frontmatter has room for a date alone (§3). `held` is 1 on a lock kept
+/// here alone, with no `kbx.reviewed` in the note, which the index leaves in place.
+///
+/// `accepted` holds the relations accepted but in no note: the one thing in
+/// `.kbx/` that no file can give back, so a rebuild keeps it. `src`, `dst` and
+/// `rel` read as the frontmatter would, and each row becomes an `edges` row of
+/// origin `kbx`. It goes when the note states the relation (`docs/review.md`).
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, id TEXT UNIQUE, type TEXT, title TEXT,
     content_hash TEXT, fm_hash TEXT, mtime INTEGER, scope TEXT, indexed_at INTEGER);
@@ -39,7 +45,7 @@ CREATE TABLE IF NOT EXISTS blocks (id TEXT, block_id TEXT, section_key TEXT,
 CREATE TABLE IF NOT EXISTS links (src TEXT, key TEXT, target TEXT, fragment TEXT,
     origin TEXT CHECK(origin IN ('frontmatter','inline')), src_section TEXT, line INTEGER, dst TEXT);
 CREATE TABLE IF NOT EXISTS edges (src TEXT, dst TEXT, rel TEXT, inverse_of TEXT, weight REAL,
-    origin TEXT CHECK(origin IN ('frontmatter','inline','derived')),
+    origin TEXT CHECK(origin IN ('frontmatter','inline','derived','kbx')),
     src_section TEXT, line INTEGER, PRIMARY KEY(src, dst, rel, origin));
 CREATE INDEX IF NOT EXISTS edges_dst ON edges(dst);
 CREATE INDEX IF NOT EXISTS aliases_id ON aliases(id);
@@ -57,7 +63,11 @@ CREATE TABLE IF NOT EXISTS reviews (src TEXT, dst TEXT, rel TEXT,
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS staged (cid TEXT PRIMARY KEY, note TEXT, target TEXT, rel TEXT,
     hash TEXT, content TEXT);
-CREATE TABLE IF NOT EXISTS locks (id TEXT PRIMARY KEY, reviewed TEXT, baseline TEXT, current TEXT);
+CREATE TABLE IF NOT EXISTS locks (id TEXT PRIMARY KEY, reviewed TEXT, baseline TEXT, current TEXT,
+    held INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS accepted (cid TEXT, src TEXT, dst TEXT, rel TEXT, src_section TEXT,
+    dst_section TEXT, decided_at INTEGER, PRIMARY KEY(src, dst, rel));
+CREATE INDEX IF NOT EXISTS accepted_cid ON accepted(cid);
 ";
 
 /// A note in the index.
@@ -78,7 +88,7 @@ pub struct Neighbor {
     pub node: Node,
     /// The edge's `rel`: a frontmatter key, or [`MENTIONS`](crate::MENTIONS).
     pub rel: String,
-    /// The edge's `origin`: `frontmatter`, `inline` or `derived`.
+    /// The edge's `origin`: `frontmatter`, `inline`, `derived` or `kbx`.
     pub origin: String,
     /// The relation's weight. Mentions and keys outside the ontology have none.
     pub weight: Option<f64>,
@@ -93,6 +103,8 @@ pub struct GraphStats {
     pub nodes: i64,
     /// Rows in `edges`, derived inverses included.
     pub edges: i64,
+    /// Of those, the accepted relations no note states.
+    pub accepted: i64,
     /// Rows in `sections`.
     pub sections: i64,
     /// Links that resolve to nothing (§8).
@@ -112,6 +124,8 @@ impl Graph {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
         add_candidate_columns(&conn)?;
+        add_kbx_origin(&conn)?;
+        add_held_column(&conn)?;
         Ok(Graph { conn })
     }
 
@@ -226,6 +240,7 @@ impl Graph {
         Ok(GraphStats {
             nodes: count("SELECT COUNT(*) FROM files")?,
             edges: count("SELECT COUNT(*) FROM edges")?,
+            accepted: count("SELECT COUNT(*) FROM edges WHERE origin = 'kbx'")?,
             sections: count("SELECT COUNT(*) FROM sections")?,
             hidden: count("SELECT COUNT(*) FROM links WHERE dst IS NULL")?,
         })
@@ -252,6 +267,42 @@ fn add_candidate_columns(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Upgrades `edges` from before origin `kbx`. SQLite can't alter a `CHECK`, so
+/// the table is copied.
+fn add_kbx_origin(conn: &Connection) -> rusqlite::Result<()> {
+    let sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'edges'",
+        [],
+        |row| row.get(0),
+    )?;
+    if sql.contains("'kbx'") {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "BEGIN IMMEDIATE;
+         CREATE TABLE edges_new (src TEXT, dst TEXT, rel TEXT, inverse_of TEXT, weight REAL,
+             origin TEXT CHECK(origin IN ('frontmatter','inline','derived','kbx')),
+             src_section TEXT, line INTEGER, PRIMARY KEY(src, dst, rel, origin));
+         INSERT INTO edges_new SELECT src, dst, rel, inverse_of, weight, origin, src_section, line
+             FROM edges;
+         DROP TABLE edges;
+         ALTER TABLE edges_new RENAME TO edges;
+         CREATE INDEX edges_dst ON edges(dst);
+         COMMIT;",
+    )
+}
+
+/// Upgrades `locks` from before `held`: every lock until then is in a note.
+fn add_held_column(conn: &Connection) -> rusqlite::Result<()> {
+    let mut statement = conn.prepare("SELECT name FROM pragma_table_info('locks')")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let columns = rows.collect::<rusqlite::Result<HashSet<String>>>()?;
+    if !columns.contains("held") {
+        conn.execute_batch("ALTER TABLE locks ADD COLUMN held INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
+}
+
 fn candidate_columns(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
     let mut statement = conn.prepare("SELECT name FROM pragma_table_info('candidates')")?;
     let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
@@ -262,6 +313,12 @@ fn candidate_columns(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
 /// can't be upgraded, so one from an older kbx may not.
 pub(crate) fn has_candidate_sections(conn: &Connection) -> rusqlite::Result<bool> {
     Ok(candidate_columns(conn)?.contains("src_section"))
+}
+
+/// Whether there is an `accepted` table, likewise.
+pub(crate) fn has_accepted_table(conn: &Connection) -> rusqlite::Result<bool> {
+    let tables = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'accepted'";
+    Ok(conn.query_row(tables, [], |row| row.get::<_, i64>(0))? > 0)
 }
 
 /// Whether `candidates` has `accepted_rel`, likewise.

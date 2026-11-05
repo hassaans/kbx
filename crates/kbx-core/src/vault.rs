@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -250,6 +250,17 @@ impl Vault {
     /// `link.unresolved` only on files the author changed, so `kbx lint` calls
     /// this on those alone.
     pub fn validate_note(&self, note: &Note, ontology: &Ontology) -> Vec<Finding> {
+        self.validate_note_with(note, ontology, &HashSet::new())
+    }
+
+    /// [`Vault::validate_note`], with `held` the `(id, key)` pairs kept in the
+    /// database rather than in the note.
+    pub(crate) fn validate_note_with(
+        &self,
+        note: &Note,
+        ontology: &Ontology,
+        held: &HashSet<(String, String)>,
+    ) -> Vec<Finding> {
         let mut found = Vec::new();
         let mut report = |code, line, message| {
             found.push(Finding {
@@ -273,7 +284,8 @@ impl Vault {
             }
             Some(class) => {
                 for key in &class.requires {
-                    if note.relation(key).is_none() {
+                    let in_database = held.contains(&(note.id.clone(), key.clone()));
+                    if note.relation(key).is_none() && !in_database {
                         let message = format!("{} requires `{key}`", note.class);
                         report(FindingCode::SchemaGap, note.class_line, message);
                     }

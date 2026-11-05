@@ -22,7 +22,10 @@ names only ever get added to.
 | `edges` | `src`, `dst`, `rel`, `inverse_of`, `weight`, `origin`, `src_section`, `line` |
 | `reviews` | `src`, `dst`, `rel`, `decision`, `reason`, `strikes`, `decided_at` |
 
-`edges` holds every row, mirrors of inverses and `mentions` included.
+`edges` holds every row, mirrors of inverses and `mentions` included. `origin` is
+`frontmatter` for a relation a note states, `inline` for a link in a body, `derived`
+for a mirrored inverse, and `kbx` for a relation [accepted and kept in
+`.kbx/`](review.md#accepted-relations).
 
 ## `kbx import reviews`
 

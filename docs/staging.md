@@ -4,6 +4,11 @@
 them in your editor. `kbx sync-stage` takes what you did there as decisions. It
 is another way into [the review queue](review.md), not a second queue.
 
+Staging puts text in your notes, so it needs writing on. Without
+`[write] frontmatter = true` in `.kbx/kbx.toml`, both commands change nothing and
+say so. There's no version of staging kept in `.kbx/`: the candidates table already
+is the queue, and `kbx review` goes through it.
+
 ## Staging
 
 ```sh
@@ -32,9 +37,14 @@ for repeating a rejected relation isn't staged. The candidates stay in the
 database, so `kbx review` and `kbx review --json` show the same queue either way,
 and accepting or rejecting there takes the line out of the note.
 
-A candidate accepted with [`kbx accept --no-write`](review.md#accepting-without-writing)
+A candidate accepted with [`kbx accept --no-write`](review.md#accepted-relations)
 isn't staged either: it's decided. One already staged keeps its line until the
 acceptance is written.
+
+If you turn the setting off, lines already staged stay in your notes. `kbx reject`
+and `kbx accept` leave them alone, like every other note. With the setting back on,
+`kbx sync-stage` removes the line of a rejected candidate, and `kbx apply` removes
+the line of an accepted one as it writes the relation.
 
 Staging again adds only what's new. A line you removed isn't put back, even
 before `kbx sync-stage` has seen that it's gone.
@@ -123,7 +133,13 @@ around, and accepting writes to both notes. `kbx suggest` says how many it left
 out. Candidates stored before the lock stay in the queue.
 
 `kbx sync-stage --mark-reviewed` sets it to today, in UTC, on each note where
-that run took a decision and left no line to decide. Nothing sets it otherwise.
+that run took a decision and left no line to decide. `kbx mark-reviewed <id>…` sets
+it on the notes you name.
+
+With writing off, `kbx mark-reviewed` puts the lock in `.kbx/` alone, and no note
+changes. It works the same, with the content at that moment as its baseline: it
+survives `kbx index --full`, and an edit lifts it. `kbx apply` doesn't write these
+locks to notes. They go on working from `.kbx/`.
 
 The lock goes by the note's content, recorded by `kbx index` when it first sees
 the date, so `kbx index` has to have seen both the date and any edit:

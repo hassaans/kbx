@@ -257,7 +257,7 @@ mod doctor {
         let vault = indexed();
         logged_in_claude(&vault.path);
         logged_in_codex(&vault.path);
-        let config = vault.root().join("kbx.toml");
+        let config = vault.root().join(".kbx/kbx.toml");
         let text = fs::read_to_string(&config).unwrap();
         let swapped = text.replace(
             r#"order = ["claude-cli", "codex-cli","#,
@@ -641,7 +641,7 @@ mod batches {
             0,
             &claude_result(&verdicts, 0.0, 0),
         );
-        let config = vault.root().join("kbx.toml");
+        let config = vault.root().join(".kbx/kbx.toml");
         let text = fs::read_to_string(&config).unwrap();
         let text = text.replace(r#"model = "haiku""#, r#"model = "from-toml""#);
         fs::write(&config, text).unwrap();
@@ -733,7 +733,7 @@ mod batches {
 
     #[test]
     fn kbx_accept_writes_the_relation_a_judge_named() {
-        let vault = indexed();
+        let vault = indexed().writing();
         logged_in_claude(&vault.path);
         let mut verdicts = answers(&vault);
         verdicts[0]["verdict"] = json!("accept");
@@ -899,7 +899,7 @@ mod selection {
         logged_in_claude(&vault.path);
         let verdicts = answers(&vault);
         answer(&vault.path, "claude-batch", 0, &claude_result(&[], 0.0, 0));
-        let config = vault.root().join("kbx.toml");
+        let config = vault.root().join(".kbx/kbx.toml");
         let mut text = fs::read_to_string(&config).unwrap();
         // The note in `NARROW` is in `operations`.
         text.push_str("\"operations\" = \"ollama\"\n");
@@ -968,7 +968,7 @@ fn suggest_with(vault: &Fixture, judge: &str, env: &[(&str, &str)]) -> std::proc
 }
 
 fn pin(vault: &Fixture, folder: &str, backend: &str) {
-    let config = vault.root().join("kbx.toml");
+    let config = vault.root().join(".kbx/kbx.toml");
     let mut text = fs::read_to_string(&config).unwrap();
     text.push_str(&format!("\"{folder}\" = \"{backend}\"\n"));
     fs::write(&config, text).unwrap();
@@ -1056,7 +1056,7 @@ mod local {
     #[test]
     fn doctor_lists_a_backend_left_out_of_the_order_but_never_chooses_it() {
         let vault = indexed();
-        let config = vault.root().join("kbx.toml");
+        let config = vault.root().join(".kbx/kbx.toml");
         let text = fs::read_to_string(&config).unwrap();
         let cut = r#"order = ["codex-cli"]"#;
         let text = text.replace(
@@ -1115,7 +1115,7 @@ mod local {
         let vault = indexed();
         answers(&vault);
         let ollama = fake_ollama(&["gemma3:4b"]);
-        let config = vault.root().join("kbx.toml");
+        let config = vault.root().join(".kbx/kbx.toml");
         let text = fs::read_to_string(&config).unwrap();
         let line = "ollama = { model = \"qwen3:14b\", host = \"http://127.0.0.1:11434\" }";
         assert!(text.contains(line));
@@ -1424,7 +1424,7 @@ mod cost_controls {
     fn the_batch_size_comes_from_the_flag_then_the_config_and_stays_in_range() {
         let vault = indexed();
         answering_claude(&vault.path, 0.0);
-        let config = vault.root().join("kbx.toml");
+        let config = vault.root().join(".kbx/kbx.toml");
 
         for size in ["9", "26"] {
             let output = vault.kbx(&["suggest", "--judge", "none", "--batch", size]);
@@ -1471,7 +1471,7 @@ mod cost_controls {
             0,
             &codex_events(&verdicts, 4000),
         );
-        let config = vault.root().join("kbx.toml");
+        let config = vault.root().join(".kbx/kbx.toml");
         let text = fs::read_to_string(&config).unwrap();
         let text = text.replace(
             "codex  = { model = \"gpt-6-luna\" }",
@@ -1548,7 +1548,7 @@ fn vault_with_private_note(folder: &str) -> Fixture {
 }
 
 fn set_exclude(vault: &Fixture, exclude: &str) {
-    let file = vault.root().join("kbx.toml");
+    let file = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&file).unwrap();
     let kept = text.lines().filter(|line| !line.starts_with("exclude ="));
     let kept = kept.collect::<Vec<_>>().join("\n");

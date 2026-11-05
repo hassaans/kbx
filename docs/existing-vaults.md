@@ -2,7 +2,8 @@
 
 kbx needs nothing from an existing vault. A note with no `id`, `type` or `title`
 is still indexed: kbx infers what the file doesn't state and keeps that in the
-index. Indexing, linting and suggesting write nothing to your notes.
+index. By default nothing writes to your notes, and that includes accepting a
+link.
 
 ## What is inferred
 
@@ -75,10 +76,17 @@ reports them as `type.unknown`, and relations that accept any class still work.
 
 ## What gets written
 
-Only `kbx accept` writes to a note with an inferred key, and it writes the
-relation alone: see [the frontmatter writer](frontmatter-writer.md#notes-with-inferred-keys).
-`kbx suggest --stage` leaves such a note alone, and its candidates stay in
-`kbx review`. There is no migration command.
+Nothing, by default. What's inferred stays in the index, and an accepted relation
+stays in `.kbx/`: see [Accepted relations](review.md#accepted-relations). Such a
+relation hangs on the inferred id, so renaming the note leaves it waiting, and
+`kbx reject <cid>` clears it. Put `id:` in a note to keep its relations through a
+rename.
+
+With [`[write] frontmatter = true`](frontmatter-writer.md), only `kbx accept` and
+`kbx apply` write to a note with an inferred key, and they write the relation
+alone: see [the frontmatter writer](frontmatter-writer.md#notes-with-inferred-keys).
+A link to such a note uses its path. `kbx suggest --stage` leaves the note alone, and
+its candidates stay in `kbx review`. There is no migration command.
 
 ## Links
 

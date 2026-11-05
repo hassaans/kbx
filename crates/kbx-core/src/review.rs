@@ -1,5 +1,6 @@
 //! Review decisions (§7): the `reviews` table, strikes, and acceptance, which
-//! is what writes relations to notes.
+//! keeps a relation in `.kbx/` or, with `[write] frontmatter` on, writes it to
+//! notes.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -17,11 +18,16 @@ use crate::note::{Note, parse_note};
 use crate::ontology::{NONE, Ontology, RelationKey, admits};
 use crate::writer::{Staged, WriteError, add_relation, holds_link, unstage_entries, write_atomic};
 
+mod accepted;
 mod queue;
 mod stage;
 
+pub(crate) use accepted::held_keys;
+pub use accepted::{AcceptedRelation, Applied, accepted_relations, apply, written_paths};
 pub use queue::{Item, JUDGE_ERROR, Queue, excerpt, excerpt_of, section_excerpt};
-pub use stage::{StageReport, Synced, locked_notes, mark_reviewed, stage, sync_stage, unstage};
+pub use stage::{
+    StageReport, Synced, hold_reviewed, locked_notes, mark_reviewed, stage, sync_stage, unstage,
+};
 
 /// What a wikilink can't hold in a file name.
 const UNLINKABLE: [char; 5] = ['#', '|', '^', '[', ']'];
@@ -318,10 +324,10 @@ pub fn accept(
 }
 
 /// Records an acceptance with [`accept`]'s checks and adds what it would write
-/// to `preview`, leaving every note alone. The candidate stays, marked as
-/// accepted: its hashes go on being followed, and [`accept`] writes it later,
-/// under this relation unless told otherwise. [`reject`] and [`defer`] take the
-/// decision back.
+/// to `preview`, leaving every note alone. The relation goes in `accepted`, with
+/// its edges, unless a note states it already. The candidate stays, marked as
+/// accepted: [`accept`] or [`apply`] writes it later, under this relation unless
+/// told otherwise, and [`reject`] and [`defer`] take the decision back.
 pub fn accept_unwritten(
     g: &Graph,
     vault: &Path,
@@ -342,7 +348,12 @@ fn accept_with(
     preview: Option<&mut Preview>,
 ) -> Result<Accepted, ReviewError> {
     let tx = Transaction::new_unchecked(&g.conn, TransactionBehavior::Immediate)?;
-    let candidate = Candidate::load(&tx, cid)?;
+    let mut candidate = Candidate::load(&tx, cid)?;
+    // Its pair is linked now, so no `kbx suggest` moves its hashes along. The
+    // decision was made, and a note need only match the index.
+    if accepted::holds(&tx, cid)? {
+        candidate.follow_index(&tx, vault)?;
+    }
     let rel = standing_rel(&tx, &candidate, decision)?
         .ok_or_else(|| ReviewError::NoRelation(cid.to_string()))?;
     let accepted = write_accepted(
@@ -434,9 +445,11 @@ fn write_accepted(
     let inverse_exclusive = ontology.lookup(inverse_key).is_some_and(|k| k.exclusive());
     if key.relation.exclusive {
         from.refuse_second(key.name, |t| names(&to.note.id, t))?;
+        from.refuse_held(tx, ontology, key.name, &to.note.id)?;
     }
     if writes_inverse && inverse_exclusive {
         to.refuse_second(inverse_key, |t| names(&from.note.id, t))?;
+        to.refuse_held(tx, ontology, inverse_key, &from.note.id)?;
     }
     // Each note points at the section at the other end.
     let section_of = |file: &Checked| match file.note.id == candidate.src {
@@ -450,6 +463,8 @@ fn write_accepted(
         true => to.with_relation(inverse_key, &link_to(from), |t| names(&from.note.id, t))?,
         false => None,
     };
+    // Either note stating it is enough for the index to have the edge.
+    let stated = forward.is_none() || (writes_inverse && inverse.is_none());
 
     // Writing what was already accepted is not a new decision, so its reason
     // and date stand unless this one gives a reason of its own.
@@ -483,11 +498,23 @@ fn write_accepted(
             "UPDATE candidates SET accepted_rel = ?1 WHERE cid = ?2",
             params![rel, cid],
         )?;
+        if !stated {
+            let relation = AcceptedRelation {
+                cid: cid.to_string(),
+                src: from.note.id.clone(),
+                dst: to.note.id.clone(),
+                rel: key.name.to_string(),
+                src_section: section_of(from).map(String::from),
+                dst_section: section_of(to).map(String::from),
+            };
+            accepted::hold(tx, ontology, &relation, now())?;
+        }
         for (file, text) in changes {
             preview.add(file, text);
         }
     } else {
         tx.execute("DELETE FROM candidates WHERE cid = ?", [cid])?;
+        accepted::release(tx, ontology, cid)?;
         for (file, text) in &changes {
             stage::follow(tx, &file.note.id, &file.hash, text)?;
         }
@@ -623,6 +650,23 @@ impl Candidate {
             .optional()?
             .ok_or_else(|| ReviewError::UnknownCandidate(cid.to_string()))
     }
+
+    /// Takes a note that matches the index as what was decided on. One that
+    /// doesn't keeps its hash, which an acceptance sharing the note may have
+    /// moved along ahead of the index.
+    fn follow_index(&mut self, connection: &Connection, vault: &Path) -> rusqlite::Result<()> {
+        for (id, hash) in [
+            (&self.src, &mut self.src_hash),
+            (&self.dst, &mut self.dst_hash),
+        ] {
+            let indexed = accepted::index_hash(connection, id)?;
+            let file = OnDisk::read(connection, vault, id)?;
+            if indexed.is_some() && file.map(|file| file.hash) == indexed {
+                *hash = indexed;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The relation of the latest verdict that names one.
@@ -651,9 +695,9 @@ fn standing_rel(
     }
 }
 
-/// Takes back an acceptance that was never written, whose row would otherwise
-/// stand in `reviews` for a link no note has. Only a rejection adds strikes, so
-/// a row with some goes back to being one, and the rest go.
+/// Takes back an acceptance that was never written, with its edges, whose row
+/// would otherwise stand in `reviews` for a link no note has. Only a rejection
+/// adds strikes, so a row with some goes back to being one, and the rest go.
 fn withdraw(
     tx: &Transaction<'_>,
     ontology: &Ontology,
@@ -662,6 +706,7 @@ fn withdraw(
     let Some(rel) = &candidate.accepted_rel else {
         return Ok(());
     };
+    accepted::release(tx, ontology, &candidate.cid)?;
     let name = ontology.lookup(rel).map_or(rel.as_str(), |key| key.name);
     let row = "rel = ?1 AND decision = 'accept'
         AND ((src = ?2 AND dst = ?3) OR (src = ?3 AND dst = ?2))";
@@ -709,9 +754,7 @@ fn record(
     reason: Option<&str>,
     strikes: i64,
 ) -> rusqlite::Result<()> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs() as i64);
+    let now = now();
     tx.execute(
         "INSERT INTO reviews (src, dst, rel, decision, reason, strikes, decided_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -721,6 +764,12 @@ fn record(
         params![src, dst, rel, decision, reason, strikes, now],
     )?;
     Ok(())
+}
+
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64)
 }
 
 fn follow_hash(tx: &Transaction<'_>, id: &str, old: &str, new: &str) -> rusqlite::Result<()> {
@@ -856,6 +905,23 @@ impl Checked {
         let removed = unstage_entries(base, &[cid])
             .map_err(|error| ReviewError::Write(self.path.clone(), error))?;
         Ok(removed.or(text))
+    }
+
+    /// [`Checked::refuse_second`], for the targets kept in `.kbx/`.
+    fn refuse_held(
+        &self,
+        tx: &Transaction<'_>,
+        ontology: &Ontology,
+        key: &str,
+        other: &str,
+    ) -> Result<(), ReviewError> {
+        if accepted::has_other_target(tx, ontology, &self.note.id, key, other)? {
+            return Err(ReviewError::Exclusive {
+                path: self.path.clone(),
+                rel: key.to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// Refuses a second target for an exclusive key.

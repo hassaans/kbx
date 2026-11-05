@@ -1,5 +1,6 @@
-//! Drives a vault whose config is `.kbx/kbx.toml`, and checks that everything
-//! outside `.kbx/` stays as it was.
+//! Where the config file lives: `.kbx/kbx.toml`, which `kbx init` writes and
+//! which leaves everything outside `.kbx/` as it was, or a `kbx.toml` at the root
+//! from before that, which still works.
 
 mod common;
 
@@ -42,6 +43,15 @@ const COMMANDS: [&[&str]; 14] = [
 fn fresh() -> Fixture {
     let vault = Fixture::bare(FakePath::with_qmd());
     copy_dir(Path::new(FIXTURE), vault.root());
+    vault
+}
+
+/// The fixture vault with its config where an older `kbx init` put it.
+fn at_root() -> Fixture {
+    let vault = fresh();
+    vault.ok(&["init"]);
+    let root = vault.root();
+    fs::rename(root.join(".kbx/kbx.toml"), root.join("kbx.toml")).unwrap();
     vault
 }
 
@@ -98,10 +108,10 @@ fn assert_two_configs(output: &Output, text: &str) {
 }
 
 #[test]
-fn init_in_kbx_adds_only_the_folder_to_the_root() {
+fn init_adds_only_the_folder_to_the_root() {
     let vault = fresh();
     let before: Vec<_> = tree_hash(vault.root()).into_keys().collect();
-    let printed = vault.ok(&["init", "--in-kbx"]);
+    let printed = vault.ok(&["init"]);
     assert!(
         printed.contains(&inside().display().to_string()),
         "{printed}"
@@ -114,11 +124,15 @@ fn init_in_kbx_adds_only_the_folder_to_the_root() {
 }
 
 #[test]
-fn plain_init_still_writes_to_the_root() {
-    let vault = fresh();
-    vault.ok(&["init"]);
-    assert!(vault.root().join("kbx.toml").is_file());
-    assert!(!vault.root().join(".kbx/kbx.toml").exists());
+fn init_in_kbx_is_accepted_and_changes_nothing() {
+    let plain = fresh();
+    plain.ok(&["init"]);
+    let flagged = fresh();
+    flagged.ok(&["init", "--in-kbx"]);
+    assert!(flagged.root().join(".kbx/kbx.toml").is_file());
+    assert!(!flagged.root().join("kbx.toml").exists());
+    let config = |vault: &Fixture| fs::read(vault.root().join(".kbx/kbx.toml")).unwrap();
+    assert_eq!(config(&flagged), config(&plain));
 }
 
 #[test]
@@ -170,8 +184,7 @@ fn every_command_finds_the_config_from_the_root_a_folder_and_kbx_itself() {
 
 #[test]
 fn a_relative_vault_means_the_same_after_moving_the_file_into_kbx() {
-    let vault = fresh();
-    vault.ok(&["init"]);
+    let vault = at_root();
     vault.ok(&["index"]);
     let stats = vault.ok(&["graph", "stats"]);
     let root = vault.root();
@@ -213,13 +226,47 @@ fn doctor_says_which_config_file_is_in_use() {
         config.ends_with(&inside().display().to_string()),
         "{config}"
     );
+}
 
-    let outer = fresh();
-    outer.ok(&["init"]);
-    let printed = outer.ok(&["doctor"]);
+#[test]
+fn a_root_config_still_works_and_doctor_warns_about_it() {
+    let vault = at_root();
+    vault.ok(&["index"]);
+    let printed = vault.ok(&["doctor"]);
     let config = row(&printed, "config");
-    assert!(config.ends_with("kbx.toml"), "{config}");
-    assert!(!config.contains(".kbx"), "{config}");
+    assert!(config.contains(" warn "), "{config}");
+    assert!(config.contains("kbx doctor --fix"), "{config}");
+    assert!(vault.root().join("kbx.toml").is_file(), "no --fix, no move");
+}
+
+#[test]
+fn doctor_fix_moves_a_root_config_into_kbx() {
+    let vault = at_root();
+    vault.ok(&["index"]);
+    let stats = vault.ok(&["graph", "stats"]);
+    let text = fs::read(vault.root().join("kbx.toml")).unwrap();
+
+    let printed = vault.ok(&["doctor", "--fix"]);
+    let config = row(&printed, "config");
+    assert!(config.contains(" ok "), "{config}");
+    assert!(config.contains("moved to"), "{config}");
+
+    assert!(!vault.root().join("kbx.toml").exists());
+    assert_eq!(fs::read(vault.root().join(".kbx/kbx.toml")).unwrap(), text);
+    assert_eq!(vault.ok(&["graph", "stats"]), stats);
+    let printed = vault.ok(&["doctor"]);
+    assert!(row(&printed, "config").contains(" ok "), "{printed}");
+}
+
+#[test]
+fn doctor_fix_refuses_when_both_files_exist() {
+    let vault = at_root();
+    let root = vault.root();
+    fs::copy(root.join("kbx.toml"), root.join(".kbx/kbx.toml")).unwrap();
+    let fix = vault.kbx(&["doctor", "--fix"]);
+    assert_two_configs(&fix, &stdout(&fix));
+    assert!(root.join("kbx.toml").is_file());
+    assert!(root.join(".kbx/kbx.toml").is_file());
 }
 
 #[test]
@@ -239,15 +286,12 @@ fn init_again_uses_the_file_in_kbx_wherever_it_was_asked_to_go() {
 }
 
 #[test]
-fn init_in_kbx_refuses_to_add_a_second_file() {
-    let vault = fresh();
-    vault.ok(&["init"]);
-    let output = vault.kbx(&["init", "--in-kbx"]);
-    assert!(!output.status.success());
-    assert!(
-        stderr(&output).contains("move it to"),
-        "{}",
-        stderr(&output)
-    );
-    assert!(!vault.root().join(".kbx/kbx.toml").exists());
+fn init_again_leaves_a_root_config_in_use() {
+    let vault = at_root();
+    let before = tree_hash(vault.root());
+    for args in [&["init"][..], &["init", "--in-kbx"][..]] {
+        let printed = vault.ok(args);
+        assert!(!printed.contains("created"), "{printed}");
+    }
+    assert_eq!(tree_hash(vault.root()), before);
 }

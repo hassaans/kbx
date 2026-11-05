@@ -1,7 +1,7 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use kbx_core::{Graph, cid, locked_notes, suppressed_pairs};
+use kbx_core::{Graph, accepted_relations, cid, locked_notes, suppressed_pairs};
 use rusqlite::{Transaction, TransactionBehavior, params};
 use serde_json::{Map, Value};
 
@@ -264,8 +264,9 @@ fn squash(raw: f64) -> f64 {
 ///
 /// A run can be limited by note or generator, so rows it didn't find stay. A
 /// pair it did find is replaced, keeping its `created_at`. A pair since linked
-/// or suppressed, or whose notes are gone, is neither kept nor written. Each
-/// row records the `content_hash` of both notes, for `kbx accept` to check. A
+/// or suppressed, or whose notes are gone, is neither kept nor written, except
+/// that one accepted in `.kbx/` stays, for `kbx reject` to take back. Each row
+/// records the `content_hash` of both notes, for `kbx accept` to check. A
 /// pair has one row, so one with other sections, and another cid, gives way.
 pub fn store(g: &Graph, run: &Run) -> Result<(), GenError> {
     let connection = g.connection();
@@ -284,8 +285,10 @@ pub fn store(g: &Graph, run: &Run) -> Result<(), GenError> {
     let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
     let stored = rows.collect::<rusqlite::Result<Vec<(String, String, String)>>>()?;
     drop(statement);
+    let held = accepted_relations(&tx)?;
+    let held: HashSet<&str> = held.iter().map(|relation| relation.cid.as_str()).collect();
     for (cid, src, dst) in stored {
-        if !eligible(&src, &dst) {
+        if !eligible(&src, &dst) && !held.contains(cid.as_str()) {
             tx.execute("DELETE FROM candidates WHERE cid = ?", [cid])?;
         }
     }
