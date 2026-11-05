@@ -377,6 +377,43 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    fn diag_race() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = tempfile::TempDir::new().unwrap();
+        let note = dir.path().join("note.md");
+        fs::write(&note, "saved").unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (flag, path) = (Arc::clone(&stop), note.clone());
+        let writer = std::thread::spawn(move || {
+            let mut n = 0u64;
+            while !flag.load(Ordering::Relaxed) {
+                n += 1;
+                fs::write(&path, format!("save {n}")).unwrap();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            n
+        });
+        let paths = BTreeSet::from([note.clone()]);
+        let (mut clock_first, mut clock_last, mut calls) = (0u64, 0u64, 0u64);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(60) {
+            calls += 1;
+            if since_last_write(&paths).is_none() {
+                clock_first += 1;
+            }
+            let written = fs::metadata(&note).unwrap().modified().unwrap();
+            if SystemTime::now().duration_since(written).is_err() {
+                clock_last += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        let saves = writer.join().unwrap();
+        eprintln!("DIAG-RACE calls={calls} saves={saves} clock_first_none={clock_first} clock_last_none={clock_last}");
+    }
+
+    #[test]
     fn saves_inside_the_window_put_off_the_index_until_they_stop() {
         let mut timers = timers(None);
         let start = Instant::now();
