@@ -181,6 +181,14 @@ fn another_set_of_collections_is_another_search() {
 }
 
 #[test]
+fn a_collection_with_another_root_is_another_search() {
+    let vault = Vault::new();
+    let hit = vault.hit_on_b();
+    vault.search(vec![hit.clone()], &[("a", "a"), ("b", "b")]);
+    assert_eq!(vault.search(vec![hit], &[("a", "a"), ("b", "moved")]).1, 1);
+}
+
+#[test]
 fn a_scope_that_left_the_vault_takes_its_rows_with_it() {
     let vault = Vault::new();
     let hit = vault.hit_on_b();

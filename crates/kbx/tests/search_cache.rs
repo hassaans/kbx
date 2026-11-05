@@ -213,6 +213,29 @@ fn an_index_qmd_lost_is_refreshed_even_on_an_unchanged_vault() {
 }
 
 #[test]
+fn a_named_index_that_changed_repeats_the_searches() {
+    let vault = vault();
+    let config = fs::read_to_string(vault.root().join("kbx.toml")).unwrap();
+    let named = config.replace(
+        "qmd = { bin = \"qmd\",",
+        "qmd = { index = \"shared\", bin = \"qmd\",",
+    );
+    assert_ne!(named, config);
+    vault.write("kbx.toml", &named);
+    suggest(&vault);
+    forget_calls(&vault);
+
+    suggest(&vault);
+    assert_eq!(count(&vault, "query"), 0);
+
+    let status = STATUS.replace("2 embedded", "0 embedded");
+    fs::write(vault.path.dir().join("status"), status).unwrap();
+    suggest(&vault);
+    assert_eq!(count(&vault, "query"), 2);
+    assert_eq!(count(&vault, "update"), 0, "a named index is never updated");
+}
+
+#[test]
 fn a_failed_refresh_is_tried_again_and_its_searches_are_not_kept() {
     let vault = vault();
     fs::write(vault.path.dir().join("update-fails"), "").unwrap();

@@ -29,14 +29,15 @@ CREATE TABLE IF NOT EXISTS refreshed (id INTEGER PRIMARY KEY CHECK (id = 1), sta
 #[derive(Debug)]
 pub struct SearchCache {
     connection: Connection,
-    models: String,
+    source: String,
     writable: bool,
 }
 
 impl SearchCache {
-    /// Opens the cache at `path` for searches by `models`, whatever names the
-    /// models QMD is using. A file that can't be read is replaced.
-    pub fn open(path: &Path, models: &str) -> rusqlite::Result<SearchCache> {
+    /// Opens the cache at `path` for results from `source`, whatever says what
+    /// produced them: the models QMD is using, at the least. A file that can't
+    /// be read is replaced.
+    pub fn open(path: &Path, source: &str) -> rusqlite::Result<SearchCache> {
         let connection = prepare(path).or_else(|error| {
             warn!("{}: {error}; starting again", path.display());
             let _ = fs::remove_file(path);
@@ -44,19 +45,19 @@ impl SearchCache {
         })?;
         Ok(SearchCache {
             connection,
-            models: models.to_string(),
+            source: source.to_string(),
             writable: true,
         })
     }
 
     /// Opens the cache without changing it, if there's a usable one.
-    pub fn open_read_only(path: &Path, models: &str) -> Option<SearchCache> {
+    pub fn open_read_only(path: &Path, source: &str) -> Option<SearchCache> {
         let connection =
             Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
         let version = connection.query_row("PRAGMA user_version", [], |row| row.get(0));
         (version.ok() == Some(VERSION)).then(|| SearchCache {
             connection,
-            models: models.to_string(),
+            source: source.to_string(),
             writable: false,
         })
     }
@@ -108,8 +109,9 @@ impl SearchCache {
         if self.writable {
             self.forget_all_but(&scopes)?;
         }
-        let names: Vec<&str> = roots.keys().map(String::as_str).collect();
-        let searched = format!("{}\0{index}\0{}", self.models, names.join("\0"));
+        let roots = roots.iter().map(|(name, root)| format!("{name}\0{root}"));
+        let roots: Vec<String> = roots.collect();
+        let searched = format!("{}\0{index}\0{}", self.source, roots.join("\0"));
         Ok(CachedSearch {
             search,
             cache: self,
@@ -186,7 +188,7 @@ struct Stored {
 /// A [`Search`] that asks its backend only about what it hasn't seen.
 ///
 /// A note's search is reused while the text of the note's sections, QMD's
-/// models and the collections are what they were, and every section it hit
+/// models and the collections and their roots are what they were, and every section it hit
 /// says what it said. So an edit repeats the edited note's search and those
 /// that found it, and nothing else. What it can't see is an edited note that
 /// has become a neighbour of a note it wasn't one of before; that shows up in
@@ -194,7 +196,7 @@ struct Stored {
 pub struct CachedSearch {
     search: Box<dyn Search>,
     cache: SearchCache,
-    /// The models, index and collections, which every key includes.
+    /// The source, index, collections and roots, which every key includes.
     searched: String,
     /// Each note's collection.
     scopes: HashMap<String, String>,

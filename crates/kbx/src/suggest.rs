@@ -88,7 +88,7 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     let status = usable.then(|| qmd::status(&project)).flatten();
     let mut cache = status
         .as_ref()
-        .and_then(|status| search_cache(&project, &status.models, read_only));
+        .and_then(|status| search_cache(&project, status, read_only));
     // What a half-built index finds shouldn't outlive this run.
     if usable && !read_only && !refresh(&project, &graph, status.as_ref(), cache.as_ref()) {
         cache = None;
@@ -169,13 +169,19 @@ pub fn batch_size(project: &Project, batch: Option<usize>) -> Result<usize, Box<
     Ok(size)
 }
 
-/// The cache for `models`. A vault works without one, so a failure only warns.
-fn search_cache(project: &Project, models: &str, read_only: bool) -> Option<SearchCache> {
+/// The cache for what qmd reports. A vault works without one, so a failure
+/// only warns. An index named in `kbx.toml` changes without kbx, so whatever it
+/// found holds only while its counts do.
+fn search_cache(project: &Project, status: &qmd::Status, read_only: bool) -> Option<SearchCache> {
     let path = project.graph.with_file_name(SEARCH_CACHE);
+    let source = match project.config.qmd.index {
+        Some(_) => format!("{}\n{}", status.models, status.index),
+        None => status.models.clone(),
+    };
     if read_only {
-        return SearchCache::open_read_only(&path, models);
+        return SearchCache::open_read_only(&path, &source);
     }
-    SearchCache::open(&path, models)
+    SearchCache::open(&path, &source)
         .inspect_err(|error| warn!("{}: {error}", path.display()))
         .ok()
 }

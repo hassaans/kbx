@@ -95,7 +95,9 @@ A note's search is reused while all of this holds:
   is the sections' content, as far as the search can see it.
 - qmd reports the same models, from the `Models` lines of `qmd status`, which are
   the same in 1.0.7 and 2.8.3.
-- The qmd index, the collections and the hit limit are the same.
+- The qmd index, the collections, their roots and the hit limit are the same. For an
+  index named in `qmd.index`, which changes without kbx, so are its file and vector
+  counts: any change there repeats every search.
 - Every section it hit still has the `text_hash` it had. Comparing sections rather
   than files means a frontmatter edit, such as `kbx suggest --stage` or `kbx accept`
   writing a relation, repeats no search.
