@@ -175,17 +175,44 @@ fn invalid_yaml_is_an_error() {
 }
 
 #[test]
-fn nested_maps_are_rejected_outside_the_tool_namespaces() {
-    for extra in [
-        "author:\n  name: X\n",
-        "people: [{name: X}]\n",
-        "m: [[{a: 1}]]\n",
+fn keys_kbx_does_not_define_are_ignored_whatever_their_shape() {
+    for (extra, key) in [
+        ("author:\n  name: X\n", "author"),
+        ("people: [{name: X}]\n", "people"),
+        ("m: [[{a: 1}]]\n", "m"),
+        ("x: !tag {a: 1}\n", "x"),
+        ("meta:\n  see_also: [\"[[B]]\"]\n", "meta"),
     ] {
-        match parse_note("a.md", &minimal(extra)) {
-            Err(ParseError::NestedMap(key)) => assert_eq!(key, extra.split(':').next().unwrap()),
-            other => panic!("{extra:?}: {other:?}"),
+        let note = parse_note("a.md", &minimal(extra)).unwrap();
+        assert!(note.relations.is_empty(), "{extra:?}");
+        assert_eq!(note.properties[0].key, key);
+    }
+}
+
+#[test]
+fn a_key_kbx_defines_is_not_found_inside_another_key() {
+    let src = "---\nmeta:\n  id: X\n  title: Y\nid: A\ntype: C\ntitle: T\n---\n";
+    let note = parse_note("a.md", src).unwrap();
+    assert_eq!((note.id.as_str(), note.id_line), ("A", 5));
+    assert_eq!(note.title, "T");
+}
+
+#[test]
+fn nested_maps_are_refused_under_the_keys_kbx_reads() {
+    for key in ["aliases", "tags"] {
+        for value in ["{a: 1}", "[{a: 1}]", "!tag {a: 1}"] {
+            match parse_note("a.md", &minimal(&format!("{key}: {value}\n"))) {
+                Err(ParseError::NestedMap(found)) => assert_eq!(found, key),
+                other => panic!("{key}: {value}: {other:?}"),
+            }
         }
     }
+    let err = parse_note("a.md", "---\nid: A\ntype: {a: 1}\ntitle: T\n---\n").unwrap_err();
+    assert!(matches!(&err, ParseError::NestedMap(key) if key == "type"));
+    assert_eq!(
+        err.to_string(),
+        "frontmatter key `type` holds a nested map, which kbx can't read here"
+    );
     let note = parse_note(
         "a.md",
         &minimal("kbx: {a: {b: 1}}\nqmd: {metadata: {c: 2}}\n"),
@@ -271,15 +298,9 @@ fn structured_values_are_refused_where_text_is_needed() {
 }
 
 #[test]
-fn non_string_keys_are_errors() {
-    let err = parse_note("a.md", &minimal("[a, b]: x\n")).unwrap_err();
-    assert!(matches!(err, ParseError::NonStringKey(_)));
-}
-
-#[test]
-fn a_tag_does_not_hide_a_nested_map() {
-    let err = parse_note("a.md", &minimal("x: !tag {a: 1}\n")).unwrap_err();
-    assert!(matches!(err, ParseError::NestedMap(_)));
+fn non_string_keys_are_ignored() {
+    let note = parse_note("a.md", &minimal("[a, b]: x\n2024: y\n")).unwrap();
+    assert!(note.relations.is_empty() && note.properties.is_empty());
 }
 
 #[test]

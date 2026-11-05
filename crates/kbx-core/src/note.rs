@@ -27,7 +27,9 @@ pub struct Note {
     /// Keys holding wikilinks, in file order. Whether a key is a known
     /// relation is for [`Vault::validate`](crate::Vault::validate) to say.
     pub relations: Vec<RelationEntry>,
-    /// Every other key outside the tool namespaces, in file order.
+    /// Every other key outside the tool namespaces, in file order, whatever
+    /// its shape. Only [`Vault::validate`](crate::Vault::validate) looks at
+    /// them, for a relation key holding something other than wikilinks.
     pub properties: Vec<Property>,
     /// The tool-owned `kbx:` namespace, as written. Left untyped so a bad
     /// hand edit of a staged proposal can't stop the note from compiling.
@@ -123,17 +125,14 @@ pub enum ParseError {
     /// The frontmatter is valid YAML but not a mapping.
     #[error("frontmatter is not a mapping")]
     NotAMapping,
-    /// A key is a list or a map.
-    #[error("frontmatter key is not a string: {0:?}")]
-    NonStringKey(Value),
     /// `id`, `type` or `title` is absent or null.
     #[error("frontmatter is missing `{0}`")]
     MissingKey(&'static str),
     /// `id`, `type` or `title` is a list or a map.
     #[error("frontmatter key `{0}` must be a single value, not a list or map")]
     NotAScalar(&'static str),
-    /// A key outside the tool namespaces holds a map, at any depth.
-    #[error("frontmatter key `{0}` holds a nested map, which only `kbx:` and `qmd:` may")]
+    /// `id`, `type`, `title`, `aliases` or `tags` holds a map, at any depth.
+    #[error("frontmatter key `{0}` holds a nested map, which kbx can't read here")]
     NestedMap(String),
 }
 
@@ -196,10 +195,13 @@ pub fn parse_note(path: impl Into<PathBuf>, src: &str) -> Result<Note, ParseErro
     let (mut aliases, mut tags) = (Vec::new(), Vec::new());
     let (mut relations, mut properties) = (Vec::new(), Vec::new());
     for (key, value) in mapping {
+        // No key kbx defines is a number or a list, and the rest aren't kbx's
+        // to refuse.
         let Value::String(key) = key else {
-            return Err(ParseError::NonStringKey(key));
+            continue;
         };
-        if !matches!(key.as_str(), "kbx" | "qmd") && holds_map(&value) {
+        if matches!(key.as_str(), "id" | "type" | "title" | "aliases" | "tags") && holds_map(&value)
+        {
             return Err(ParseError::NestedMap(key));
         }
         match key.as_str() {

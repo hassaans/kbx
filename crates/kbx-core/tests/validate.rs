@@ -127,6 +127,14 @@ fn rel_unknown_when_a_relation_key_holds_something_other_than_wikilinks() {
 }
 
 #[test]
+fn rel_unknown_when_a_relation_key_holds_a_nested_map() {
+    let found = findings(vec![note("a", "Concept", "see_also:\n  a: 1\n", "")]);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].code, FindingCode::RelUnknown);
+    assert!(found[0].message.contains("see_also"));
+}
+
+#[test]
 fn an_empty_relation_key_is_not_a_finding_by_itself() {
     assert_eq!(
         codes(vec![note("a", "Concept", "see_also: []\npart_of:\n", "")]),

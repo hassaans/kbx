@@ -37,6 +37,9 @@ below; the project's fixed decisions override it where they differ:
   the same `qmd_knn` generator. With no `search` key, a `kbx.toml` listing qmd
   collections stays on QMD and any other gets the built-in engine. See
   `docs/search-engine.md`.
+- §2's "reject nested maps" holds only for `id`, `type`, `title`, `aliases` and
+  `tags`. A vault's own keys are ignored whatever they hold, and a relation key
+  holding a map is a `rel.unknown` finding. See `docs/frontmatter-writer.md`.
 
 ---
 
