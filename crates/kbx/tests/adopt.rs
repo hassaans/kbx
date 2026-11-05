@@ -243,6 +243,25 @@ fn a_mention_weight_of_zero_turns_inline_links_off() {
 }
 
 #[test]
+fn a_generators_table_without_a_mention_weight_gets_the_default() {
+    let vault = indexed();
+    let config = vault.root().join(".kbx/kbx.toml");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(&config, text + "\n[generators]\n").unwrap();
+    vault.ok(&["suggest", "--judge", "none"]);
+
+    let db = database(&vault);
+    let structural: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM candidates WHERE generators LIKE '%common_neighbors%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(structural > 0);
+}
+
+#[test]
 fn a_mention_weight_outside_zero_to_one_is_refused() {
     let vault = indexed();
     let config = vault.root().join(".kbx/kbx.toml");

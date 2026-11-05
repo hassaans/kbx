@@ -125,6 +125,7 @@ pub struct ScopeConfig {
 
 /// The `[generators]` table of `kbx.toml`.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(default)]
 pub struct GeneratorsConfig {
     /// What an inline link counts for in the structural generators, from 0 to
     /// 1. At 0 they read typed edges alone.
