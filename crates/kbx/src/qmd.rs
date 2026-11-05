@@ -5,11 +5,16 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
-use kbx_core::{Project, canonical_path, find_on_path};
+use kbx_core::{Exclusions, MAX_MASK, Project, canonical_path, find_on_path};
 use tracing::info;
+
+use crate::plural;
 
 const PACKAGE: &str = "@tobilu/qmd";
 const INSTALL: &str = "npm i -g @tobilu/qmd";
+
+/// After a collection's name, the name its replacement is read under.
+const REPLACEMENT: &str = "-kbx-new";
 
 /// Finds `qmd` on `PATH`, installing it first if it isn't there. Says nothing
 /// on success. The error is the whole report for the user.
@@ -82,15 +87,39 @@ fn failure(output: &Output) -> String {
 pub struct Changes {
     /// Planned collections qmd doesn't have yet.
     pub missing: Vec<String>,
-    /// Collections of folders that are now excluded.
+    /// Collections of folders that are now excluded, and replacements an
+    /// earlier run left behind.
     pub barred: Vec<String>,
     /// Collections whose mask isn't the one the folders on disk call for now.
     pub narrowing: Vec<String>,
+    /// Collections whose mask stops short of what's excluded, with how many
+    /// levels it reaches.
+    pub stopped_short: Vec<(String, usize)>,
+    /// Collections that couldn't be brought in line, with why. Those above are
+    /// what went through.
+    pub failed: Vec<(String, String)>,
 }
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
         self.missing.is_empty() && self.barred.is_empty() && self.narrowing.is_empty()
+    }
+
+    /// What the masks that stop short mean for the user, if there are any.
+    pub fn mask_warning(&self) -> Option<String> {
+        if self.stopped_short.is_empty() {
+            return None;
+        }
+        let reach = |(name, levels): &(String, usize)| match levels {
+            0 => format!("{name} reads every note"),
+            _ => format!("{name} stops {} down", plural(*levels, "level")),
+        };
+        let masks: Vec<String> = self.stopped_short.iter().map(reach).collect();
+        Some(format!(
+            "{}: a mask around every excluded folder would pass {MAX_MASK} characters, so what's \
+             excluded below that reaches qmd's local index, though never a judge",
+            masks.join(", ")
+        ))
     }
 }
 
@@ -104,7 +133,22 @@ pub fn collection_changes(project: &Project) -> Result<Changes, String> {
         missing: missing.cloned().collect(),
         ..Changes::default()
     };
-    if project.config.qmd.index.is_some() {
+    let named = project.config.qmd.index.is_some();
+    let exclusions = project.exclusions().map_err(|e| e.to_string())?;
+    for (name, root) in &planned.roots {
+        if named && listed.contains_key(name) {
+            continue;
+        }
+        let wanted = exclusions.note_mask(root);
+        if let Some(levels) = wanted.levels {
+            changes.stopped_short.push((name.clone(), levels));
+        }
+        let mask = listed.get(name).and_then(Option::as_ref);
+        if mask.is_some_and(|mask| *mask != wanted.glob) {
+            changes.narrowing.push(name.clone());
+        }
+    }
+    if named {
         return Ok(changes);
     }
     let barred = project.config.qmd.roots.keys();
@@ -113,13 +157,9 @@ pub fn collection_changes(project: &Project) -> Result<Changes, String> {
         .filter(|n| listed.contains_key(*n))
         .cloned()
         .collect();
-    let exclusions = project.exclusions().map_err(|e| e.to_string())?;
-    for (name, root) in &planned.roots {
-        let mask = listed.get(name).and_then(Option::as_ref);
-        if mask.is_some_and(|mask| *mask != exclusions.note_glob(root)) {
-            changes.narrowing.push(name.clone());
-        }
-    }
+    let left = listed.keys().filter(|name| name.ends_with(REPLACEMENT));
+    let left = left.filter(|name| !planned.roots.contains_key(*name));
+    changes.barred.extend(left.cloned());
     Ok(changes)
 }
 
@@ -154,18 +194,51 @@ fn listed_mask(line: &str) -> Option<&str> {
 }
 
 /// Records every scope's collection in `kbx.toml` and brings qmd in line with
-/// it, returning what that took. Safe to run again. A collection is removed
+/// it, returning what that took. Safe to run again. One collection failing
+/// doesn't stop the rest; see [`Changes::failed`]. A collection is removed
 /// before `kbx.toml` forgets it, so a failure leaves it there to try again.
 pub fn set_up_collections(project: &mut Project) -> Result<Changes, String> {
-    let changes = collection_changes(project)?;
-    for name in changes.barred.iter().chain(&changes.narrowing) {
-        remove_collection(project, name)?;
+    let mut changes = collection_changes(project)?;
+    let planned = project.planned_qmd().map_err(|e| e.to_string())?;
+    let exclusions = project.exclusions().map_err(|e| e.to_string())?;
+    let mut failed = Vec::new();
+    attempt(&mut changes.barred, &mut failed, |name| {
+        remove_collection(project, name)
+    });
+    if failed.is_empty() {
+        project.record_collections().map_err(|e| e.to_string())?;
     }
-    project.record_collections().map_err(|e| e.to_string())?;
-    for name in changes.missing.iter().chain(&changes.narrowing) {
-        add_collection(project, name)?;
-    }
+    let project = &*project;
+    attempt(&mut changes.missing, &mut failed, |name| {
+        add_collection(project, &exclusions, name, &planned.roots[name]).map(|_| ())
+    });
+    attempt(&mut changes.narrowing, &mut failed, |name| {
+        let replacement = replacement_name(name, &planned.roots);
+        replace_collection(
+            project,
+            &exclusions,
+            name,
+            &replacement,
+            &planned.roots[name],
+        )
+    });
+    changes.failed = failed;
     Ok(changes)
+}
+
+/// Runs `step` on each of `names`, moving those it fails on to `failed`.
+fn attempt(
+    names: &mut Vec<String>,
+    failed: &mut Vec<(String, String)>,
+    mut step: impl FnMut(&str) -> Result<(), String>,
+) {
+    names.retain(|name| match step(name) {
+        Ok(()) => true,
+        Err(error) => {
+            failed.push((name.clone(), error));
+            false
+        }
+    });
 }
 
 fn remove_collection(project: &Project, name: &str) -> Result<(), String> {
@@ -173,12 +246,18 @@ fn remove_collection(project: &Project, name: &str) -> Result<(), String> {
     if output.status.success() {
         return Ok(());
     }
-    Err(format!("collection {name}: {}", failure(&output)))
+    Err(failure(&output))
 }
 
-fn add_collection(project: &Project, name: &str) -> Result<(), String> {
-    let root = &project.config.qmd.roots[name];
-    let exclusions = project.exclusions().map_err(|e| e.to_string())?;
+/// Returns whether this run added it. qmd records a collection before it reads
+/// the folder, so one that fails is taken out again. Left there, it would pass
+/// for a collection with its notes.
+fn add_collection(
+    project: &Project,
+    exclusions: &Exclusions,
+    name: &str,
+    root: &str,
+) -> Result<bool, String> {
     let mask = exclusions.note_glob(root);
     let folder = project.vault.join(root);
     let folder = canonical_path(&folder).unwrap_or(folder);
@@ -196,9 +275,45 @@ fn add_collection(project: &Project, name: &str) -> Result<(), String> {
     // Another run got there first, which is what was wanted.
     let exists = String::from_utf8_lossy(&output.stderr).contains("already exists.");
     if output.status.success() || exists {
+        return Ok(!exists);
+    }
+    let _ = remove_collection(project, name);
+    Err(failure(&output))
+}
+
+/// The name to read a replacement of `name` under, which no planned collection
+/// has. It keeps the ending, so that one left behind is known for what it is.
+fn replacement_name(name: &str, planned: &BTreeMap<String, String>) -> String {
+    let mut replacement = format!("{name}{REPLACEMENT}");
+    while planned.contains_key(&replacement) {
+        replacement.push_str(REPLACEMENT);
+    }
+    replacement
+}
+
+/// Makes a collection again with the mask it should have now. qmd has no way to
+/// change a mask or to add over a name, so the new one is read under another
+/// name, and until that has worked the old one isn't touched. One already
+/// there isn't this run's, so nothing says it has the right notes.
+fn replace_collection(
+    project: &Project,
+    exclusions: &Exclusions,
+    name: &str,
+    replacement: &str,
+    root: &str,
+) -> Result<(), String> {
+    if !add_collection(project, exclusions, replacement, root)? {
+        return Err(format!("{replacement} is already in qmd"));
+    }
+    if let Err(error) = remove_collection(project, name) {
+        let _ = remove_collection(project, replacement);
+        return Err(error);
+    }
+    let output = run(project, &["collection", "rename", replacement, name])?;
+    if output.status.success() {
         return Ok(());
     }
-    Err(format!("collection {name}: {}", failure(&output)))
+    Err(format!("left as {replacement}: {}", failure(&output)))
 }
 
 /// What `qmd status` says that kbx has a use for.

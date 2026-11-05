@@ -551,8 +551,17 @@ fn run_init(ontology: Option<PathBuf>, search: Option<Search>) -> Result<ExitCod
     // The vault works without search, so this doesn't fail the command.
     match qmd::set_up_collections(&mut project) {
         Ok(changes) => {
-            for name in changes.missing {
+            for name in &changes.missing {
                 println!("created qmd collection {name}");
+            }
+            if let Some(warning) = changes.mask_warning() {
+                eprintln!("warning: {warning}");
+            }
+            for (name, error) in &changes.failed {
+                eprintln!("warning: qmd collection {name} not set up: {error}");
+            }
+            if !changes.failed.is_empty() {
+                eprintln!("run `kbx doctor --fix` to try again");
             }
         }
         Err(error) => {
