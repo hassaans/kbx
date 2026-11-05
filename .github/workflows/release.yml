@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
+      - .github/workflows/smoke.yml
       - .github/scripts/**
       - npm/pack.sh
       - Cargo.lock
@@ -227,3 +228,12 @@ jobs:
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Called here, because the Release comes from GITHUB_TOKEN, and GitHub starts no
+  # workflows for that. See docs/releasing.md.
+  smoke:
+    needs: [preflight, npm-publish, cargo-publish]
+    if: needs.preflight.outputs.publish == 'true'
+    uses: ./.github/workflows/smoke.yml
+    with:
+      version: ${{ needs.preflight.outputs.version }}

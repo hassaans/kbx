@@ -480,6 +480,14 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
       assert.deepEqual(waits, ['npm kbx-cli', `npm ${PLATFORM}`, 'crates kbx']);
     });
 
+    it('takes the version from a caller or by hand, and not from a Release', () => {
+      const workflow = fs.readFileSync(path.join(REPO, '.github', 'workflows', 'smoke.yml'), 'utf8');
+      const triggers = workflow.slice(workflow.indexOf('\non:'), workflow.indexOf('\npermissions:'));
+      assert.match(triggers, /^ {2}workflow_call:\r?\n {4}inputs:\r?\n {6}version:\r?\n(?: {8}.+\r?\n)*? {8}required: true\r?$/m);
+      assert.match(triggers, /^ {2}workflow_dispatch:\r?\n {4}inputs:\r?\n {6}version:\r?$/m);
+      assert.doesNotMatch(triggers, /^ {2}release:/m);
+    });
+
     describe('smoke-npm.sh', () => {
       it('passes on a good install, and prints every doctor run', (t) => {
         const result = smokeNpm(t);
@@ -710,10 +718,20 @@ BINARY
 describe('release.yml', () => {
   const workflow = fs.readFileSync(path.join(REPO, '.github', 'workflows', 'release.yml'), 'utf8');
 
+  const blocks = workflow.slice(workflow.indexOf('\njobs:')).split(/^  (?=[\w-]+:\r?$)/m).slice(1);
+
+  function jobs() {
+    return blocks.map((text) => text.slice(0, text.indexOf(':')));
+  }
+
+  function block(job) {
+    const found = blocks.find((text) => text.startsWith(`${job}:`));
+    assert.ok(found, `no ${job} job`);
+    return found;
+  }
+
   function needs(job) {
-    const block = workflow.split(/^  (?=[\w-]+:\r?$)/m).find((text) => text.startsWith(`${job}:`));
-    assert.ok(block, `no ${job} job`);
-    const match = block.match(/^ {4}needs: (.+?)\r?$/m);
+    const match = block(job).match(/^ {4}needs: (.+?)\r?$/m);
     return match ? match[1].replace(/[[\]]/g, '').split(/,\s*/) : [];
   }
 
@@ -743,5 +761,22 @@ describe('release.yml', () => {
   it('holds both registries back until the GitHub Release is out', () => {
     assert.ok(needs('cargo-publish').includes('github-release'));
     assert.ok(needs('npm-publish').includes('github-release'));
+  });
+
+  it('ends with the smoke checks, once both registries are done', () => {
+    const smoke = block('smoke');
+    assert.match(smoke, /^ {4}uses: \.\/\.github\/workflows\/smoke\.yml\r?$/m);
+    assert.match(smoke, /^ {6}version: \$\{\{ needs\.preflight\.outputs\.version \}\}\r?$/m);
+    assert.ok(needs('smoke').includes('npm-publish'));
+    assert.ok(needs('smoke').includes('cargo-publish'));
+    assert.ok(!jobs().some((job) => needs(job).includes('smoke')));
+  });
+
+  it('skips the smoke checks on a dry run, when nothing is out to check', () => {
+    assert.match(block('smoke'), /^ {4}if: needs\.preflight\.outputs\.publish == 'true'\r?$/m);
+  });
+
+  it('dry-runs a pull request that changes the smoke workflow, because a bad one stops a release', () => {
+    assert.match(workflow, /^ {6}- \.github\/workflows\/smoke\.yml\r?$/m);
   });
 });

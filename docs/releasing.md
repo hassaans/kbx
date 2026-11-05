@@ -10,7 +10,8 @@ with the five binaries attached. After that, two jobs run side by side:
 
 Neither job waits for the other, so a failure on one registry doesn't stop the
 other from publishing. Nothing publishes unless every build, test and packaging
-step passes.
+step passes. Once both are done, the `smoke` job installs what went out. See
+[Check a release](#check-a-release).
 
 ## Before the first release
 
@@ -56,10 +57,11 @@ Prereleases aren't handled: a version like `0.2.0-rc.1` would become npm's
 
 ## Try it without publishing
 
-A dry run does everything except the publish jobs. That includes `npm publish
---dry-run` on all six tarballs, through the same script and with the same paths
-as the real publish. It runs by itself on a pull request that changes
-`release.yml`, `.github/scripts/` or `npm/pack.sh`. To start one on any branch:
+A dry run does everything except the publish jobs and the `smoke` job, which has
+nothing to install. That includes `npm publish --dry-run` on all six tarballs,
+through the same script and with the same paths as the real publish. It runs by
+itself on a pull request that changes `release.yml`, `smoke.yml`,
+`.github/scripts/` or `npm/pack.sh`. To start one on any branch:
 
 ```sh
 gh workflow run release.yml --ref <branch>
@@ -77,16 +79,30 @@ copy of the fixture vault, where `kbx init` has to create a qmd collection per
 scope. Other jobs check that `kbx doctor` names Node >= 22 when npm isn't on
 `PATH`, and that `cargo install` works on macOS.
 
-Start it by hand after a tagged release:
+It runs at the end of every release run, as the `smoke` job of `release.yml`,
+with the version from the tag. It waits for `npm-publish` and `cargo-publish`, and
+each of its jobs then waits up to 30 minutes for its package to show on the
+registry. A release that fails its smoke checks shows as a failed run, even though
+everything is out.
+
+`release.yml` calls it because nothing else would start it. The Release comes from
+the workflow's `GITHUB_TOKEN`, and GitHub starts no workflows from events that
+token causes, so a `release: published` trigger never fires for a tagged release.
+v0.1.3 went this way, and its smoke run had to be started by hand. `smoke.yml` has
+no such trigger any more. Publishing a Release by hand wouldn't need one: a new
+tag starts `release.yml`, and an old tag has already been through it.
+
+To run the checks by hand, for an older version or after a run that skipped them,
+start them from that version's tag:
 
 ```sh
-gh workflow run smoke.yml -f version=0.2.0
+gh workflow run smoke.yml --ref v0.2.0 -f version=0.2.0
 ```
 
-A tagged release doesn't start it. The Release comes from the workflow's
-`GITHUB_TOKEN`, and GitHub starts no workflows for that. Publishing a Release by
-hand does start it. Each job waits up to 30 minutes for its package to reach the
-registry, so a run can start before the packages are out.
+The `--ref` matters. The checks come from the ref and the packages from the
+version, and the checks on `main` can expect behaviour an older version doesn't
+have. v0.1.3 fails the ones on `main`, because they expect the built-in search
+engine as the default.
 
 ## When a step fails midway
 
@@ -122,6 +138,13 @@ What to do depends on where it stopped:
   are, and don't delete them to reuse the version. Fix it on `main` and release
   the next patch version. v0.1.0 went this way: it's a GitHub Release with no npm
   packages or crates.
+- **`npm-publish` or `cargo-publish` failed, so `smoke` was skipped**: re-running
+  the failed jobs runs `smoke` too, once both have passed.
+- **The `smoke` job failed**: everything is already out. If it's a network or
+  registry error, re-run the failed jobs. If kbx is broken, treat it like any bug
+  after publishing: fix it on `main` and release the next patch version. If the
+  check itself is wrong, fix it on a branch and start it from there with
+  `gh workflow run smoke.yml --ref <branch> -f version=<version>`.
 - **npm refuses a package name**: no re-run gets past this, and the version stays
   partly out. Rename the package on `main` and release the next patch version.
   v0.1.1 went this way: npm answered `E403 Package name triggered spam detection`

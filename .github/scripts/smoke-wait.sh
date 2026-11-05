@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Waits for a version to reach npm or crates.io. A published Release comes before
-# the packages do, and a smoke run shouldn't fail for being early.
+# Waits for a version to reach npm or crates.io. A registry can take a while to
+# show what was just published, and a smoke run shouldn't fail for being early.
 set -euo pipefail
 
 usage="usage: smoke-wait.sh npm|crates <package> <version>"

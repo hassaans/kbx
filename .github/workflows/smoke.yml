@@ -1,10 +1,15 @@
 name: Smoke
 
 # Installs a published kbx the way a user would, on machines that have never seen
-# it. Nothing here publishes or needs a secret. See docs/releasing.md.
+# it. Nothing here publishes or needs a secret. release.yml calls it at the end
+# of every release, and it can be started by hand. See docs/releasing.md.
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      version:
+        description: The version to check
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       version:
@@ -29,13 +34,11 @@ jobs:
           persist-credentials: false
       - id: version
         run: |
-          version=${INPUT_VERSION:-${RELEASE_TAG#v}}
-          version=${version:-$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)}
+          version=${INPUT_VERSION:-$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)}
           [[ -n $version ]]
           echo "version=$version" >> "$GITHUB_OUTPUT"
         env:
           INPUT_VERSION: ${{ inputs.version }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
 
   npm:
     name: npm ${{ matrix.os }}
