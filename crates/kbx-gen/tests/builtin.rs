@@ -336,3 +336,51 @@ fn a_file_that_is_not_a_database_is_replaced() {
     fs::write(&vault.file, "not sqlite, and long enough to be looked at").unwrap();
     vault.sync(Some(&Fake::new())).unwrap();
 }
+
+#[test]
+fn a_file_edited_since_the_index_cannot_poison_its_old_hash() {
+    let original = "# One\n\nThrottle the callers.";
+    let mut vault = Vault::new(&[(ID_A, original)]);
+    write_note(&vault.root, ID_A, "", "# One\n\nA kitchen recipe.");
+    let fake = Fake::new();
+    let synced = vault.sync(Some(&fake)).unwrap();
+    assert_eq!((synced.added, synced.embedded), (0, 0));
+
+    write_note(&vault.root, ID_A, "", original);
+    vault.reindex();
+    let synced = vault.sync(Some(&fake)).unwrap();
+    assert_eq!((synced.added, synced.embedded), (1, 1));
+    assert!(fake.seen()[0].contains("Throttle"), "{:?}", fake.seen());
+}
+
+/// A note of more short sections than a ranking keeps, all matching, and a
+/// note matching less well.
+fn a_large_note_and_its_neighbour() -> Vault {
+    let sections: Vec<String> = (0..250)
+        .map(|n| format!("# Part {n}\n\nThrottle item{n}."))
+        .collect();
+    let neighbour = "# Other\n\nThrottle, and a garden with many more words in it than these.";
+    Vault::new(&[(ID_A, &sections.join("\n\n")), (ID_B, neighbour)])
+}
+
+#[test]
+fn a_large_note_does_not_hide_its_neighbours_from_keywords() {
+    let vault = a_large_note_and_its_neighbour();
+    vault.sync(None).unwrap();
+    let query = Query::Note {
+        note: ID_A,
+        text: "Throttle",
+    };
+    assert_eq!(notes(vault.searcher().search(&query, 10).unwrap()), [ID_B]);
+}
+
+#[test]
+fn a_large_note_does_not_hide_its_neighbours_from_vectors() {
+    let vault = a_large_note_and_its_neighbour();
+    vault.sync(Some(&Fake::new())).unwrap();
+    let query = Query::Note {
+        note: ID_A,
+        text: "unrelated",
+    };
+    assert_eq!(notes(vault.searcher().search(&query, 10).unwrap()), [ID_B]);
+}

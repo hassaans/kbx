@@ -172,3 +172,15 @@ fn a_generator_list_without_knn_builds_no_index() {
     assert!(with_model(&vault, &args).status.success());
     assert!(!vault.root().join(INDEX).exists());
 }
+
+#[test]
+fn doctor_leaves_qmd_alone_on_the_builtin_engine() {
+    let path = FakePath::empty();
+    let calls = path.dir().join("calls");
+    path.tool("npm", &format!("echo called >> \"{}\"", calls.display()));
+    let vault = vault(path);
+    let output = offline(&vault, &["doctor"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!stdout(&output).lines().any(|line| line.starts_with("qmd ")));
+    assert!(!calls.exists());
+}

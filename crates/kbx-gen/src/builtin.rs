@@ -10,8 +10,10 @@ use std::path::Path;
 
 use kbx_core::Graph;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use sha2::{Digest, Sha256};
 use tracing::warn;
 
+use crate::cache::hex;
 use crate::embed::{EmbedError, Embedder};
 use crate::search::{Hit, Query, Search, SearchError};
 
@@ -55,6 +57,8 @@ struct Place {
     note: String,
     key: String,
     path: String,
+    /// The `content_hash` of the file as the graph read it.
+    file_hash: String,
     start: usize,
     end: usize,
     text_hash: String,
@@ -146,7 +150,9 @@ impl SearchIndex {
     }
 
     /// Adds the texts of new sections and drops those nothing says any more.
-    /// Each file is read once, however many of its sections changed.
+    /// Each file is read once, however many of its sections changed. One
+    /// edited since `kbx index` waits for the next: its lines no longer say
+    /// what the graph's hashes do, and a row under the wrong hash would stay.
     fn sync_texts(&self, vault: &Path, places: &[Place]) -> Result<(usize, usize), SyncError> {
         let mut statement = self.connection.prepare("SELECT text_hash, id FROM texts")?;
         let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
@@ -180,6 +186,10 @@ impl SearchIndex {
                     continue;
                 }
             };
+            if hex(&Sha256::digest(&src)) != sections[0].file_hash {
+                warn!("{}: changed since `kbx index`, left out", path.display());
+                continue;
+            }
             let lines: Vec<&str> = src.lines().collect();
             for place in sections {
                 let text = section_text(&lines, place.start, place.end);
@@ -320,8 +330,8 @@ fn has_sections(g: &Graph) -> rusqlite::Result<bool> {
 
 fn places(g: &Graph) -> rusqlite::Result<Vec<Place>> {
     let mut statement = g.connection().prepare(
-        "SELECT sections.id, sections.key, files.path, sections.start_line, sections.end_line,
-                sections.text_hash
+        "SELECT sections.id, sections.key, files.path, files.content_hash, sections.start_line,
+                sections.end_line, sections.text_hash
          FROM sections JOIN files ON files.id = sections.id
          ORDER BY sections.id, sections.start_line",
     )?;
@@ -330,9 +340,10 @@ fn places(g: &Graph) -> rusqlite::Result<Vec<Place>> {
             note: row.get(0)?,
             key: row.get(1)?,
             path: row.get(2)?,
-            start: row.get::<_, i64>(3)? as usize,
-            end: row.get::<_, i64>(4)? as usize,
-            text_hash: row.get(5)?,
+            file_hash: row.get(3)?,
+            start: row.get::<_, i64>(4)? as usize,
+            end: row.get::<_, i64>(5)? as usize,
+            text_hash: row.get(6)?,
         })
     })?;
     rows.collect()
@@ -411,9 +422,18 @@ impl BuiltinSearch {
         any.then_some(mean)
     }
 
+    /// Whether a text is in some note other than `skip`. Only such texts take
+    /// a place in a ranking: a note of many sections would otherwise fill it
+    /// with itself, and hide its neighbours.
+    fn elsewhere(&self, id: i64, skip: Option<&str>) -> bool {
+        let mut sections = self.sections.get(&id).into_iter().flatten();
+        sections.any(|(note, _)| Some(note.as_str()) != skip)
+    }
+
     /// The texts nearest `vector`, best first.
-    fn nearest(&self, vector: &[f32]) -> Vec<i64> {
+    fn nearest(&self, vector: &[f32], skip: Option<&str>) -> Vec<i64> {
         let mut scored: Vec<(f32, i64)> = (0..self.rows_of.len())
+            .filter(|&row| self.elsewhere(self.rows_of[row], skip))
             .map(|row| {
                 let dot = self.row(row).iter().zip(vector).map(|(a, b)| a * b).sum();
                 (dot, self.rows_of[row])
@@ -429,15 +449,24 @@ impl BuiltinSearch {
     }
 
     /// The texts BM25 ranks best for `text`, best first.
-    fn keywords(&self, text: &str) -> rusqlite::Result<Vec<i64>> {
+    fn keywords(&self, text: &str, skip: Option<&str>) -> rusqlite::Result<Vec<i64>> {
         let Some(query) = match_query(text) else {
             return Ok(Vec::new());
         };
         let mut statement = self
             .connection
-            .prepare_cached("SELECT rowid FROM terms WHERE terms MATCH ? ORDER BY rank LIMIT ?")?;
-        let rows = statement.query_map(params![query, POOL as i64], |row| row.get(0))?;
-        rows.collect()
+            .prepare_cached("SELECT rowid FROM terms WHERE terms MATCH ? ORDER BY rank")?;
+        let mut rows = statement.query([query])?;
+        let mut ids = Vec::new();
+        while ids.len() < POOL
+            && let Some(row) = rows.next()?
+        {
+            let id = row.get(0)?;
+            if self.elsewhere(id, skip) {
+                ids.push(id);
+            }
+        }
+        Ok(ids)
     }
 
     /// Each note's first section in `ranking`, in order, without `skip`.
@@ -469,8 +498,10 @@ impl Search for BuiltinSearch {
                 )
             }
         };
-        let keywords = self.keywords(text).map_err(|e| failed(e.to_string()))?;
-        let nearest = vector.map(|vector| self.nearest(&vector));
+        let keywords = self
+            .keywords(text, skip)
+            .map_err(|e| failed(e.to_string()))?;
+        let nearest = vector.map(|vector| self.nearest(&vector, skip));
 
         let mut rankings = vec![self.by_note(&keywords, skip)];
         rankings.extend(nearest.map(|ids| self.by_note(&ids, skip)));

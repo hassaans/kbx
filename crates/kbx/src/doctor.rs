@@ -7,7 +7,9 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
-use kbx_core::{ConfigError, Graph, IndexState, JudgeConfig, Ontology, Project, index_state};
+use kbx_core::{
+    ConfigError, Graph, IndexState, JudgeConfig, Ontology, Project, Search, index_state,
+};
 use kbx_judge::{Availability, JudgeId, backend};
 use sysinfo::System;
 use tokio::runtime;
@@ -71,17 +73,21 @@ pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
         report(&name, check);
     }
 
-    // Last, so that its report is the end of the output.
-    match qmd::ensure() {
-        Ok(path) => {
-            report("qmd", (Status::Ok, path.display().to_string()));
-            if let Ok(project) = &mut found {
-                report("collections", check_collections(project, fix));
+    // Last, so that its report is the end of the output. The built-in engine
+    // has no use for qmd, so a vault on it is neither failed for it nor given it.
+    let on_builtin = |project: &Project| project.config.search == Search::Builtin;
+    if !found.as_ref().is_ok_and(on_builtin) {
+        match qmd::ensure() {
+            Ok(path) => {
+                report("qmd", (Status::Ok, path.display().to_string()));
+                if let Ok(project) = &mut found {
+                    report("collections", check_collections(project, fix));
+                }
             }
-        }
-        Err(error) => {
-            report("qmd", (Status::Fail, "not installed".to_string()));
-            eprintln!("error: {error}");
+            Err(error) => {
+                report("qmd", (Status::Fail, "not installed".to_string()));
+                eprintln!("error: {error}");
+            }
         }
     }
 
