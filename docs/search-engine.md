@@ -63,6 +63,58 @@ tries again next run. Sections embedded later join the vector search then.
 `model.safetensors` from the pinned revision in a folder and set `KBX_MODEL_DIR` to it.
 `KBX_MODEL_URL` names a mirror to download from, and the digests still apply.
 
+## When a run embeds
+
+Embedding a large vault takes hours: `qmd embed` on `~/HQ` is 256,317 chunks at about 20
+a second, 3.6 hours. So `kbx suggest` works out what's left to embed before it starts,
+says so, and decides with `--embed`, the same on both engines:
+
+| `--embed` | What it does |
+|---|---|
+| `auto`, the default | Embeds if the estimate is at most 15 minutes. Otherwise it goes on without. |
+| `wait` | Embeds everything first, however long that takes. |
+| `skip` | Embeds nothing. |
+
+`KBX_EMBED_AUTO_MINUTES` replaces the 15. That limit lets a first run on the 10,000-note
+vault finish its embed with the built-in engine, an estimate of 12.5 minutes, and
+stopping an embed loses little: both engines carry on where they stopped.
+
+```
+note: embedding 12 documents (about 38 chunks), under a minute; `--embed skip` goes without
+```
+
+```
+note: 80050 documents (about 256160 chunks) have no vector yet, about 3.6 hours to embed; going on without
+  to embed them, run `kbx suggest --embed wait`, or `qmd --index kbx-16d3d62c1a97 embed`
+```
+
+Going without means the search index's text is still brought up to date, with `qmd
+update` or the BM25 table. Search then uses the vectors that exist, and notes without one
+can be found by keyword alone. The summary says how much that was:
+
+```
+vectors: 1200 of 80050 documents (1%); the rest can be found by keyword alone
+```
+
+The line counts documents on QMD and sections on the built-in engine, and `--dry-run`
+prints it too. `--embed` can't be combined with `--dry-run` or `--eval`, which embed
+nothing. `kbx watch --suggest` runs as `auto`.
+
+**The estimate is rough.** It's a count at a fixed rate, measured on an M2 Pro: 60
+sections a second on the built-in engine, about half that without Accelerate, and 20
+chunks a second on QMD. `qmd status` counts documents, so chunks come from the index's
+own chunks per document, or 3.2, `~/HQ`'s figure, while it has no vectors. Notes shorter
+than that, as on the synthetic vault at 1.2, come in well under: its estimate is 27
+minutes and its embed took 9, so `auto` leaves a first run there to `--embed wait`.
+
+**A QMD run that goes without keeps nothing in the search cache.** What a half-built
+index finds shouldn't outlive the run, so each such run repeats its searches and `qmd
+update`, until the index is complete. On a vault of this size that's the cost of not
+waiting, and `--budget` limits it.
+
+**A named index** (`qmd.index`) is yours to embed: kbx never does, and shows only the
+summary line.
+
 ## The decision
 
 The constraints: all five release targets build with no new system dependency,
