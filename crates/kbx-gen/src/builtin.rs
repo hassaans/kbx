@@ -351,10 +351,8 @@ fn bytes(vector: &[f32]) -> Vec<u8> {
 }
 
 fn floats(bytes: &[u8]) -> Vec<f32> {
-    let chunks = bytes.chunks_exact(4);
-    chunks
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
+    let (chunks, _) = bytes.as_chunks::<4>();
+    chunks.iter().map(|c| f32::from_le_bytes(*c)).collect()
 }
 
 /// A BM25 query matching any of `text`'s words, the rarest kept if there are
