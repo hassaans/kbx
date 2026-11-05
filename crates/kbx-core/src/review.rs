@@ -445,9 +445,9 @@ fn write_accepted(
 
     // Writing what was already accepted is not a new decision, so its reason
     // and date stand unless this one gives a reason of its own.
-    let decided = candidate.accepted_rel.as_deref() == Some(key.name);
+    let decided = candidate.accepted_rel.as_deref() == Some(rel);
     if !decided {
-        withdraw(tx, candidate)?;
+        withdraw(tx, ontology, candidate)?;
     }
     if !decided || accepting.reason.is_some() {
         record(
@@ -473,7 +473,7 @@ fn write_accepted(
     if let Some(preview) = accepting.preview {
         tx.execute(
             "UPDATE candidates SET accepted_rel = ?1 WHERE cid = ?2",
-            params![key.name, cid],
+            params![rel, cid],
         )?;
         for (file, text) in changes {
             preview.add(file, text);
@@ -524,7 +524,7 @@ pub fn reject(
     let tx = Transaction::new_unchecked(&g.conn, TransactionBehavior::Immediate)?;
     let candidate = Candidate::load(&tx, cid)?;
     let (src, dst, rel) = decided_rel(&tx, ontology, &candidate, decision)?;
-    withdraw(&tx, &candidate)?;
+    withdraw(&tx, ontology, &candidate)?;
     record(&tx, (&src, &dst, &rel), "reject", decision.reason, 1)?;
     tx.execute("DELETE FROM candidates WHERE cid = ?", [cid])?;
     let strikes = strike_totals(&tx)?
@@ -551,7 +551,7 @@ pub fn defer(
     let tx = Transaction::new_unchecked(&g.conn, TransactionBehavior::Immediate)?;
     let candidate = Candidate::load(&tx, cid)?;
     let (src, dst, rel) = decided_rel(&tx, ontology, &candidate, decision)?;
-    withdraw(&tx, &candidate)?;
+    withdraw(&tx, ontology, &candidate)?;
     record(&tx, (&src, &dst, &rel), "defer", decision.reason, 0)?;
     tx.commit()?;
     Ok(Deferred { src, dst, rel })
@@ -586,7 +586,9 @@ struct Candidate {
     dst_hash: Option<String>,
     src_section: Option<String>,
     dst_section: Option<String>,
-    /// The relation [`accept_unwritten`] recorded, not yet in any note.
+    /// The relation [`accept_unwritten`] recorded, not yet in any note. It's
+    /// as it was named, not as the ontology's key: where the schema fits both
+    /// ways, an inverse is what says which note holds the relation.
     accepted_rel: Option<String>,
 }
 
@@ -642,16 +644,25 @@ fn standing_rel(
 }
 
 /// Takes back an acceptance that was never written, whose row would otherwise
-/// stand in `reviews` for a link no note has. A row with strikes keeps them.
-fn withdraw(tx: &Transaction<'_>, candidate: &Candidate) -> rusqlite::Result<()> {
+/// stand in `reviews` for a link no note has. Only a rejection adds strikes, so
+/// a row with some goes back to being one, and the rest go.
+fn withdraw(
+    tx: &Transaction<'_>,
+    ontology: &Ontology,
+    candidate: &Candidate,
+) -> rusqlite::Result<()> {
     let Some(rel) = &candidate.accepted_rel else {
         return Ok(());
     };
+    let name = ontology.lookup(rel).map_or(rel.as_str(), |key| key.name);
+    let row = "rel = ?1 AND decision = 'accept'
+        AND ((src = ?2 AND dst = ?3) OR (src = ?3 AND dst = ?2))";
+    let pair = params![name, candidate.src, candidate.dst];
     tx.execute(
-        "DELETE FROM reviews WHERE rel = ?1 AND decision = 'accept' AND strikes = 0
-             AND ((src = ?2 AND dst = ?3) OR (src = ?3 AND dst = ?2))",
-        params![rel, candidate.src, candidate.dst],
+        &format!("UPDATE reviews SET decision = 'reject' WHERE strikes > 0 AND {row}"),
+        pair,
     )?;
+    tx.execute(&format!("DELETE FROM reviews WHERE {row}"), pair)?;
     tx.execute(
         "UPDATE candidates SET accepted_rel = NULL WHERE cid = ?",
         [&candidate.cid],

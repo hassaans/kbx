@@ -329,6 +329,48 @@ fn another_relation_replaces_the_one_accepted() {
 }
 
 #[test]
+fn an_inverse_relation_is_written_the_way_it_was_previewed() {
+    let vault = suggested(Fixture::new());
+    let cid = first(&vault);
+    let before = notes(vault.root());
+    let printed = vault.ok(&["accept", &cid, "--rel", "has_part", "--no-write"]);
+    let promised = applied(&printed, &before);
+    vault.ok(&["accept", &cid]);
+    assert_eq!(promised, changed(&before, &notes(vault.root())));
+    let rows = reviews(&vault);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].0, "part_of");
+}
+
+#[test]
+fn an_inverse_relation_is_taken_back_under_its_own_row() {
+    let vault = suggested(Fixture::new());
+    let cid = first(&vault);
+    vault.ok(&["accept", &cid, "--rel", "has_part", "--no-write"]);
+    vault.ok(&["accept", &cid, "--rel", "see_also"]);
+    let rows = reviews(&vault);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].0, "see_also");
+}
+
+#[test]
+fn a_withdrawn_acceptance_goes_back_to_the_rejection_it_replaced() {
+    let vault = suggested(Fixture::new());
+    let cid = first(&vault);
+    vault.ok(&["reject", &cid, "--rel", "part_of"]);
+    vault.ok(&SUGGEST);
+    vault.ok(&["accept", &cid, "--rel", "part_of", "--no-write"]);
+    vault.ok(&["accept", &cid, "--rel", "see_also"]);
+    let rows = reviews(&vault);
+    let part_of = rows.iter().find(|row| row.0 == "part_of").unwrap();
+    assert_eq!((part_of.1.as_str(), part_of.3), ("reject", 1), "{rows:?}");
+    assert!(
+        rows.iter()
+            .any(|row| row.0 == "see_also" && row.1 == "accept")
+    );
+}
+
+#[test]
 fn suggest_keeps_the_decision_and_does_not_stage_it() {
     let vault = suggested(Fixture::new());
     let cid = first(&vault);
