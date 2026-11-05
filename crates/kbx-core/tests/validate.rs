@@ -402,6 +402,57 @@ fn link_unresolved_in_the_body() {
     assert_eq!(found[0].line, 6);
 }
 
+#[test]
+fn a_partial_path_to_several_notes_says_how_many() {
+    let plan = |path, id| {
+        parse_note(
+            path,
+            &format!("---\nid: {id}\ntype: Concept\ntitle: T\n---\n"),
+        )
+        .unwrap()
+    };
+    let linker = parse_note(
+        "a.md",
+        "---\nid: A\ntype: Concept\ntitle: T\n---\nSee [[shared/plan]] and [[ghost/plan]].\n",
+    )
+    .unwrap();
+    let found = findings(vec![
+        linker,
+        plan("x/shared/plan.md", "X"),
+        plan("y/shared/plan.md", "Y"),
+    ]);
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[0].code, FindingCode::LinkUnresolved);
+    assert_eq!(
+        found[0].message,
+        "`shared/plan` does not resolve to exactly one note: 2 notes match"
+    );
+    assert_eq!(
+        found[1].message,
+        "`ghost/plan` does not resolve to exactly one note"
+    );
+}
+
+#[test]
+fn a_partial_path_is_unstable_only_to_a_note_with_its_own_id() {
+    let linker = parse_note(
+        "a.md",
+        "---\nid: A\ntype: Concept\ntitle: T\n---\nSee [[deep/stated]] and [[deep/inferred]].\n",
+    )
+    .unwrap();
+    let stated = parse_note(
+        "x/deep/stated.md",
+        "---\nid: S\ntype: Concept\ntitle: T\n---\n",
+    )
+    .unwrap();
+    let inferred = parse_note("x/deep/inferred.md", "No keys.\n").unwrap();
+    let vault = Vault::new(vec![linker, stated, inferred]);
+    let found = vault.validate_note(&vault.notes()[0], &ontology());
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].code, FindingCode::LinkUnstable);
+    assert!(found[0].message.contains("deep/stated"));
+}
+
 /// §8: only the author's lint reports unresolved links, so callers can pick the notes they check.
 #[test]
 fn validate_note_checks_one_note_against_the_whole_vault() {

@@ -95,6 +95,14 @@ Links resolve as usual, so `[[Alpha Plan]]` in a body becomes a `mentions` edge.
 is inferred: the path is all that id stands on, so there's nothing steadier to
 link by.
 
+A link with a folder in it can be a partial path, as in Obsidian. `[[people/ann]]`
+reaches `companies/acme/people/ann.md` if that's the one note whose path ends that
+way at a folder boundary, with or without the `.md`. It comes after the id, filename
+and alias steps, so a note at `people/ann.md` wins, and unlike them it keeps the
+case as written. If several notes match, the link stays hidden, as other ambiguous
+links do, and `link.unresolved` says how many match. Obsidian would pick one for you,
+but kbx won't guess at an edge. `./` and `../` links aren't read relative to the note.
+
 The structural generators read those edges, so a vault with nothing but inline
 links gets `common_neighbors`, `adamic_adar` and `two_hop_bridge` candidates from
 the start: see [the generators](generators.md).

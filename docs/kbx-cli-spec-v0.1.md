@@ -152,7 +152,7 @@ qmd:
 ---
 ```
 
-- Links resolve by `id` first, then by filename/alias. Filename-only links are flagged by `kbx lint` as `link.unstable`.
+- Links resolve by `id` first, then by filename/alias, then by the end of a path, at a folder boundary. Filename-only and path-only links are flagged by `kbx lint` as `link.unstable`.
 - Relations live in frontmatter keys (the only form Obsidian Bases, Breadcrumbs, Dataview and this tool all read). Inline `[[links]]` in the body are indexed as untyped `mentions` edges.
 - Sections are addressable as `{id}#{heading-slug-path}` and, when present, `{id}#^{block-id}`. The compiler also assigns `UUID5(id + heading path + ordinal)` as the stable section key.
 - The `kbx:` and `qmd:` namespaces are tool-owned; `kbx` is the only writer of `kbx:` and mirrors the filterable subset of ontology fields into `qmd.metadata` on write.

@@ -18,8 +18,9 @@ const EXISTING: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../tests/fixtures/existing-vault"
 );
-const NOTES: usize = 7;
+const NOTES: usize = 8;
 const PINNED: &str = "01KBX000000000000000000100";
+const CHECKLIST: &str = "Areas/Runbooks/Deploy Checklist.md";
 const GENERATORS: [&str; 2] = ["--generators", "alias_cooccur"];
 
 fn existing() -> Fixture {
@@ -56,7 +57,7 @@ fn files(vault: &Fixture) -> BTreeMap<String, (String, String, String)> {
 /// Every markdown file in the vault, by path.
 fn snapshot(vault: &Fixture) -> BTreeMap<String, Vec<u8>> {
     let mut found = BTreeMap::new();
-    for folder in ["", "Projects", "Areas"] {
+    for folder in ["", "Projects", "Areas", "Areas/Runbooks"] {
         for entry in fs::read_dir(vault.root().join(folder)).unwrap() {
             let path = entry.unwrap().path();
             if path.extension().is_some_and(|e| e == "md") {
@@ -132,7 +133,7 @@ fn every_note_of_an_existing_vault_is_indexed_with_what_it_infers() {
         out.contains(", 0 skipped, 0 failed, 0 hidden links"),
         "{out}"
     );
-    assert!(out.ends_with(", 6 inferred\n"), "{out}");
+    assert!(out.ends_with(", 7 inferred\n"), "{out}");
 
     let files = files(&vault);
     assert_eq!(files.len(), NOTES);
@@ -175,6 +176,37 @@ fn an_existing_vault_lints_clean_with_links_by_filename() {
     let vault = indexed();
     let out = vault.ok(&["lint", "--strict"]);
     assert!(!out.contains("link.unstable"), "{out}");
+}
+
+#[test]
+fn partial_path_links_become_mentions_the_structural_generators_read() {
+    let vault = indexed();
+    let checklist = inferred_id(CHECKLIST);
+    let db = database(&vault);
+    let mut statement = db
+        .prepare("SELECT src FROM edges WHERE dst = ? AND rel = 'mentions' AND origin = 'inline'")
+        .unwrap();
+    let rows = statement
+        .query_map([&checklist], |row| row.get::<_, String>(0))
+        .unwrap();
+    let mut sources: Vec<String> = rows.map(Result::unwrap).collect();
+    sources.sort();
+    let mut want = [
+        inferred_id("Projects/Alpha Launch.md"),
+        inferred_id("Projects/Beta Rollout.md"),
+    ];
+    want.sort();
+    assert_eq!(sources, want);
+
+    // Those two links are all that ties this pair together.
+    vault.ok(&[
+        "suggest",
+        "--judge",
+        "none",
+        "--generators",
+        "common_neighbors",
+    ]);
+    cid_of(&vault, CHECKLIST, "Projects/Retro Notes.md");
 }
 
 #[test]
@@ -312,6 +344,8 @@ see_also: [\"[[Projects/Beta Rollout]]\"]
 # Alpha launch plan
 
 Depends on the [[Health Check]] passing, and on the [[Retro Notes]].
+
+Ship it by the [[Runbooks/Deploy Checklist]].
 "
         .to_vec(),
     );
@@ -328,6 +362,8 @@ see_also: [\"[[Projects/Alpha Launch]]\"]
 
 Follows the alpha launch plan. Reuses the [[Health Check]] and what the
 [[Retro Notes]] say.
+
+Ship it by the [[Runbooks/Deploy Checklist.md]] too.
 "
         .to_vec(),
     );
