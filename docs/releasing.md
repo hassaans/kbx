@@ -70,10 +70,11 @@ A manual run only publishes if it's started on a tag with `dry_run` turned off.
 ## Check a release
 
 `.github/workflows/smoke.yml` installs a published version on clean runners. On
-Linux, macOS and Windows it installs `kbx@<version>` from npm, checks that exactly
-one platform package came with it, runs `kbx doctor` twice to see qmd installed
-and then found, and runs `kbx init`, `kbx index` and `kbx lint` on a copy of the
-fixture vault, where `kbx init` has to create a qmd collection per scope. Other
+Linux, macOS and Windows it installs `kbx-cli@<version>` from npm, checks that
+exactly one platform package came with it, runs `kbx doctor` twice to see qmd
+installed and then found, and runs `kbx init`, `kbx index` and `kbx lint` on a
+copy of the fixture vault, where `kbx init` has to create a qmd collection per
+scope. Other
 jobs check that `kbx doctor` names Node >= 22 when npm isn't on `PATH`, and that
 `cargo install` works on macOS.
 
