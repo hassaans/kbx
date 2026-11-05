@@ -477,8 +477,8 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
 
     it('waits for the shim on npm and for kbx on crates.io', () => {
       const workflow = fs.readFileSync(path.join(REPO, '.github', 'workflows', 'smoke.yml'), 'utf8');
-      const waits = [...workflow.matchAll(/smoke-wait\.sh (\S+) (\S+) /g)].map((match) => `${match[1]} ${match[2]}`);
-      assert.deepEqual(waits, ['npm kbx-cli', `npm ${PLATFORM}`, 'crates kbx']);
+      const waits = [...workflow.matchAll(/smoke-wait\.sh (\S+) (".*?"|\S+) /g)].map((match) => `${match[1]} ${match[2]}`);
+      assert.deepEqual(waits, ['npm kbx-cli', 'npm "${{ matrix.package }}"', `npm ${PLATFORM}`, 'crates kbx']);
     });
 
     it('takes the version from a caller or by hand, and not from a Release', () => {
@@ -524,7 +524,7 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
 
       // Each row: what goes wrong, and the words the job must fail with.
       const FAILURES = [
-        ['no platform package is installed', { FAKE_PLATFORMS: '' }, /expected one platform package, found 0/],
+        ['no platform package is installed', { FAKE_PLATFORMS: '' }, /found 0: none \(expected kbx-linux-x64-gnu\)/],
         [
           'two platform packages are installed',
           { FAKE_PLATFORMS: `${PLATFORM} kbx-darwin-arm64` },
