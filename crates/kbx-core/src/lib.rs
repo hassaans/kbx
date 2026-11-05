@@ -1,8 +1,8 @@
 //! Vault parsing, ontology and graph storage for kbx.
 //!
-//! [`parse_note`] turns one markdown file into a [`Note`], [`Ontology::parse`]
-//! reads `ontology.yaml`, and a [`Vault`] resolves links between notes and
-//! validates them, producing [`Finding`]s. [`index_vault`] compiles a folder
+//! [`parse_note`] turns one markdown file into a [`Note`], inferring what it
+//! doesn't state, [`Ontology::parse`] reads `ontology.yaml`, and a [`Vault`]
+//! resolves links between notes and validates them, producing [`Finding`]s. [`index_vault`] compiles a folder
 //! of notes into a [`Graph`], the SQLite file described by a [`Project`], and
 //! [`lint_vault`] checks one against the ontology. [`accept`], [`reject`],
 //! [`defer`] and [`unreject`] record review decisions, a [`Queue`] takes them
@@ -18,6 +18,7 @@ mod exclude;
 mod export;
 mod graph;
 mod index;
+mod infer;
 mod link;
 mod lint;
 mod note;
@@ -30,7 +31,7 @@ mod writer;
 
 pub use config::{
     CONFIG_FILE, Config, ConfigError, ConfigLocation, EXAMPLE_ONTOLOGY, InitReport, JudgeBackend,
-    JudgeConfig, Project, Qmd, Rates, Search, WriteConfig, init,
+    JudgeConfig, Project, Qmd, Rates, ScopeConfig, Search, WriteConfig, init,
 };
 pub use exclude::{DEFAULT_EXCLUDE, ExcludeError, Excluded, Exclusions};
 pub use export::{
@@ -41,10 +42,12 @@ pub use index::{
     IndexError, IndexOptions, IndexReport, IndexState, MENTIONS, excluded_notes, index_state,
     index_vault, is_note_path,
 };
+pub use infer::{DEFAULT_CLASS, Inferred, TypeDefaults, inferred_id};
 pub use link::Link;
 pub use lint::lint_vault;
 pub use note::{
-    Frontmatter, Note, ParseError, Property, RelationEntry, parse_note, split_frontmatter,
+    Frontmatter, Note, ParseError, Property, RelationEntry, parse_note, parse_note_with,
+    split_frontmatter,
 };
 pub use ontology::{
     ANY, Class, Direction, Judge, NONE, Ontology, OntologyError, Orientation, Relation, RelationKey,

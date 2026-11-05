@@ -12,7 +12,7 @@ use similar::TextDiff;
 use tracing::warn;
 
 use crate::graph::Graph;
-use crate::index::{load_resolver, sha256};
+use crate::index::{load_resolver, sha256, slash_path};
 use crate::note::{Note, parse_note};
 use crate::ontology::{NONE, Ontology, RelationKey, admits};
 use crate::writer::{Staged, WriteError, add_relation, holds_link, unstage_entries, write_atomic};
@@ -22,6 +22,9 @@ mod stage;
 
 pub use queue::{Item, JUDGE_ERROR, Queue, excerpt, excerpt_of, section_excerpt};
 pub use stage::{StageReport, Synced, locked_notes, mark_reviewed, stage, sync_stage, unstage};
+
+/// What a wikilink can't hold in a file name.
+const UNLINKABLE: [char; 5] = ['#', '|', '^', '[', ']'];
 
 /// Rejections of a pair, across all relations, that suppress it from every
 /// generator.
@@ -81,8 +84,12 @@ impl Preview {
     /// `file` as the candidates before this one left it.
     fn over(&self, mut file: Checked) -> Result<Checked, ReviewError> {
         if let Some((_, after)) = self.notes.get(&file.path) {
-            file.note = parse_note(&file.path, after)
+            let mut note = parse_note(&file.path, after)
                 .map_err(|error| ReviewError::Write(file.path.clone(), error.into()))?;
+            if note.inferred.class {
+                note.class = file.note.class;
+            }
+            file.note = note;
             file.text = after.clone();
         }
         Ok(file)
@@ -191,6 +198,9 @@ pub enum ReviewError {
          run `kbx index` and `kbx suggest` again"
     )]
     Changed(PathBuf),
+    /// Only an acceptance writes to a note with inferred keys.
+    #[error("{0} has inferred keys, so nothing is staged in it; use `kbx review`")]
+    Inferred(PathBuf),
     /// A note's frontmatter couldn't be edited.
     #[error("{0}: {1}")]
     Write(PathBuf, WriteError),
@@ -433,13 +443,11 @@ fn write_accepted(
         true => candidate.src_section.as_deref(),
         false => candidate.dst_section.as_deref(),
     };
-    let forward = from.with_relation(key.name, &to.link_target(section_of(to)), |t| {
-        names(&to.note.id, t)
-    })?;
+    let link_to =
+        |file: &Checked| file.link_target(section_of(file), |target| names(&file.note.id, target));
+    let forward = from.with_relation(key.name, &link_to(to), |t| names(&to.note.id, t))?;
     let inverse = match writes_inverse {
-        true => to.with_relation(inverse_key, &from.link_target(section_of(from)), |t| {
-            names(&from.note.id, t)
-        })?,
+        true => to.with_relation(inverse_key, &link_to(from), |t| names(&from.note.id, t))?,
         false => None,
     };
 
@@ -729,25 +737,33 @@ struct OnDisk {
     path: PathBuf,
     bytes: Vec<u8>,
     hash: String,
+    /// The class the index gave the note.
+    class: String,
 }
 
 impl OnDisk {
     /// `None` if the note left the index or its file can't be read, which to
     /// this user is the same thing (§1).
     fn read(connection: &Connection, vault: &Path, id: &str) -> rusqlite::Result<Option<OnDisk>> {
-        let path: Option<String> = connection
-            .query_row("SELECT path FROM files WHERE id = ?", [id], |row| {
-                row.get(0)
+        let row: Option<(String, String)> = connection
+            .query_row("SELECT path, type FROM files WHERE id = ?", [id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
             })
             .optional()?;
-        let Some(path) = path.map(PathBuf::from) else {
+        let Some((path, class)) = row else {
             return Ok(None);
         };
+        let path = PathBuf::from(path);
         let Ok(bytes) = fs::read(vault.join(&path)) else {
             return Ok(None);
         };
         let hash = sha256(&bytes);
-        Ok(Some(OnDisk { path, bytes, hash }))
+        Ok(Some(OnDisk {
+            path,
+            bytes,
+            hash,
+            class,
+        }))
     }
 
     /// Refuses a file that differs from `recorded`, then parses it. A candidate
@@ -759,8 +775,12 @@ impl OnDisk {
         let text = String::from_utf8(self.bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
             .map_err(|error| ReviewError::Io(self.path.clone(), error))?;
-        let note = parse_note(&self.path, &text)
+        let mut note = parse_note(&self.path, &text)
             .map_err(|error| ReviewError::Write(self.path.clone(), error.into()))?;
+        // What a note doesn't state depends on `kbx.toml`, which the index read.
+        if note.inferred.class {
+            note.class = self.class;
+        }
         Ok(Checked {
             path: self.path,
             hash: self.hash,
@@ -781,20 +801,39 @@ struct Checked {
 impl Checked {
     /// How a link to this note is written: by id, or by file name and anchor if
     /// it goes to `section` and a link can reach that. An anchor needs a link
-    /// Obsidian can follow, and it looks notes up by file name.
-    fn link_target(&self, section: Option<&str>) -> String {
+    /// Obsidian can follow, and it looks notes up by file name. A note whose id
+    /// is inferred is linked by its path, which `resolves` must take to this
+    /// note: Obsidian can follow that too, and an inferred id means nothing to
+    /// it.
+    fn link_target(&self, section: Option<&str>, resolves: impl Fn(&str) -> bool) -> String {
+        let by_path = self.path_target().filter(|target| resolves(target));
         let fragment = section.and_then(|key| self.note.section_fragment(key));
         let Some(fragment) = fragment else {
-            return self.note.id.clone();
+            return by_path.unwrap_or_else(|| self.note.id.clone());
         };
         let stem = self.path.file_stem().and_then(|stem| stem.to_str());
         let linkable = |stem: &&str| {
             stem.strip_prefix(self.note.id.as_str())
                 .is_some_and(|rest| rest.starts_with('-'))
-                && !stem.contains(['#', '|', '^', '[', ']'])
+                && !stem.contains(UNLINKABLE)
         };
-        let name = stem.filter(linkable).unwrap_or(&self.note.id);
+        let name = by_path
+            .as_deref()
+            .or(stem.filter(linkable))
+            .unwrap_or(&self.note.id);
         format!("{name}#{fragment}")
+    }
+
+    /// The path without `.md`, for a note whose id is inferred, if a link can
+    /// spell it.
+    fn path_target(&self) -> Option<String> {
+        if !self.note.inferred.id {
+            return None;
+        }
+        let path = slash_path(&self.path);
+        let target = path.strip_suffix(".md").unwrap_or(&path);
+        let spellable = !target.contains(UNLINKABLE) && target.trim() == target;
+        spellable.then(|| target.to_string())
     }
 
     fn with_relation(

@@ -5,6 +5,7 @@ classes:
   Decision:  {description: "A choice made, with rationale."}
   Entity:    {description: "A system, team, person, or product."}
   Reference: {description: "External source material."}
+  Note:      {description: "A note that doesn't say what it is."}
 relations:
   part_of:     {inverse: has_part,     domain: [any],       range: [any],       weight: 1.0, transitive: true}
   depends_on:  {inverse: required_by,  domain: [Procedure], range: [Concept, Procedure, Entity], weight: 0.9}

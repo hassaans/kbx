@@ -6,6 +6,7 @@
 //! keys in the same order. YAML too unusual to edit that way is refused rather
 //! than rewritten. See `docs/frontmatter-writer.md` for what that covers.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
@@ -15,7 +16,7 @@ use serde_yaml::{Mapping, Value};
 use tempfile::{Builder, NamedTempFile};
 
 use crate::index::sha256;
-use crate::note::{Note, ParseError, parse_note, split_frontmatter};
+use crate::note::{Note, ParseError, bom_len, parse_note, split_frontmatter};
 
 const QMD: &str = "qmd";
 const METADATA: &str = "metadata";
@@ -49,22 +50,24 @@ pub enum WriteError {
 ///
 /// `is_target` says whether a link target as written names the same note.
 /// That takes the vault, because `[[b-child]]` is either `b` with a slug or
-/// another note. Only the text between the `---` fences changes.
+/// another note. Only the text between the `---` fences changes. A note with
+/// no fences gets them, around the relation alone, and its body stays as it is.
 pub fn add_relation(
     src: &str,
     key: &str,
     target: &str,
     is_target: impl Fn(&str) -> bool,
 ) -> Result<Option<String>, WriteError> {
-    let frontmatter = split_frontmatter(src)?.ok_or(ParseError::NoFrontmatter)?;
+    let block = FrontmatterBlock::of(src)?;
     let note = parse_note("", src)?;
-    let Value::Mapping(old) = serde_yaml::from_str(frontmatter.yaml).map_err(ParseError::Yaml)?
-    else {
-        return Err(ParseError::NotAMapping.into());
+    let old = match serde_yaml::from_str(block.yaml).map_err(ParseError::Yaml)? {
+        Value::Mapping(old) => old,
+        Value::Null => Mapping::new(),
+        _ => return Err(ParseError::NotAMapping.into()),
     };
 
     let mut expected = old.clone();
-    let mut yaml = frontmatter.yaml.to_string();
+    let mut yaml = block.yaml.to_string();
     if !holds_link(&note, key, is_target) {
         let link = format!("[[{target}]]");
         yaml = append_link(&yaml, key, &link, &note, &old)?;
@@ -74,16 +77,52 @@ pub fn add_relation(
         yaml = write_metadata(&yaml, &metadata, &old)?;
         set_metadata(&mut expected, metadata);
     }
-    if yaml == frontmatter.yaml {
+    if yaml == block.yaml {
         return Ok(None);
     }
     verify(&yaml, &old, &expected, key)?;
+    Ok(Some(block.with_yaml(yaml)))
+}
 
-    let (head, tail) = (
-        &src[..frontmatter.yaml_start],
-        &src[frontmatter.yaml_start + frontmatter.yaml.len()..],
-    );
-    Ok(Some(format!("{head}{yaml}{tail}")))
+/// A note's text around the YAML between its fences. A note with no fences
+/// has an empty block, with fences to match its first line ending.
+struct FrontmatterBlock<'a> {
+    head: Cow<'a, str>,
+    yaml: &'a str,
+    tail: Cow<'a, str>,
+}
+
+impl<'a> FrontmatterBlock<'a> {
+    fn of(src: &'a str) -> Result<FrontmatterBlock<'a>, ParseError> {
+        if let Some(frontmatter) = split_frontmatter(src)? {
+            let end = frontmatter.yaml_start + frontmatter.yaml.len();
+            return Ok(FrontmatterBlock {
+                head: src[..frontmatter.yaml_start].into(),
+                yaml: frontmatter.yaml,
+                tail: src[end..].into(),
+            });
+        }
+        let (bom, body) = src.split_at(bom_len(src));
+        let eol = match body.find('\n') {
+            Some(at) if body[..at].ends_with('\r') => "\r\n",
+            _ => "\n",
+        };
+        Ok(FrontmatterBlock {
+            head: format!("{bom}---{eol}").into(),
+            yaml: "",
+            tail: format!("---{eol}{body}").into(),
+        })
+    }
+
+    /// The whole file around `yaml`. Lines added to an empty block had no
+    /// neighbour to take a line ending from, so they take the fence's.
+    fn with_yaml(&self, yaml: String) -> String {
+        let yaml = match self.yaml.is_empty() && self.head.ends_with("\r\n") {
+            true => yaml.replace('\n', "\r\n"),
+            false => yaml,
+        };
+        format!("{}{yaml}{}", self.head, self.tail)
+    }
 }
 
 /// A proposal under `kbx.proposed` (§3), which the compiler never reads.
@@ -468,7 +507,7 @@ fn append_link(
         return Err(WriteError::NotLinks(key.to_string()));
     }
     if value.is_none() {
-        return new_key(yaml, key, &quoted).ok_or_else(unsupported);
+        return Ok(new_key(yaml, key, &quoted));
     }
 
     let all = blocks(yaml);
@@ -502,13 +541,13 @@ fn append_link(
 }
 
 /// Adds `key: ["[[…]]"]` after the last key outside the tool namespaces, which
-/// is where §3 shows relations.
-fn new_key(yaml: &str, key: &str, quoted: &str) -> Option<String> {
+/// is where §3 shows relations, or first if there is no such key.
+fn new_key(yaml: &str, key: &str, quoted: &str) -> String {
     let all = blocks(yaml);
-    let last = all.iter().rfind(|b| !matches!(b.key.as_str(), KBX | QMD))?;
-    let at = last.content_end(yaml);
+    let last = all.iter().rfind(|b| !matches!(b.key.as_str(), KBX | QMD));
+    let at = last.map_or(0, |last| last.content_end(yaml));
     let eol = eol_at(yaml, at);
-    Some(insert(yaml, at, &format!("{key}: [{quoted}]{eol}")))
+    insert(yaml, at, &format!("{key}: [{quoted}]{eol}"))
 }
 
 /// Adds a `- item` line after the last item of a block list, with its indent.
@@ -584,8 +623,12 @@ fn quoted_end(yaml: &str, open: usize) -> Option<usize> {
 }
 
 /// What `qmd.metadata` should hold, if that isn't what it holds. Keys other
-/// than `type` and `tags` stay.
+/// than `type` and `tags` stay. A note with an inferred key gets no mirror: the
+/// mirror would be kbx's own guess, written into a note that never stated it.
 fn stale_metadata(note: &Note, old: &Mapping) -> Result<Option<Mapping>, WriteError> {
+    if note.inferred.any() {
+        return Ok(None);
+    }
     let qmd = match old.get(QMD) {
         None | Some(Value::Null) => None,
         Some(Value::Mapping(qmd)) => Some(qmd),

@@ -54,6 +54,7 @@ impl Vault {
             &root,
             ONTOLOGY,
             &Exclusions::new(&root, &[]).unwrap(),
+            &Default::default(),
             &IndexOptions::default(),
         )
         .unwrap();

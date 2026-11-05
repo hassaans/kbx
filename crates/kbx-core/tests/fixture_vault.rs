@@ -24,26 +24,23 @@ fn markdown_files(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-/// Parses the vault, returning the notes and the files that aren't notes.
-/// Malformed files are left out: [`malformed`] covers them.
-fn load() -> (Vault, Vec<String>) {
+/// Parses the vault. Malformed files are left out: [`malformed`] covers them.
+fn load() -> Vault {
     let mut files = Vec::new();
     markdown_files(Path::new(VAULT), &mut files);
     files.sort();
     let mut notes = Vec::new();
-    let mut plain = Vec::new();
     for file in files {
         let relative = file.strip_prefix(VAULT).unwrap().to_path_buf();
         match parse_note(relative.clone(), &fs::read_to_string(&file).unwrap()) {
             Ok(note) => notes.push(note),
-            Err(ParseError::NoFrontmatter) => plain.push(relative.display().to_string()),
             Err(_) => {
                 let path = relative.to_str().unwrap().replace('\\', "/");
                 assert!(MALFORMED.contains(&path.as_str()), "{path}");
             }
         }
     }
-    (Vault::new(notes), plain)
+    Vault::new(notes)
 }
 
 fn slug(note: &Note) -> &str {
@@ -98,10 +95,8 @@ fn linked(vault: &Vault, a: &str, b: &str) -> bool {
 }
 
 #[test]
-fn every_file_but_the_readme_is_a_note() {
-    let (vault, plain) = load();
-    assert_eq!(plain, ["README.md"]);
-    assert_eq!(vault.notes().len(), 26);
+fn every_well_formed_file_is_a_note() {
+    assert_eq!(load().notes().len(), 26);
 }
 
 #[test]
@@ -119,7 +114,7 @@ fn the_malformed_files_fail_for_the_reasons_the_readme_gives() {
 
 #[test]
 fn ids_are_ulids_and_prefix_their_filenames() {
-    let (vault, _) = load();
+    let vault = load();
     let crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
     let mut ids = BTreeMap::new();
     for note in vault.notes() {
@@ -141,7 +136,7 @@ fn ids_are_ulids_and_prefix_their_filenames() {
 
 #[test]
 fn each_finding_code_comes_from_the_note_the_readme_names() {
-    let (vault, _) = load();
+    let vault = load();
     let ontology = Ontology::parse(ONTOLOGY).unwrap();
     let mut found: Vec<(String, &str)> = vault
         .validate(&ontology)
@@ -175,7 +170,7 @@ fn each_finding_code_comes_from_the_note_the_readme_names() {
 
 #[test]
 fn common_neighbors_and_two_hop_bridge_pair() {
-    let (vault, _) = load();
+    let vault = load();
     assert!(!linked(&vault, "deploy-service", "rotate-keys"));
     let neighbours = adjacency(&vault);
     let a = &neighbours[find(&vault, "deploy-service").id.as_str()];
@@ -187,7 +182,7 @@ fn common_neighbors_and_two_hop_bridge_pair() {
 
 #[test]
 fn schema_gap_note_has_candidates_in_its_scope() {
-    let (vault, _) = load();
+    let vault = load();
     let ontology = Ontology::parse(ONTOLOGY).unwrap();
     let gap = find(&vault, "restart-service");
     assert_eq!(gap.class, "Procedure");
@@ -202,7 +197,7 @@ fn schema_gap_note_has_candidates_in_its_scope() {
 
 #[test]
 fn alias_cooccur_note_mentions_an_alias_without_linking() {
-    let (vault, _) = load();
+    let vault = load();
     let source =
         fs::read_to_string(Path::new(VAULT).join(&find(&vault, "incident-response").path)).unwrap();
     let target = find(&vault, "rate-limits");
@@ -217,7 +212,7 @@ fn alias_cooccur_note_mentions_an_alias_without_linking() {
 
 #[test]
 fn qmd_knn_pair_shares_vocabulary_without_links_or_aliases() {
-    let (vault, _) = load();
+    let vault = load();
     assert!(!linked(&vault, "session-expiry", "cookie-lifetime"));
     let text =
         |slug: &str| fs::read_to_string(Path::new(VAULT).join(&find(&vault, slug).path)).unwrap();
@@ -231,7 +226,7 @@ fn qmd_knn_pair_shares_vocabulary_without_links_or_aliases() {
 
 #[test]
 fn hub_outranks_every_other_node() {
-    let (vault, _) = load();
+    let vault = load();
     let neighbours = adjacency(&vault);
     let hub = find(&vault, "platform");
     let degree = neighbours[hub.id.as_str()].len();
@@ -253,7 +248,7 @@ fn hub_outranks_every_other_node() {
 
 #[test]
 fn class_pairs_vary_for_type_pair_prior() {
-    let (vault, _) = load();
+    let vault = load();
     let pairs: BTreeSet<_> = vault
         .notes()
         .iter()
@@ -270,7 +265,7 @@ fn class_pairs_vary_for_type_pair_prior() {
 
 #[test]
 fn the_full_example_note_exercises_parsing() {
-    let (vault, _) = load();
+    let vault = load();
     let note = find(&vault, "oauth-flow");
     assert!(note.kbx.is_some() && note.qmd.is_some());
 
@@ -293,7 +288,7 @@ fn the_full_example_note_exercises_parsing() {
 
 #[test]
 fn nested_maps_under_unknown_keys_are_ignored() {
-    let (vault, _) = load();
+    let vault = load();
     let note = find(&vault, "rate-limits");
     let keys: Vec<_> = note.relations.iter().map(|r| r.key.as_str()).collect();
     assert_eq!(keys, ["part_of"]);
@@ -305,7 +300,7 @@ fn nested_maps_under_unknown_keys_are_ignored() {
 
 #[test]
 fn inverse_keys_and_alias_links_are_present() {
-    let (vault, _) = load();
+    let vault = load();
     assert!(find(&vault, "tokens").relation("required_by").is_some());
     assert!(find(&vault, "auth-overview").relation("has_part").is_some());
     let link = &find(&vault, "retries").relation("see_also").unwrap().links[0];

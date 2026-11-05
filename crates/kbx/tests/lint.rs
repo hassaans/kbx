@@ -248,10 +248,10 @@ fn a_bad_path_is_an_error_not_a_finding() {
 #[test]
 fn anything_the_index_fails_on_is_note_invalid() {
     let vault = Fixture::new();
-    vault.write("scratch/empty.md", "---\n---\nNo keys.\n");
-    vault.write("scratch/no-title.md", "---\nid: X\ntype: Concept\n---\n");
+    vault.write("scratch/list.md", "---\n- a\n---\nNot a mapping.\n");
+    vault.write("scratch/unclosed.md", "---\nid: X\n");
     fs::write(vault.root().join("scratch/binary.md"), [0xff, 0xfe, 0x00]).unwrap();
-    vault.write("scratch/plain.md", "No frontmatter, so not a note.\n");
+    vault.write("scratch/plain.md", "No frontmatter, and still fine.\n");
 
     let indexed = vault.ok(&["index", "scratch"]);
     assert!(indexed.contains(", 3 failed"), "{indexed}");
@@ -263,8 +263,8 @@ fn anything_the_index_fails_on_is_note_invalid() {
         places(&output),
         [
             row("scratch/binary.md"),
-            row("scratch/empty.md"),
-            row("scratch/no-title.md")
+            row("scratch/list.md"),
+            row("scratch/unclosed.md")
         ]
     );
 }

@@ -67,6 +67,7 @@ impl Setup {
             &vault,
             ONTOLOGY,
             &Exclusions::new(&vault, &[]).unwrap(),
+            &Default::default(),
             &IndexOptions::default(),
         )
         .unwrap();

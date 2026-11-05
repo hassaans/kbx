@@ -62,11 +62,11 @@ fn vault() -> Fixture {
     vault
 }
 
-/// The same folders with nothing kbx can index in them, as on `~/HQ`.
+/// The same folders with nothing kbx can index in them.
 fn unindexed_vault() -> Fixture {
     let vault = Fixture::bare(fake_qmd());
-    vault.write(&note_path(1), "No frontmatter.\n");
-    vault.write(&note_path(2), "None here either.\n");
+    vault.write(&note_path(1), "---\nid: [\n---\nNot a note.\n");
+    vault.write(&note_path(2), "---\nid: [\n---\nNor here.\n");
     vault.ok(&["init", "--search", "qmd"]);
     vault.ok(&["index"]);
     forget_calls(&vault);

@@ -80,12 +80,13 @@ pub enum FindingCode {
     SchemaGap,
     /// An `exclusive` relation has more than one target.
     RelCardinality,
-    /// A link resolved by filename only.
+    /// A link resolved by filename only, to a note with an id of its own. A
+    /// note whose id comes from its path has nothing steadier to link by.
     LinkUnstable,
     /// A link resolved to no note, or to more than one.
     LinkUnresolved,
-    /// A file with frontmatter can't be read as a note, so `kbx index` fails
-    /// it and it has no rows.
+    /// A file can't be read as a note, so `kbx index` fails it and it has no
+    /// rows.
     NoteInvalid,
     /// Several files claim one id. The lowest path keeps it, and the others
     /// answer to nothing.
@@ -265,7 +266,9 @@ impl Vault {
 
         match ontology.classes.get(&note.class) {
             None => {
-                let message = format!("type `{}` is not a class in the ontology", note.class);
+                let origin = if note.inferred.class { "default " } else { "" };
+                let class = &note.class;
+                let message = format!("{origin}type `{class}` is not a class in the ontology");
                 report(FindingCode::TypeUnknown, note.class_line, message);
             }
             Some(class) => {
@@ -353,7 +356,7 @@ impl Vault {
             report(FindingCode::LinkUnresolved, link.line, message);
             return link.target.clone();
         };
-        if resolved.via == ResolvedVia::Filename {
+        if resolved.via == ResolvedVia::Filename && !resolved.note.inferred.id {
             let message = format!("`{}` links by filename, not id", link.target);
             report(FindingCode::LinkUnstable, link.line, message);
         }

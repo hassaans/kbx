@@ -14,7 +14,7 @@ fn broken(from: &str, to: &str) -> String {
 fn parses_the_example() {
     let ontology = Ontology::parse(EXAMPLE).unwrap();
     assert_eq!(ontology.version, 1);
-    assert_eq!(ontology.classes.len(), 5);
+    assert_eq!(ontology.classes.len(), 6);
     assert_eq!(ontology.classes["Procedure"].requires, ["depends_on"]);
     assert_eq!(ontology.relations.len(), 7);
 

@@ -5,9 +5,9 @@ The small vault every kbx test runs against. Use it with
 everything below, so update both together.
 
 Note ids are `01KBX0000000000000000000NN` and filenames are `{id}-{slug}.md`.
-Each top-level folder is a scope. This README has no frontmatter, so
-`parse_note` returns `ParseError::NoFrontmatter` for it, the same as for any
-plain markdown file in a real vault. Walkers should skip it.
+Each top-level folder is a scope. This README isn't markdown, so that it stays
+out of the graph: any `.md` file is a note. Notes with no frontmatter are in
+`tests/fixtures/existing-vault`.
 
 ## Finding codes
 

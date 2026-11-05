@@ -253,7 +253,15 @@ fn update(project: &Project, paths: Vec<PathBuf>) -> Result<bool, Box<dyn Error>
         ..IndexOptions::default()
     };
     let exclusions = project.exclusions()?;
-    let report = index_vault(&mut graph, &project.vault, &ontology, &exclusions, &options)?;
+    let defaults = project.config.type_defaults();
+    let report = index_vault(
+        &mut graph,
+        &project.vault,
+        &ontology,
+        &exclusions,
+        &defaults,
+        &options,
+    )?;
 
     // A note that fails has no hash to compare, so it counts only when an
     // event names it. Otherwise every reconcile would report it again.

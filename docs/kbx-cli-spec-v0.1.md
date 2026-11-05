@@ -33,6 +33,10 @@ below; the project's fixed decisions override it where they differ:
   the measured cost is `qmd query`, not embedding, so kbx caches search results
   in `.kbx/search-cache.sqlite`. QMD keeps the vectors, and kbx doesn't read or
   write its index. §5's process budget gains one or two `qmd status` calls.
+- §3's `id`, `type` and `title` are optional. What a note doesn't state is
+  inferred, never written: `id` from the path, `title` from the first H1 or the
+  filename, `type` from `default_type` in `kbx.toml`. A file with no frontmatter
+  is a note. See `docs/existing-vaults.md`.
 - `search = "builtin"` selects kbx's own engine, in `.kbx/search-index.sqlite`, for
   the same `qmd_knn` generator. With no `search` key, a `kbx.toml` listing qmd
   collections stays on QMD and any other gets the built-in engine. See

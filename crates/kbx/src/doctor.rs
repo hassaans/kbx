@@ -19,6 +19,9 @@ use crate::qmd;
 
 const GIB: f64 = (1u64 << 30) as f64;
 
+/// Classes the `types` row names before it says how many more there are.
+const SHOWN_CLASSES: usize = 5;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Status {
     Ok,
@@ -57,9 +60,13 @@ pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
             // Staleness means nothing against a file `kbx index` would refuse.
             let usable = yaml.as_deref().filter(|_| ontology.0 == Status::Ok);
             let index = check_index(project, usable);
+            let types = usable.map(|yaml| check_types(project, yaml));
             report("ontology", ontology);
             report("exclude", check_exclude(project));
             report("index", index);
+            if let Some(types) = types {
+                report("types", types);
+            }
         }
         Err(error @ ConfigError::NotInitialised) => {
             report("vault", (Status::Warn, error.to_string()));
@@ -124,7 +131,8 @@ fn check_index(project: &Project, ontology: Option<&str>) -> Check {
         return (Status::Warn, "not built; run `kbx index`".to_string());
     }
     let read = Graph::open(&project.graph).and_then(|graph| {
-        let state = ontology.map(|yaml| index_state(&graph, yaml));
+        let defaults = project.config.type_defaults();
+        let state = ontology.map(|yaml| index_state(&graph, yaml, &defaults));
         Ok((graph.stats()?, state.transpose()?))
     });
     let (stats, state) = match read {
@@ -178,6 +186,56 @@ fn check_exclude(project: &Project) -> Check {
         );
     }
     (Status::Warn, notes.join("; "))
+}
+
+/// Says what `ontology.yaml` needs for the classes notes are given: a note of
+/// a class it lacks is `type.unknown` in `kbx lint`. Those are the classes
+/// `default_type` gives, and what the index found in notes' own `type` keys.
+fn check_types(project: &Project, yaml: &str) -> Check {
+    let Ok(ontology) = Ontology::parse(yaml) else {
+        return (Status::Ok, "nothing to check".to_string());
+    };
+    let known = |class: &str| ontology.classes.contains_key(class);
+    let defaults = project.config.type_defaults();
+    let path = project.ontology.display();
+    let missing: Vec<&str> = defaults
+        .classes()
+        .into_iter()
+        .filter(|class| !known(class))
+        .collect();
+    if let Some(class) = missing.first() {
+        let detail = format!(
+            "`default_type` gives {}, not a class in {path}; add `{class}: {{description: \"…\"}}` \
+             under `classes`, or change `default_type` in kbx.toml",
+            quoted(&missing)
+        );
+        return (Status::Warn, detail);
+    }
+    let counts = Graph::open_read_only(&project.graph).and_then(|graph| graph.class_counts());
+    let unknown: Vec<(String, i64)> = counts
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(class, _)| !known(class))
+        .collect();
+    if unknown.is_empty() {
+        return (Status::Ok, format!("every note's class is in {path}"));
+    }
+    let shown = unknown.iter().take(SHOWN_CLASSES);
+    let shown: Vec<String> = shown.map(|(class, n)| format!("`{class}` ({n})")).collect();
+    let more = match unknown.len().saturating_sub(SHOWN_CLASSES) {
+        0 => String::new(),
+        rest => format!(" and {rest} more"),
+    };
+    let detail = format!(
+        "{}{more} are in notes but not in {path}; add them under `classes`",
+        shown.join(", ")
+    );
+    (Status::Warn, detail)
+}
+
+fn quoted(classes: &[&str]) -> String {
+    let quoted: Vec<String> = classes.iter().map(|class| format!("`{class}`")).collect();
+    quoted.join(", ")
 }
 
 /// A row per backend, whatever is chosen and whether or not `judge.order` has

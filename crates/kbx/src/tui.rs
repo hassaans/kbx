@@ -509,7 +509,15 @@ mod tests {
         let mut graph = Graph::open(&project.graph).unwrap();
         let exclusions = project.exclusions().unwrap();
         let options = IndexOptions::default();
-        index_vault(&mut graph, &project.vault, &yaml, &exclusions, &options).unwrap();
+        index_vault(
+            &mut graph,
+            &project.vault,
+            &yaml,
+            &exclusions,
+            &Default::default(),
+            &options,
+        )
+        .unwrap();
         drop(graph);
         let session = Session::of(project).unwrap();
         let names = ["common_neighbors".to_string()];

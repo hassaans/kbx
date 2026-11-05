@@ -35,6 +35,7 @@ fn written() -> Written {
         dir.path(),
         ONTOLOGY,
         &Exclusions::new(dir.path(), &[]).unwrap(),
+        &Default::default(),
         &options,
     )
     .unwrap();
