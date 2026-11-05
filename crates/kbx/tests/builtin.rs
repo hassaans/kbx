@@ -326,6 +326,32 @@ fn init_refuses_to_contradict_a_vaults_backend() {
 }
 
 #[test]
+fn a_gitignored_note_under_include_is_in_the_search_index() {
+    let vault = vault(FakePath::empty());
+    let word = "xylophonewatermelon";
+    let id = common::id(90);
+    vault.write(".gitignore", "private/\n");
+    vault.write(
+        "private/note.md",
+        &format!("---\nid: {id}\ntype: Concept\ntitle: Private\n---\n\n{word}\n"),
+    );
+    let file = vault.root().join(".kbx/kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(&file, format!("include = [\"/private\"]\n{text}")).unwrap();
+    vault.ok(&["index"]);
+
+    let output = with_model(&vault, &KNN);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let connection = Connection::open(vault.root().join(INDEX)).unwrap();
+    let query = "SELECT count(*) FROM terms WHERE terms MATCH ?";
+    let found: i64 = connection
+        .query_row(query, [word], |row| row.get(0))
+        .unwrap();
+    assert_eq!(found, 1);
+}
+
+#[test]
 fn a_folder_excluded_later_leaves_the_search_index_at_the_next_suggest() {
     let vault = vault(FakePath::empty());
     let word = "xylophonewatermelon";

@@ -408,6 +408,57 @@ pub(crate) fn walk(
     }
 }
 
+/// What `.gitignore` files do to a vault's notes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GitignoreCounts {
+    /// Notes they'd take out. What's hidden or in `exclude` is out anyway, so
+    /// it doesn't count.
+    pub removed: usize,
+    /// Those of them that `include` brings back.
+    pub restored: usize,
+}
+
+/// Counts what [`walk`] finds or misses because of `.gitignore`, in one pass.
+/// It goes where `walk` doesn't, into ignored folders, to see what's in them.
+pub fn gitignore_counts(vault: &Path, exclusions: &Exclusions) -> GitignoreCounts {
+    let mut counts = GitignoreCounts::default();
+    count_ignored(vault, "", false, exclusions, &mut counts);
+    counts
+}
+
+/// `ignored` is whether `folder` is, which goes for everything in it.
+fn count_ignored(
+    vault: &Path,
+    folder: &str,
+    ignored: bool,
+    exclusions: &Exclusions,
+    counts: &mut GitignoreCounts,
+) {
+    let Ok(entries) = fs::read_dir(vault.join(folder)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = match folder {
+            "" => name.clone(),
+            _ => format!("{folder}/{name}"),
+        };
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if exclusions.barred(&path, kind.is_dir()).is_some() {
+            continue;
+        }
+        let ignored = ignored || exclusions.gitignored(&path, kind.is_dir()).is_some();
+        if kind.is_dir() {
+            count_ignored(vault, &path, ignored, exclusions, counts);
+        } else if kind.is_file() && is_note_path(&path) && ignored {
+            counts.removed += 1;
+            counts.restored += usize::from(exclusions.includes(&path, false));
+        }
+    }
+}
+
 /// How many markdown files `vault` holds outside hidden folders, whether or not
 /// `exclude` and `.gitignore` let the index read them.
 pub fn count_note_files(vault: &Path) -> usize {

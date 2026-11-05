@@ -52,6 +52,10 @@ pub struct Config {
     /// key means.
     #[serde(default)]
     pub exclude: Option<Vec<String>>,
+    /// What `.gitignore` files don't get to keep out, as `.gitignore` patterns
+    /// from the vault root. Hidden paths and `exclude` still win.
+    #[serde(default)]
+    pub include: Vec<String>,
     /// The class of a note with no `type` key, unless its scope has its own.
     #[serde(default = "default_type")]
     pub default_type: String,
@@ -478,16 +482,22 @@ impl Project {
 
     /// What this vault leaves alone, as of now.
     pub fn exclusions(&self) -> Result<Exclusions, ExcludeError> {
-        Exclusions::new(&self.vault, &self.config.exclude())
+        Exclusions::with_include(&self.vault, &self.config.exclude(), &self.config.include)
     }
 
-    /// The QMD settings once every scope has a collection and nothing excluded
-    /// has one.
+    /// The QMD settings once every scope has a collection, as has a folder
+    /// `include` brings notes back from, and nothing excluded has one. With no
+    /// scopes there's one collection for the vault, which reaches them already.
     pub fn planned_qmd(&self) -> Result<Qmd, ConfigError> {
         let exclusions = self.exclusions()?;
         let allowed = |folder: &String| exclusions.why(folder, true).is_none();
         let mut scopes = self.config.scopes.clone();
         scopes.retain(allowed);
+        if !scopes.is_empty() {
+            let restored = exclusions.restored_folders().into_iter();
+            let restored: Vec<String> = restored.filter(|f| !scopes.contains(f)).collect();
+            scopes.extend(restored);
+        }
         let mut qmd = self.config.qmd.clone();
         let roots = &self.config.qmd.roots;
         qmd.collections
