@@ -32,6 +32,8 @@ below; the project's fixed decisions override it where they differ:
   the measured cost is `qmd query`, not embedding, so kbx caches search results
   in `.kbx/search-cache.sqlite`. QMD keeps the vectors, and kbx doesn't read or
   write its index. §5's process budget gains one or two `qmd status` calls.
+- `search = "builtin"` selects kbx's own engine, in `.kbx/search-index.sqlite`, for
+  the same `qmd_knn` generator. See `docs/search-engine.md`.
 
 ---
 

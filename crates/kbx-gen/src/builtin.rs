@@ -31,8 +31,8 @@ const EMBED_BATCH: usize = 64;
 /// Rows taken from each ranking before they're fused.
 const POOL: usize = 200;
 
-/// Words of a query kept for BM25: rare ones say the most, and each costs time.
-const QUERY_TERMS: usize = 64;
+/// Words of a query kept for BM25: each one costs time.
+const QUERY_TERMS: usize = 32;
 
 /// The usual constant of reciprocal rank fusion.
 const FUSION_K: f64 = 60.0;
@@ -355,15 +355,16 @@ fn floats(bytes: &[u8]) -> Vec<f32> {
     chunks.iter().map(|c| f32::from_le_bytes(*c)).collect()
 }
 
-/// A BM25 query matching any of `text`'s words, the rarest kept if there are
-/// too many. Quoting keeps FTS5 from reading a word as its query syntax.
-fn match_query(text: &str, frequency: &dyn Fn(&str) -> i64) -> Option<String> {
+/// A BM25 query matching any of `text`'s words. If there are too many the
+/// longest stay, as a long word tends to be a rare one, and a rare one says the
+/// most. Quoting keeps FTS5 from reading a word as its query syntax.
+fn match_query(text: &str) -> Option<String> {
     let lower = text.to_lowercase();
     let words = lower.split(|c: char| !c.is_alphanumeric());
     let mut words: Vec<&str> = words.filter(|word| word.chars().count() > 1).collect();
     words.sort_unstable();
     words.dedup();
-    words.sort_by_cached_key(|word| frequency(word));
+    words.sort_by_key(|word| std::cmp::Reverse(word.chars().count()));
     words.truncate(QUERY_TERMS);
     let quoted: Vec<String> = words.iter().map(|word| format!("\"{word}\"")).collect();
     (!quoted.is_empty()).then(|| quoted.join(" OR "))
@@ -429,8 +430,7 @@ impl BuiltinSearch {
 
     /// The texts BM25 ranks best for `text`, best first.
     fn keywords(&self, text: &str) -> rusqlite::Result<Vec<i64>> {
-        let frequency = |_: &str| 0;
-        let Some(query) = match_query(text, &frequency) else {
+        let Some(query) = match_query(text) else {
             return Ok(Vec::new());
         };
         let mut statement = self
@@ -496,5 +496,26 @@ impl Search for BuiltinSearch {
         hits.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.note.cmp(&b.note)));
         hits.truncate(limit);
         Ok(hits)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{QUERY_TERMS, match_query};
+
+    #[test]
+    fn a_long_query_keeps_its_longest_words() {
+        let short = (0..100)
+            .map(|n| format!("w{n}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let query = match_query(&format!("{short} distinctive")).unwrap();
+        assert!(query.starts_with("\"distinctive\""), "{query}");
+        assert_eq!(query.matches(" OR ").count(), QUERY_TERMS - 1);
+    }
+
+    #[test]
+    fn a_query_with_no_words_is_none() {
+        assert_eq!(match_query("a ! ?"), None);
     }
 }
