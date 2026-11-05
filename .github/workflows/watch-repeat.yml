@@ -8,27 +8,22 @@ permissions:
   contents: read
 
 jobs:
-  ab:
-    name: widened race windows
-    runs-on: windows-latest
-    timeout-minutes: 30
+  repeat:
+    name: repeat ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --package kbx --locked --test watch --no-run
       - shell: bash
-        env:
-          KBX_DIAG_WIDEN: "1"
         run: |
-          set +e +o pipefail
-          loop() {
-            ok=0; bad=0
-            for i in $(seq 1 12); do
-              if cargo test --package kbx --locked --test watch saves_that_outlast > iter.log 2>&1; then ok=$((ok+1)); else bad=$((bad+1)); grep -a -E ' left:' iter.log | head -1 | cut -c1-120; fi
-            done
-            echo "AB $1 passed=$ok failed=$bad"
-          }
-          KBX_DIAG_UNFIXED=1 loop unfixed
-          loop fixed
-          exit 0
+          for i in $(seq 1 50); do
+            cargo test --package kbx --locked --test watch -- --test-threads=1 --exact saves_that_outlast_the_window_index_the_note_once a_burst_of_saves_to_one_note_indexes_it_once 2>&1 | grep -a -E '^test '
+            echo "REPEAT $i of 50 passed"
+          done
