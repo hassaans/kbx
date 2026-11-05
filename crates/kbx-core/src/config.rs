@@ -11,6 +11,7 @@ use toml_edit::{Array, DocumentMut, InlineTable, value};
 
 use crate::graph::Graph;
 use crate::ontology::{Ontology, OntologyError};
+use crate::path::canonical_path;
 
 /// The config file's name.
 pub const CONFIG_FILE: &str = "kbx.toml";
@@ -250,7 +251,7 @@ pub struct Project {
     pub config: Config,
     /// Where it was read from.
     pub config_file: PathBuf,
-    /// The vault root, canonicalized.
+    /// The vault root, from [`canonical_path`].
     pub vault: PathBuf,
     /// The ontology file.
     pub ontology: PathBuf,
@@ -311,9 +312,7 @@ impl Project {
             toml::from_str(&text).map_err(|e| ConfigError::Toml(path.into(), e))?;
         let base = path.parent().unwrap_or(Path::new("."));
         let vault = base.join(expand_home(&config.vault));
-        let vault = vault
-            .canonicalize()
-            .map_err(|e| ConfigError::Io(vault, e))?;
+        let vault = canonical_path(&vault).map_err(|e| ConfigError::Io(vault, e))?;
         Ok(Project {
             ontology: vault.join(expand_home(&config.ontology)),
             graph: vault.join(GRAPH_FILE),

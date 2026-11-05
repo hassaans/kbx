@@ -46,7 +46,7 @@ pub use note::{
 pub use ontology::{
     ANY, Class, Direction, Judge, NONE, Ontology, OntologyError, Orientation, Relation, RelationKey,
 };
-pub use path::find_on_path;
+pub use path::{canonical_path, find_on_path};
 pub use review::{
     Accepted, Decision, Deferred, Item, JUDGE_ERROR, Queue, Rejected, ReviewError, STRIKES,
     StageReport, Synced, Unrejected, accept, cid, defer, excerpt, excerpt_of, locked_notes,

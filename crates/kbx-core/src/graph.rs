@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row};
 
+use crate::path::without_verbatim_prefix;
+
 /// The §4 schema, plus two tables it has no room for:
 ///
 /// - `blocks` holds every `^block-id` of a note, so `{id}#^{block-id}` is one
@@ -259,11 +261,7 @@ fn file_uri(path: &Path) -> String {
 /// A Windows path with `/` separators and without the `\\?\` prefix that
 /// `canonicalize` adds, which means nothing in a URI.
 fn forward_slashes(path: &str) -> String {
-    let plain = match path.strip_prefix(r"\\?\UNC\") {
-        Some(share) => format!(r"\\{share}"),
-        None => path.strip_prefix(r"\\?\").unwrap_or(path).to_string(),
-    };
-    plain.replace('\\', "/")
+    without_verbatim_prefix(path).replace('\\', "/")
 }
 
 fn uri_of(path: &str) -> String {

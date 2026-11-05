@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use kbx_core::Project;
+use kbx_core::{Project, canonical_path};
 
 const START: &str = "# >>> kbx >>>";
 const END: &str = "# <<< kbx <<<";
@@ -113,7 +113,7 @@ impl Repository {
         let (Some(root), Some(hooks)) = (lines.next(), lines.next()) else {
             return Err(format!("{} is not in a git work tree", vault.display()).into());
         };
-        let root = Path::new(root).canonicalize()?;
+        let root = canonical_path(Path::new(root))?;
         let relative = vault.strip_prefix(&root)?;
         let prefix = relative
             .components()

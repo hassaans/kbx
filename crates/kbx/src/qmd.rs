@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
-use kbx_core::{Project, find_on_path};
+use kbx_core::{Project, canonical_path, find_on_path};
 use tracing::info;
 
 const PACKAGE: &str = "@tobilu/qmd";
@@ -110,7 +110,7 @@ pub fn set_up_collections(project: &mut Project) -> Result<Vec<String>, String> 
 fn add_collection(project: &Project, name: &str) -> Result<(), String> {
     let root = &project.config.qmd.roots[name];
     let folder = project.vault.join(root);
-    let folder = folder.canonicalize().unwrap_or(folder);
+    let folder = canonical_path(&folder).unwrap_or(folder);
     let folder = folder.to_string_lossy();
     let args = ["collection", "add", &folder, "--name", name, "--mask", MASK];
     let output = run(project, &args)?;

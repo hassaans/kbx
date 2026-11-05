@@ -13,6 +13,7 @@ use tracing::{debug, warn};
 use crate::graph::Graph;
 use crate::note::{Note, ParseError, parse_note, split_frontmatter};
 use crate::ontology::{Ontology, OntologyError};
+use crate::path::{canonical_path, plain_path};
 use crate::vault::Resolver;
 use crate::writer::{reviewed, user_content};
 
@@ -214,15 +215,15 @@ pub(crate) fn select(vault: &Path, paths: &[PathBuf]) -> Result<Vec<Selected>, I
         return Ok(vec![Selected::whole_vault(vault)]);
     }
     let cwd = env::current_dir().map_err(|e| IndexError::Io(".".into(), e))?;
-    let cwd = cwd.canonicalize().unwrap_or(cwd);
+    let cwd = canonical_path(&cwd).unwrap_or(cwd);
+    // A caller's own `canonicalize` may have left the Windows prefix on this.
+    let vault = plain_path(vault);
     let mut selection = Vec::new();
     for path in paths {
         // A deleted file can't be canonicalized, and is still a valid argument.
-        let absolute = path
-            .canonicalize()
-            .unwrap_or_else(|_| normalize(&cwd.join(path)));
+        let absolute = canonical_path(path).unwrap_or_else(|_| normalize(&cwd.join(path)));
         let relative = absolute
-            .strip_prefix(vault)
+            .strip_prefix(&vault)
             .map_err(|_| IndexError::OutsideVault(path.clone()))?;
         selection.push(Selected {
             relative: slash_path(relative),
