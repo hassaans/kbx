@@ -12,8 +12,8 @@ use kbx_core::{
     Graph, IndexOptions, IndexState, JudgeConfig, Ontology, Project, index_state, index_vault,
 };
 use kbx_gen::{
-    Budget, Evaluation, QmdSearch, Run, Scope, estimate_tokens, evaluate, forget_sections,
-    generators, place_sections, store, suggest,
+    Budget, Evaluation, QmdSearch, Run, Scope, Search, SearchCache, estimate_tokens, evaluate,
+    forget_sections, generators, place_sections, store, suggest, vault_state,
 };
 use kbx_judge::{
     Availability, Judge as Backend, JudgeContext, JudgeId, Plan, Tally, backend, backends,
@@ -27,6 +27,9 @@ use crate::qmd;
 /// Pairs per judge call (§6.3). Below this, start-up and the prefix dominate
 /// what a call costs; above it, one failure loses more.
 const BATCH_SIZES: RangeInclusive<usize> = 10..=25;
+
+/// What `qmd query` found, next to the graph. See `docs/embedding-cache.md`.
+const SEARCH_CACHE: &str = "search-cache.sqlite";
 
 /// Who judges the candidates.
 #[derive(Clone, Copy, ValueEnum)]
@@ -81,17 +84,29 @@ pub fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     let roots = project.config.qmd.searched();
     let wants_knn = |names: &Vec<String>| names.iter().any(|name| name == "qmd_knn");
     let searching = options.generators.as_ref().is_none_or(wants_knn);
-    let installed = qmd::program(&project).is_file();
-    if searching
-        && installed
-        && !roots.is_empty()
-        && !read_only
-        && let Err(error) = qmd::refresh(&project)
-    {
-        eprintln!("warning: the qmd index may be out of date: {error}");
+    let usable = searching && qmd::program(&project).is_file() && !roots.is_empty();
+    let status = usable.then(|| qmd::status(&project)).flatten();
+    let mut cache = status
+        .as_ref()
+        .and_then(|status| search_cache(&project, status, read_only));
+    // What a half-built index finds shouldn't outlive this run.
+    if usable && !read_only && !refresh(&project, &graph, status.as_ref(), cache.as_ref()) {
+        cache = None;
     }
-    let search = QmdSearch::new(qmd::program(&project), project.qmd_index(), roots, &graph)?;
-    let chosen = generators(options.generators.as_deref(), Some(Box::new(search)))?;
+    let qmd_search = QmdSearch::new(
+        qmd::program(&project),
+        project.qmd_index(),
+        roots.clone(),
+        &graph,
+    )?;
+    let search: Box<dyn Search> = match cache {
+        Some(cache) => {
+            let inner = Box::new(qmd_search);
+            Box::new(cache.around(inner, &graph, &project.qmd_index(), &roots)?)
+        }
+        None => Box::new(qmd_search),
+    };
+    let chosen = generators(options.generators.as_deref(), Some(search))?;
     let scope = Scope {
         vault: &project.vault,
         ontology: &ontology,
@@ -152,6 +167,51 @@ pub fn batch_size(project: &Project, batch: Option<usize>) -> Result<usize, Box<
         return Err(format!("the batch size must be {least} to {most}, not {size}").into());
     }
     Ok(size)
+}
+
+/// The cache for what qmd reports. A vault works without one, so a failure
+/// only warns. An index named in `kbx.toml` changes without kbx, so whatever it
+/// found holds only while its counts do.
+fn search_cache(project: &Project, status: &qmd::Status, read_only: bool) -> Option<SearchCache> {
+    let path = project.graph.with_file_name(SEARCH_CACHE);
+    let source = match project.config.qmd.index {
+        Some(_) => format!("{}\n{}", status.models, status.index),
+        None => status.models.clone(),
+    };
+    if read_only {
+        return SearchCache::open_read_only(&path, &source);
+    }
+    SearchCache::open(&path, &source)
+        .inspect_err(|error| warn!("{}: {error}", path.display()))
+        .ok()
+}
+
+/// Runs `qmd update` and `qmd embed`, unless the cache knows they have nothing
+/// to do, and says whether qmd is up to date. A refresh is recorded only once
+/// it has worked, with what qmd says after it.
+fn refresh(
+    project: &Project,
+    graph: &Graph,
+    status: Option<&qmd::Status>,
+    cache: Option<&SearchCache>,
+) -> bool {
+    let stamp = |status: &qmd::Status| vault_state(graph, &status.index).ok();
+    if let (Some(cache), Some(state)) = (cache, status.and_then(stamp))
+        && cache.is_refreshed(&state)
+    {
+        return true;
+    }
+    if let Err(error) = qmd::refresh(project) {
+        eprintln!("warning: the qmd index may be out of date: {error}");
+        return false;
+    }
+    if let Some(cache) = cache
+        && let Some(state) = qmd::status(project).as_ref().and_then(stamp)
+        && let Err(error) = cache.mark_refreshed(&state)
+    {
+        warn!("the search cache: {error}");
+    }
+    true
 }
 
 /// Writes the run's candidates to `kbx.proposed`, after the judge so that they

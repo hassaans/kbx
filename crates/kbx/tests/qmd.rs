@@ -287,8 +287,8 @@ fn suggest_refreshes_the_vaults_own_index_before_searching() {
     vault.ok(&["suggest"]);
     let log = calls(&vault);
     let commands: Vec<_> = log.iter().map(|c| c.split(' ').nth(2).unwrap()).collect();
-    assert_eq!(commands[..2], ["update", "embed"], "{log:?}");
-    assert!(commands[2..].iter().all(|c| *c == "query"), "{log:?}");
+    assert_eq!(commands[..3], ["status", "update", "embed"], "{log:?}");
+    assert!(commands[3..].iter().all(|c| *c == "query"), "{log:?}");
     assert!(log[0].starts_with("--index kbx-"), "{log:?}");
 }
 
@@ -419,8 +419,8 @@ fn a_120_note_vault_starts_a_bounded_number_of_qmd_processes() {
     assert_eq!(calls_of(&vault, "query").len(), kbx_gen::MAX_SEARCHES);
     assert_eq!(
         calls(&vault).len(),
-        kbx_gen::MAX_SEARCHES + 2,
-        "plus update and embed"
+        kbx_gen::MAX_SEARCHES + 3,
+        "plus status, update and embed"
     );
     assert!(
         stderr(&output).contains("stopped at"),

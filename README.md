@@ -60,8 +60,12 @@ Each vault gets its own qmd index, with one collection per scope, so your other
 qmd collections are left alone. `qmd.roots` in `kbx.toml` says which folder each
 collection covers. `kbx suggest` brings the index up to date first, which
 downloads qmd's models (about 2 GB) the first time, then runs one search per
-note, the least linked first, at most 100 per run. Set `qmd.index` to use an index of
-your own; kbx then searches it but leaves updating it to you.
+note, the least linked first, at most 100 per run. Those searches are most of the
+run's time, so kbx keeps what they found in `.kbx/search-cache.sqlite` and repeats a
+search only when its note, or a section it found, has changed. Delete that file to
+search afresh; [docs/embedding-cache.md](docs/embedding-cache.md) has the details.
+Set `qmd.index` to use an index of your own; kbx then searches it but leaves updating
+it to you.
 
 Logs go to stderr. Set `KBX_LOG=debug` to see each file that's skipped, and pass
 `--log json` to get one JSON object per line.
