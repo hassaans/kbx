@@ -122,6 +122,32 @@ fn add_collection(project: &Project, name: &str) -> Result<(), String> {
     Err(format!("collection {name}: {}", failure(&output)))
 }
 
+/// What `qmd status` says that kbx has a use for.
+pub struct Status {
+    /// The lines naming the models, the same in qmd 1 and 2.
+    pub models: String,
+    /// The lines counting the index's files and vectors.
+    pub index: String,
+}
+
+/// `None` if qmd doesn't say which models it uses, and with no way to tell
+/// when they change, nothing it finds can be kept.
+pub fn status(project: &Project) -> Option<Status> {
+    let output = run(project, &["status"]).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines = |labels: &[&str]| {
+        let wanted = |line: &&str| labels.iter().any(|label| line.contains(label));
+        let lines: Vec<&str> = stdout.lines().filter(wanted).map(str::trim).collect();
+        lines.join("\n")
+    };
+    let models = lines(&["Embedding:", "Reranking:", "Generation:"]);
+    let index = lines(&["Total:", "Vectors:", "Pending:"]);
+    (!models.is_empty()).then_some(Status { models, index })
+}
+
 /// Brings the vault's own index up to the notes on disk: `qmd query` finds
 /// neighbours by their vectors, so a note has to be embedded to be found.
 /// Both commands work on a whole index, which is why a named index, perhaps

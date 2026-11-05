@@ -8,6 +8,7 @@
 //! `reviews`. This crate never prints.
 
 mod alias;
+mod cache;
 mod eval;
 mod knn;
 mod pipeline;
@@ -25,6 +26,7 @@ use kbx_core::{Graph, Ontology};
 use serde_json::Value;
 
 pub use alias::AliasCooccur;
+pub use cache::{CachedSearch, SearchCache, vault_state};
 pub use eval::{Evaluation, Score, evaluate, score};
 pub use kbx_core::cid;
 pub use knn::{MAX_SEARCHES, QmdKnn};

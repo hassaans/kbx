@@ -27,6 +27,10 @@ below; the project's fixed decisions override it where they differ:
   opt-in (`write.section_anchors` in `kbx.toml`), `{id}#^{block-id}` is the
   portable form, and a heading-slug path is the fallback address, written to
   frontmatter as a heading link.
+- §14's shared embedding cache question is settled in `docs/embedding-cache.md`:
+  the measured cost is `qmd query`, not embedding, so kbx caches search results
+  in `.kbx/search-cache.sqlite`. QMD keeps the vectors, and kbx doesn't read or
+  write its index. §5's process budget gains one or two `qmd status` calls.
 
 ---
 
