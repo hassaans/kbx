@@ -284,7 +284,10 @@ fn update(project: &Project, paths: Vec<PathBuf>) -> Result<bool, Box<dyn Error>
     linted.retain(|path| path.is_file());
     if !linted.is_empty() {
         let linted: Vec<PathBuf> = linted.into_iter().collect();
-        lint_project(project, LintFormat::Text, false, &linted)?;
+        // The exit code only says whether the findings include errors, and
+        // lint_project has printed them. The watch goes on; failures still
+        // return through the `?`.
+        let _ = lint_project(project, LintFormat::Text, false, &linted)?;
     }
     Ok(true)
 }
