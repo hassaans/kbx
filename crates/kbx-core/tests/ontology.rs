@@ -144,3 +144,17 @@ fn a_relation_that_fits_both_ways_keeps_the_pairs_order() {
         Some(Orientation::Forward)
     );
 }
+
+#[test]
+fn note_is_a_class_whether_or_not_the_file_declares_it() {
+    let declared = Ontology::parse(EXAMPLE).unwrap();
+    let note = "  Note:      {description: \"A note that doesn't say what it is.\"}\n";
+    assert!(EXAMPLE.contains(note));
+    let undeclared = Ontology::parse(&EXAMPLE.replace(note, "")).unwrap();
+    assert_eq!(undeclared.classes.len(), declared.classes.len());
+    assert!(undeclared.classes["Note"].requires.is_empty());
+
+    let own = EXAMPLE.replace(note, "  Note:      {description: \"Mine.\"}\n");
+    let own = Ontology::parse(&own).unwrap();
+    assert_eq!(own.classes["Note"].description, "Mine.");
+}
