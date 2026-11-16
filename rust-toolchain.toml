@@ -1,0 +1,6 @@
+# The Rust that CI, the release build and a local build in this repo all use.
+# Bump it in a pull request of its own: see docs/releasing.md.
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
