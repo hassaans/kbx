@@ -208,6 +208,9 @@ most, then by id. Ten million pairs is mostly a few broad terms each said by
 thousands of notes, and their pairs all say the same thing at a low score. The
 cap was chosen over dropping broad terms, so the notes that keep coming back to a
 project still reach the queue. Rarity still counts every note that says the term.
+The 50 are counted among pairs the run could keep: a pair that is linked,
+suppressed by rejections, at a `kbx.reviewed` note, or outside `--note` doesn't
+use one, so the same dropped pairs can't hold the others out run after run.
 
 What it costs: a note that says a broad term no more than the 50 it keeps loses
 its pair, even if the note is about the project. On the vault below, that is 45

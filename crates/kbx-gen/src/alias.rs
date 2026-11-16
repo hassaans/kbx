@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 
-use kbx_core::{Graph, split_frontmatter};
+use kbx_core::{Graph, locked_notes, ordered, split_frontmatter, suppressed_pairs};
 use serde_json::json;
 use tracing::warn;
 
@@ -62,7 +62,9 @@ struct Found<'a> {
 ///
 /// The score is the odds of a chance that grows with how telling each term is
 /// ([`Term::specificity`]) and how often it's said, so the union reads it as
-/// that chance. A term makes at most [`MAX_PAIRS_PER_TERM`] pairs.
+/// that chance. A term makes at most [`MAX_PAIRS_PER_TERM`] pairs, among
+/// those the run could keep: not suppressed, at no locked note, and touching
+/// `scope.note` if there is one.
 #[derive(Debug, Clone, Copy)]
 pub struct AliasCooccur;
 
@@ -143,6 +145,18 @@ impl Generator for AliasCooccur {
             }
         }
 
+        // What the run would drop anyway, so that it doesn't use up a term's
+        // pairs. Every note that says a term still counts towards its rarity.
+        let suppressed = suppressed_pairs(g.connection())?;
+        let locked = locked_notes(g.connection())?;
+        let keepable = |src: &str, dst: &str| {
+            src != dst
+                && scope.note.is_none_or(|id| id == src || id == dst)
+                && !locked.contains(src)
+                && !locked.contains(dst)
+                && !snapshot.linked(src, dst)
+                && !suppressed.contains(&ordered(src, dst))
+        };
         let mut found: BTreeMap<(u32, &str), Found<'_>> = BTreeMap::new();
         for (term, mut sayers) in terms.iter().zip(said) {
             let specificity = term.specificity(sayers.len(), notes.len());
@@ -159,7 +173,7 @@ impl Generator for AliasCooccur {
                         break 'sayers;
                     }
                     let id = notes[src as usize];
-                    if dst == id || snapshot.linked(id, dst) {
+                    if !keepable(id, dst) {
                         continue;
                     }
                     made += 1;

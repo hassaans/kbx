@@ -7,7 +7,9 @@ use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 
-use kbx_core::{DEFAULT_MENTION_WEIGHT, Exclusions, Graph, IndexOptions, Ontology, index_vault};
+use kbx_core::{
+    DEFAULT_MENTION_WEIGHT, Exclusions, Graph, IndexOptions, Ontology, STRIKES, index_vault,
+};
 use kbx_gen::{
     AdamicAdar, AliasCooccur, Budget, Candidate, CommonNeighbors, Generator, Hit,
     MAX_PAIRS_PER_TERM, MAX_SEARCHES, QmdKnn, Query, SchemaGap, Scope, Search, SearchError,
@@ -447,6 +449,73 @@ fn alias_cooccur_caps_the_pairs_one_term_makes_at_the_notes_saying_it_most() {
         (12..12 + MAX_PAIRS_PER_TERM as u32 - 10).collect::<Vec<_>>(),
         "ties by id"
     );
+}
+
+/// A vault where note 1's alias is said by more notes than a term may pair,
+/// three times by notes 2 to 11 and once by the rest, up to the returned last.
+fn crowded_alias(dir: &Path) -> u32 {
+    let last = MAX_PAIRS_PER_TERM as u32 + 31;
+    let mut notes = vec![(
+        1,
+        "Concept",
+        "a",
+        "aliases: [zephyr project]\n",
+        String::new(),
+    )];
+    for n in 2..=last {
+        let times = if n <= 11 { 3 } else { 1 };
+        notes.push((n, "Concept", "a", "", "The zephyr project. ".repeat(times)));
+    }
+    let notes: Vec<_> = notes
+        .iter()
+        .map(|(n, c, s, f, b)| (*n, *c, *s, *f, b.as_str()))
+        .collect();
+    write_vault(dir, &notes);
+    last
+}
+
+#[test]
+fn alias_cooccur_spends_the_cap_only_on_pairs_a_run_can_keep() {
+    let dir = TempDir::new().unwrap();
+    let last = crowded_alias(dir.path());
+    let indexed = Indexed::written(dir);
+    for n in 2..=11 {
+        indexed
+            .graph
+            .connection()
+            .execute(
+                "INSERT INTO reviews (src, dst, rel, decision, strikes)
+                 VALUES (?, ?, 'see_also', 'reject', ?)",
+                rusqlite::params![id(n), id(1), STRIKES],
+            )
+            .unwrap();
+    }
+    let pairs = indexed.run(&AliasCooccur);
+    assert_eq!(
+        pairs.len(),
+        MAX_PAIRS_PER_TERM,
+        "the suppressed ten left room"
+    );
+    assert!((2..=11).all(|n| !pairs.contains_key(&(id(n), id(1)))));
+    assert!(pairs.contains_key(&(id(last - 21), id(1))));
+}
+
+#[test]
+fn alias_cooccur_for_one_note_finds_it_beyond_the_cap() {
+    let dir = TempDir::new().unwrap();
+    let last = crowded_alias(dir.path());
+    let indexed = Indexed::written(dir);
+    let note = id(last);
+    let scope = Scope {
+        note: Some(&note),
+        ..indexed.scope()
+    };
+    let found = AliasCooccur.run(&indexed.graph, &scope).unwrap();
+    let pairs: Vec<_> = found
+        .iter()
+        .map(|c| (c.src.clone(), c.dst.clone()))
+        .collect();
+    assert_eq!(pairs, [(id(last), id(1))]);
 }
 
 /// Answers each note with `hits`, and remembers what it was asked.
