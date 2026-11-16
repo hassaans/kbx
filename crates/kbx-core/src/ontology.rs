@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use crate::infer::DEFAULT_CLASS;
+
 /// In a `domain` or `range`, matches every class.
 pub const ANY: &str = "any";
 
@@ -151,11 +153,21 @@ pub enum OntologyError {
 
 impl Ontology {
     /// Parses `ontology.yaml` and checks that everything it names exists.
+    /// [`DEFAULT_CLASS`] is a class whether or not the file declares it, so an
+    /// ontology from before it was added still covers the notes it's given to.
     pub fn parse(yaml: &str) -> Result<Ontology, OntologyError> {
-        let ontology: Ontology = serde_yaml::from_str(yaml)?;
+        let mut ontology: Ontology = serde_yaml::from_str(yaml)?;
         if ontology.version != SUPPORTED_VERSION {
             return Err(OntologyError::UnsupportedVersion(ontology.version));
         }
+        let default = Class {
+            description: "A note that doesn't say what it is.".to_string(),
+            requires: Vec::new(),
+        };
+        ontology
+            .classes
+            .entry(DEFAULT_CLASS.to_string())
+            .or_insert(default);
         ontology.check().map_err(OntologyError::Invalid)?;
         Ok(ontology)
     }

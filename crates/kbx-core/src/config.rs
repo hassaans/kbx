@@ -663,9 +663,9 @@ fn config_text(ontology: &str, scopes: &[String], exclude: &[String], search: Se
     let scopes = Value::from(scopes.to_vec());
     let exclude = Value::from(exclude.to_vec());
     let ontology = Value::from(ontology);
-    let search = match search {
-        Search::Qmd => "qmd",
-        Search::Builtin => "builtin",
+    let (search, other) = match search {
+        Search::Qmd => ("qmd", "builtin"),
+        Search::Builtin => ("builtin", "qmd"),
     };
     format!(
         r#"vault = "."
@@ -674,7 +674,7 @@ scopes = {scopes}  # top-level folders = ACL scopes
 # .gitignore patterns from the vault root; see docs/excluding.md.
 exclude = {exclude}
 ontology = {ontology}
-search = "{search}"  # or "qmd" or "builtin"
+search = "{search}"  # or "{other}"
 qmd = {{ bin = "qmd", collections = {collections}, roots = {roots} }}
 default_type = {default_type}  # the class of a note with no `type` key
 {scope_table}

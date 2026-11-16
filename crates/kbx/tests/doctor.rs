@@ -114,6 +114,26 @@ fn outside_a_vault_the_machine_checks_still_run() {
 }
 
 #[test]
+fn frontmatter_writing_is_off_by_default_and_doctor_says_notes_are_left_alone() {
+    let vault = Fixture::new();
+    let output = vault.ok(&["doctor"]);
+    assert_eq!(status(&output, "write"), "ok", "{output}");
+    let write = row(&output, "write");
+    assert!(write.contains("frontmatter off"), "{output}");
+    assert!(write.contains("kbx won't edit your notes"), "{output}");
+}
+
+#[test]
+fn frontmatter_writing_turned_on_is_shown_with_its_setting() {
+    let vault = Fixture::new().writing();
+    let output = vault.ok(&["doctor"]);
+    assert_eq!(status(&output, "write"), "ok", "{output}");
+    let write = row(&output, "write");
+    assert!(write.contains("frontmatter on"), "{output}");
+    assert!(write.contains("[write] frontmatter = true"), "{output}");
+}
+
+#[test]
 fn an_unbuilt_index_is_a_warning() {
     let vault = Fixture::new();
     let output = vault.ok(&["doctor"]);
