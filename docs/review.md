@@ -84,7 +84,8 @@ An accepted relation is an edge with origin `kbx`, and its inverse is a `derived
 edge, as for a relation in frontmatter. A `derived_only` relation behaves the same.
 
 - **`kbx index`** keeps it, through `kbx index --full` and a rebuild for a new
-  version of kbx. It lives in its own table, which only a decision changes.
+  version of kbx, such as the one the first `kbx index` after upgrading from 0.1.4
+  makes. It lives in its own table, which only a decision changes.
 - **Generators** see the pair as linked, so it isn't proposed again.
 - **`kbx lint`** counts it towards what a class `requires`.
 - **`kbx export`** emits it, and the `origin` field says where it came from.
