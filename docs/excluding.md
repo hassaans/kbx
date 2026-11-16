@@ -90,9 +90,45 @@ private.
 
 `.gitignore` does count, so a vault that keeps notes out of git that way keeps them out
 of kbx too, until `include` says otherwise. `kbx init` lists the top-level folders it
-skipped. A note inside a folder that isn't skipped goes without a word, though `kbx
-doctor` counts it; `KBX_LOG=debug` shows notes named on the command line that are passed
-over.
+skipped, and both it and `kbx doctor` name a top-level folder whose markdown is all left
+out (see [A folder with nothing read](#a-folder-with-nothing-read)). Any other note
+inside a folder that isn't skipped goes without a word, though `kbx doctor` counts it;
+`KBX_LOG=debug` shows notes named on the command line that are passed over.
+
+## Notes git tracks
+
+A file git tracks inside an ignored folder is still left out. A `.gitignore` can say
+`/*` and the notes can still be in git, because `git add -f` puts a file in past it. kbx
+goes by what the `.gitignore` files say, not by what git holds:
+
+- The rule is the same with or without a repository, and for every clone of the vault.
+  Git's index belongs to one clone, as `.git/info/exclude` does.
+- Reading tracked files without being asked would widen what an upgrade indexes, and so
+  what can be sent to a judge. That's for the vault's owner to choose, and `include` is
+  how they do.
+
+### A folder with nothing read
+
+A top-level folder that isn't excluded itself can still have every markdown file in it
+left out, for instance by its own `.gitignore` starting with `/*`. `kbx init` makes it a
+scope as usual, so both `kbx init` and `kbx doctor` say so, with how many files and why,
+and the line that brings them back:
+
+```
+left out personal: all 3027 markdown files in it are excluded (3027 ignored by personal/.gitignore); git tracks 2645 of them
+left out to read them, add `include = ["/personal/"]` to .kbx/kbx.toml
+```
+
+If the vault is in a git repository and `git` is on `PATH`, the line says how many of
+those files git tracks. That's one `git ls-files` for those folders, not one per file,
+and the line simply leaves it out without git or a repository. If an `include` is
+already set, the line to use is the whole list with the folder added. A file `exclude`
+keeps out can't come back through `include`, so for those the line names the pattern to
+take out of `exclude` instead. A folder with no markdown at all isn't named.
+
+Such a folder gets no qmd collection, as it would sit empty; see [QMD](#qmd). Once
+`include` brings a note back, `kbx doctor` reports the collection as missing and
+`kbx doctor --fix` makes it.
 
 ## When the rule changes
 
@@ -107,6 +143,8 @@ over.
 - **`kbx watch`:** an edit to `kbx.toml` or a `.gitignore` starts a whole-vault pass.
 - **`scopes`:** an excluded scope stays in `kbx.toml`, does nothing, and `kbx doctor`
   warns about it.
+- **A scope with nothing read:** it stays in `kbx.toml` too, `kbx doctor` names it, and
+  `kbx doctor --fix` removes its qmd collection.
 
 ## QMD
 

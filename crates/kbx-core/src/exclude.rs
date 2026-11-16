@@ -459,7 +459,7 @@ fn from_the_top(path: &str, is_dir: bool) -> impl Iterator<Item = (&str, bool)> 
 }
 
 /// The folders directly in `dir`, sorted. Symlinks aren't followed.
-fn visible_folders(dir: &Path) -> Vec<String> {
+pub(crate) fn visible_folders(dir: &Path) -> Vec<String> {
     visible_entries(dir, |kind| kind.is_dir())
 }
 

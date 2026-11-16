@@ -1094,3 +1094,40 @@ fn a_replacement_that_is_already_there_is_not_swapped_in() {
     );
     assert!(collections(&vault).contains(&"team-a".to_string()));
 }
+
+/// `personal/.gitignore` starts with `/*`: a scope with no note kbx reads.
+#[test]
+fn a_scope_whose_notes_are_all_excluded_gets_no_collection_until_include_brings_them_back() {
+    let vault = two_scopes("[]");
+    vault.write("personal/.gitignore", "/*\n");
+    vault.write("personal/journal/three.md", &note(3, "three"));
+
+    vault.ok(&["init", "--search", "qmd"]);
+    let added = adds(&vault).join("\n");
+    assert!(!added.contains("personal"), "{added}");
+    let scopes = config(&vault)["scopes"].clone();
+    assert_eq!(scopes.as_array().unwrap().len(), 3, "{scopes}");
+
+    let file = vault.root().join(".kbx/kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(&file, format!("include = [\"/personal/\"]\n{text}")).unwrap();
+    let printed = vault.ok(&["doctor"]);
+    assert!(printed.contains("missing personal"), "{printed}");
+}
+
+/// A collection made before its scope's notes were all excluded goes, as one
+/// for an excluded folder does.
+#[test]
+fn doctor_fix_removes_the_collection_of_a_scope_whose_notes_are_now_all_excluded() {
+    let vault = two_scopes("[]");
+    vault.ok(&["init", "--search", "qmd"]);
+    vault.write("team-a/.gitignore", "/*\n");
+
+    vault.ok(&["doctor", "--fix"]);
+
+    assert!(
+        removes(&vault).iter().any(|r| r.contains("team-a")),
+        "{:?}",
+        removes(&vault)
+    );
+}
