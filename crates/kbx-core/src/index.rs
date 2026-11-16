@@ -24,7 +24,7 @@ pub const MENTIONS: &str = "mentions";
 
 /// Bump when the same file should compile to different rows, which makes the
 /// next run rebuild.
-const PIPELINE_VERSION: &str = "4";
+const PIPELINE_VERSION: &str = "5";
 
 const FRONTMATTER: &str = "frontmatter";
 const INLINE: &str = "inline";

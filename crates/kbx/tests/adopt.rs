@@ -209,6 +209,50 @@ fn partial_path_links_become_mentions_the_structural_generators_read() {
     cid_of(&vault, CHECKLIST, "Projects/Retro Notes.md");
 }
 
+/// The inline mentions of the checklist, by source.
+fn mentions_of_checklist(vault: &Fixture) -> Vec<String> {
+    let db = database(vault);
+    let mut statement = db
+        .prepare("SELECT src FROM edges WHERE dst = ? AND rel = 'mentions' ORDER BY src")
+        .unwrap();
+    let rows = statement
+        .query_map([inferred_id(CHECKLIST)], |row| row.get::<_, String>(0))
+        .unwrap();
+    rows.map(Result::unwrap).collect()
+}
+
+#[test]
+fn an_index_from_before_partial_paths_picks_them_up_without_full() {
+    let vault = indexed();
+    let resolved = mentions_of_checklist(&vault);
+    assert_eq!(resolved.len(), 2);
+
+    // What 0.1.4 left: pipeline version 4, and both partial-path links hidden,
+    // with no edge. Nothing on disk changed, so only the version can rebuild.
+    let db = database(&vault);
+    db.execute("UPDATE meta SET v = '4' WHERE k = 'pipeline_version'", [])
+        .unwrap();
+    let hidden = db
+        .execute(
+            "UPDATE links SET dst = NULL WHERE target LIKE 'Runbooks/%'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(hidden, 2);
+    db.execute(
+        "DELETE FROM edges WHERE dst = ? AND rel = 'mentions'",
+        [inferred_id(CHECKLIST)],
+    )
+    .unwrap();
+    drop(db);
+    assert!(mentions_of_checklist(&vault).is_empty());
+
+    let out = vault.ok(&["index"]);
+
+    assert!(out.contains(", 0 hidden links"), "{out}");
+    assert_eq!(mentions_of_checklist(&vault), resolved);
+}
+
 #[test]
 fn suggest_without_a_judge_finds_candidates() {
     let vault = indexed();

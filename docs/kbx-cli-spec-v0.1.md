@@ -227,6 +227,8 @@ The run's budget is shared, so that no generator takes it all while another has 
 - What the shares leave, because a generator found fewer pairs than its share or its pairs met the per-note limit, goes to the best pairs not yet kept, from any generator, up to `per_run`.
 - Order is by combined score, then `cid`, so the same vault gives the same run. The combined score is `1 − Π(1 − squash(score))` over the generators that found the pair, so a pair two generators found scores above what either gives it alone.
 
+A run adds what it keeps to the stored candidates and leaves those it didn't find, except pairs since linked, suppressed or whose notes are gone. One exception: a run of `alias_cooccur` takes out pairs it covered and didn't keep whose `alias_cooccur` evidence predates `mentions` (0.1.4 and earlier), unless they have a verdict, a review or an acceptance held in `.kbx/` (`docs/generators.md`).
+
 `kbx suggest` prints, for each generator that ran, the pairs it found after the filters and how many the budget kept; a pair two found counts for both.
 
 | Generator | Signal | Why it finds what embeddings miss |
