@@ -118,7 +118,7 @@ one with `team-a/credentials/` gets a glob that lists the rest:
 {*.md,other/**/*.md,sub/**/*.md}
 ```
 
-Two limits follow:
+Three limits follow:
 
 - The glob is fixed when the collection is made. A new folder beside an excluded one
   isn't in it, so `kbx doctor` reports the collection until `kbx doctor --fix` makes it
@@ -128,6 +128,9 @@ Two limits follow:
 - A glob can only go around folders. A single excluded file, such as one matching
   `*.private.md`, stays in qmd's local index. Its hits come to nothing, because it has
   no note in the graph.
+- A glob has a length limit. qmd stops at 10,000 characters, and on Windows `cmd.exe`
+  stops at 8,191 for the whole command, so kbx keeps a glob to **6,000**. See
+  [Long globs](#long-globs).
 
 `include` changes the globs in three ways:
 
@@ -153,3 +156,35 @@ what's in the graph, so the next `kbx index` is all it needs.
 that collection afresh. An index named in `qmd.index` is left as it is, but kbx stops
 searching a collection of an excluded folder there. Nested folders in such an index are
 still read by qmd, and their hits come to nothing as above.
+
+### Long globs
+
+A scope with thousands of excluded folders needs a glob too long for qmd, and a collection
+with a shorter glob is worth more than none. So a glob over 6,000 characters gives way:
+
+1. It goes around excluded folders as many levels down as fit, and takes everything below
+   that level. With one level, `team-a/secrets/` is still left out, but
+   `team-a/acme/secrets/` isn't. A partly brought back folder at that level is taken whole.
+2. If even one level doesn't fit, the glob is `**/*.md`.
+
+This is the same limit as a single excluded file. What the shorter glob lets through
+reaches qmd's local index, which is a copy of its text on this machine, but it has no note
+in the graph, so its hits come to nothing and it can't reach a judge. It's still excluded
+everywhere else.
+
+`kbx init` warns about each such collection, and `kbx doctor` has a `masks` row that names
+them with how far each one reaches.
+
+### When a collection fails
+
+qmd can't change a collection's glob, or add over its name. So `kbx init` and
+`kbx doctor --fix` read the new one as `<name>-kbx-new`, and only once that has worked
+remove the old one and rename the new one. A failed add leaves the old collection as it
+was.
+
+A collection that fails doesn't stop the others. Each failure is reported at the end, and
+kbx takes back the entry qmd made for the failed add. `kbx init` still exits 0, as a vault
+works without search, but `kbx doctor --fix` exits non-zero if any fix failed. Either way,
+running `kbx doctor --fix` again retries what's left, and clears any `-kbx-new` collection
+an interrupted run left behind. If an excluded folder's collection can't be removed,
+`kbx.toml` isn't updated either, so the next run still knows about it.

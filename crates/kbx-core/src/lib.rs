@@ -35,7 +35,7 @@ pub use config::{
     InitReport, JudgeBackend, JudgeConfig, Project, Qmd, Rates, ScopeConfig, Search, WriteConfig,
     init,
 };
-pub use exclude::{DEFAULT_EXCLUDE, ExcludeError, Excluded, Exclusions};
+pub use exclude::{DEFAULT_EXCLUDE, ExcludeError, Excluded, Exclusions, MAX_MASK, NoteMask};
 pub use export::{
     DEFAULT_NAMESPACE, EdgeRow, ImportError, NOTE_NAMESPACE, Review, parse_reviews, turtle,
 };
