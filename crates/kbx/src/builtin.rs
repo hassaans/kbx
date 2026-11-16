@@ -7,10 +7,17 @@ use kbx_core::{Graph, Project};
 use kbx_gen::{
     BertEmbedder, EmbedError, Embedder, Hit, MODEL, Query, Search, SearchError, SearchIndex,
 };
-use tracing::warn;
+
+use crate::embedding::{Backlog, Coverage, Embed, Engine};
 
 /// The engine's index, next to the graph.
 const SEARCH_INDEX: &str = "search-index.sqlite";
+
+/// With Accelerate on an M2 Pro: 45,183 in about 10 minutes on the 10,000-note
+/// vault, 7,097 in 111 s on the mirror. Without it, about half this.
+const SECTIONS_PER_SECOND: f64 = 60.0;
+
+const SECTIONS: &str = "sections";
 
 /// Stands in for an index a read-only run can't build.
 struct Unbuilt;
@@ -22,41 +29,68 @@ impl Search for Unbuilt {
     }
 }
 
-/// The engine, up to date with the graph unless `read_only`. A vault without
-/// the model still gets keyword results: this only says so.
+/// The engine, up to date with the graph unless `read_only`, and how much of
+/// its index has vectors. The keywords always are; `embed` decides about the
+/// vectors. A vault without the model still gets keyword results: this only
+/// says so.
 pub fn backend(
     project: &Project,
     graph: &Graph,
     searching: bool,
     read_only: bool,
-) -> Result<Box<dyn Search>, Box<dyn Error>> {
+    embed: Embed,
+) -> Result<Engine, Box<dyn Error>> {
     let path = project.graph.with_file_name(SEARCH_INDEX);
     if read_only {
         return Ok(match SearchIndex::open_read_only(&path) {
-            Some(index) => Box::new(index.searcher(graph, None)?),
-            None => Box::new(Unbuilt),
+            Some(index) => {
+                let coverage = coverage(&index)?;
+                (Box::new(index.searcher(graph, None)?), Some(coverage))
+            }
+            None => (Box::new(Unbuilt), None),
         });
     }
     if !searching {
-        return Ok(Box::new(Unbuilt));
+        return Ok((Box::new(Unbuilt), None));
     }
     let index = SearchIndex::open(&path)?;
-    let embedder = match index.needs_embedding(graph, &MODEL.id())? {
+    index.sync(graph, &project.vault, None, &mut |_, _| {})?;
+    let before = coverage(&index)?;
+    let backlog = Backlog {
+        count: before.total - before.embedded,
+        unit: SECTIONS,
+        chunks: None,
+        seconds: (before.total - before.embedded) as f64 / SECTIONS_PER_SECOND,
+    };
+    let embedding = backlog.count > 0 && embed.waits_for(Some(backlog.seconds));
+    if backlog.count > 0 {
+        backlog.announce(embedding, "`kbx suggest --embed wait`");
+    }
+    let embedder = match embedding {
         true => load_model().map_or_else(say_keywords_only, Some),
         false => None,
     };
-    let embedder_ref = embedder
-        .as_ref()
-        .map(|model| model.as_ref() as &dyn Embedder);
-    let mut progress = Progress::new();
-    let synced = index.sync(graph, &project.vault, embedder_ref, &mut |done, total| {
-        progress.report(done, total);
-    })?;
-    progress.finish();
-    if synced.unembedded > 0 {
-        warn!("{} sections have no vector yet", synced.unembedded);
+    if let Some(model) = &embedder {
+        let mut progress = Progress::new();
+        index.sync(
+            graph,
+            &project.vault,
+            Some(model.as_ref()),
+            &mut |done, total| progress.report(done, total),
+        )?;
+        progress.finish();
     }
-    Ok(Box::new(index.searcher(graph, embedder)?))
+    let coverage = coverage(&index)?;
+    Ok((Box::new(index.searcher(graph, embedder)?), Some(coverage)))
+}
+
+fn coverage(index: &SearchIndex) -> rusqlite::Result<Coverage> {
+    let (embedded, total) = index.vectors(&MODEL.id())?;
+    Ok(Coverage {
+        embedded,
+        total,
+        unit: SECTIONS,
+    })
 }
 
 /// Empties an index that the graph has no notes for any more, since what it

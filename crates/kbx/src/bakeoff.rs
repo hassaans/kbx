@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use tokio::runtime;
 use tracing::warn;
 
+use crate::embedding::Embed;
 use crate::{builtin, qmd, suggest as suggesting};
 
 /// Where `--labels` looks by default.
@@ -746,7 +747,7 @@ pub fn prepare(options: Preparing) -> Result<ExitCode, Box<dyn Error>> {
             project.searched(&exclusions),
             &graph,
         )?),
-        SearchBackend::Builtin => builtin::backend(&project, &graph, true, true)?,
+        SearchBackend::Builtin => builtin::backend(&project, &graph, true, true, Embed::Skip)?.0,
     };
     let chosen = generators(options.generators.as_deref(), Some(search))?;
     let scope = Scope {
