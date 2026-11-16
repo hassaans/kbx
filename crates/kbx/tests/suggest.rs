@@ -351,6 +351,32 @@ fn default_budgets_hold_40_per_note_and_2000_per_run() {
     assert!(out.contains("over budget"), "{out}");
 }
 
+/// The numbers after `  <name>` in a `kbx suggest` summary.
+fn summary_row(out: &str, name: &str) -> Vec<usize> {
+    let line = out
+        .lines()
+        .find(|line| line.split_whitespace().next() == Some(name) && line.starts_with("  "))
+        .unwrap_or_else(|| panic!("no row for {name}: {out}"));
+    line.split_whitespace()
+        .skip(1)
+        .map(|n| n.parse().unwrap())
+        .collect()
+}
+
+#[test]
+fn the_summary_shows_found_and_kept_for_each_generator() {
+    let vault = crowded();
+    let out = vault.ok(&["suggest", "--generators", "common_neighbors,schema_gap"]);
+    assert!(out.contains("  generator"), "{out}");
+    let row = summary_row(&out, "common_neighbors");
+    let (found, kept) = (row[0], row[1]);
+    assert_eq!(kept, 2000, "{out}");
+    assert!(found > kept, "{out}");
+    assert_eq!(summary_row(&out, "schema_gap").len(), 2, "{out}");
+    let over = format!("{} over budget", found - kept);
+    assert!(out.contains(&over), "{out}");
+}
+
 #[test]
 fn a_failed_kbx_run_leaves_stdout_clean() {
     let vault = indexed();

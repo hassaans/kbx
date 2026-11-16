@@ -33,6 +33,13 @@ pub const EXCERPT_TOKENS: i64 = 600;
 const ITEM_TOKENS: i64 = 80;
 
 /// How many candidates a run may keep (§5).
+///
+/// The run is shared: each generator that found a pair is sure of an equal
+/// share of `per_run`, the remainder going to the first in the order they ran.
+/// A pair takes one place in the run, and counts against the share of each
+/// generator that found it, so generators that find the same pairs don't add
+/// up to more than one share. What a share leaves unused goes to the best pairs
+/// left, from any of them. See `docs/generators.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Budget {
     /// The most pairs any one note may be in, at either end.
@@ -84,8 +91,23 @@ pub struct Run {
     pub locked: usize,
     /// Pairs the [`Budget`] left out.
     pub over_budget: usize,
+    /// What each generator that ran found and kept, in the order they ran.
+    pub generators: Vec<Share>,
     /// Generators that failed, by name, and why.
     pub skipped: Vec<(String, GenError)>,
+}
+
+/// What one generator came to in a [`Run`]. A pair found by two counts for
+/// both. One that only re-ranks, such as `type_pair_prior`, counts the pairs it
+/// moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Share {
+    /// The generator.
+    pub name: String,
+    /// Its pairs that passed the filters, to compete for the budget.
+    pub found: usize,
+    /// Those the budget kept.
+    pub kept: usize,
 }
 
 /// A name in `--generators` that isn't a generator.
@@ -137,6 +159,8 @@ pub fn suggest(
 ) -> Result<Run, GenError> {
     let mut union: BTreeMap<(String, String), Merged> = BTreeMap::new();
     let mut skipped = Vec::new();
+    // Those that propose pairs, as against those that only re-rank them.
+    let mut proposers = Vec::new();
     for generator in generators {
         let name = generator.name();
         let candidates = match generator.run_within(g, scope, budget) {
@@ -146,6 +170,9 @@ pub fn suggest(
                 continue;
             }
         };
+        if !candidates.is_empty() {
+            proposers.push(name);
+        }
         for candidate in candidates {
             let touches = |id: &str| candidate.src == id || candidate.dst == id;
             if candidate.src == candidate.dst || scope.note.is_some_and(|id| !touches(id)) {
@@ -192,26 +219,99 @@ pub fn suggest(
     }
     proposals.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.cid.cmp(&b.cid)));
     let total = proposals.len();
-    let mut per_note: HashMap<String, usize> = HashMap::new();
-    let mut candidates = Vec::new();
-    for proposal in proposals {
-        let spent = |id: &str| per_note.get(id).copied().unwrap_or(0);
-        if candidates.len() < budget.per_run
-            && spent(&proposal.src) < budget.per_note
-            && spent(&proposal.dst) < budget.per_note
-        {
-            *per_note.entry(proposal.src.clone()).or_default() += 1;
-            *per_note.entry(proposal.dst.clone()).or_default() += 1;
-            candidates.push(proposal);
+    let ran: Vec<&str> = generators
+        .iter()
+        .map(|generator| generator.name())
+        .filter(|name| !skipped.iter().any(|(skipped, _)| skipped == name))
+        .collect();
+    let kept = within(&proposals, &proposers, budget);
+    let mut shares: Vec<Share> = ran
+        .iter()
+        .map(|name| Share {
+            name: name.to_string(),
+            found: 0,
+            kept: 0,
+        })
+        .collect();
+    for (proposal, &kept) in proposals.iter().zip(&kept) {
+        for share in &mut shares {
+            if proposal.generators.contains(&share.name) {
+                share.found += 1;
+                share.kept += usize::from(kept);
+            }
         }
     }
+    let candidates: Vec<Proposal> = proposals
+        .into_iter()
+        .zip(kept)
+        .filter_map(|(proposal, kept)| kept.then_some(proposal))
+        .collect();
     Ok(Run {
         over_budget: total - candidates.len(),
         candidates,
         dropped,
         locked,
+        generators: shares,
         skipped,
     })
+}
+
+/// Which of `proposals`, best first, the budget keeps.
+///
+/// The first pass gives each of `proposers` that found a pair its share,
+/// taking each pair as it comes while one of its finders has some share left
+/// and its notes have room, and charging it to all of them. The second fills
+/// what's left of the run from the best pairs the first passed over. The order
+/// is the score's, so a vault gives the same run each time.
+fn within(proposals: &[Proposal], proposers: &[&str], budget: Budget) -> Vec<bool> {
+    let finders = |proposal: &Proposal| -> Vec<usize> {
+        let found = |name: &&str| proposal.generators.iter().any(|g| g == name);
+        let indexed = proposers.iter().enumerate();
+        indexed
+            .filter(|(_, name)| found(name))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let finders: Vec<Vec<usize>> = proposals.iter().map(finders).collect();
+    let mut active = vec![false; proposers.len()];
+    finders.iter().flatten().for_each(|&i| active[i] = true);
+    let count = active.iter().filter(|&&active| active).count().max(1);
+    let mut share = vec![0; proposers.len()];
+    let indexes = (0..proposers.len()).filter(|&i| active[i]);
+    for (place, i) in indexes.enumerate() {
+        share[i] = budget.per_run / count + usize::from(place < budget.per_run % count);
+    }
+
+    let mut kept = vec![false; proposals.len()];
+    let mut total = 0;
+    let mut per_note: HashMap<&str, usize> = HashMap::new();
+    for pass in [true, false] {
+        for (at, proposal) in proposals.iter().enumerate() {
+            if total == budget.per_run {
+                break;
+            }
+            let spent = |id: &str| per_note.get(id).copied().unwrap_or(0);
+            if kept[at]
+                || spent(&proposal.src) >= budget.per_note
+                || spent(&proposal.dst) >= budget.per_note
+            {
+                continue;
+            }
+            if pass {
+                if !finders[at].iter().any(|&i| share[i] > 0) {
+                    continue;
+                }
+                for &i in &finders[at] {
+                    share[i] = share[i].saturating_sub(1);
+                }
+            }
+            kept[at] = true;
+            total += 1;
+            *per_note.entry(&proposal.src).or_default() += 1;
+            *per_note.entry(&proposal.dst).or_default() += 1;
+        }
+    }
+    kept
 }
 
 /// A pair during the union.

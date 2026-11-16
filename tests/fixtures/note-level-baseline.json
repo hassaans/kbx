@@ -854,8 +854,8 @@
       "01KBX000000000000000000011",
       "01KBX000000000000000000006",
       "[\"adamic_adar\",\"alias_cooccur\",\"common_neighbors\"]",
-      "{\"adamic_adar\":{\"score\":0.03898712452512801,\"via\":[\"01KBX000000000000000000001\"]},\"alias_cooccur\":{\"score\":1.0,\"src\":\"01KBX000000000000000000011\",\"terms\":[\"token bucket\"]},\"common_neighbors\":{\"score\":0.1,\"via\":[\"01KBX000000000000000000001\"]}}",
-      0.5625109841922191,
+      "{\"adamic_adar\":{\"score\":0.03898712452512801,\"via\":[\"01KBX000000000000000000001\"]},\"alias_cooccur\":{\"mentions\":1,\"score\":1.7012656086452222,\"src\":\"01KBX000000000000000000011\",\"terms\":[\"token bucket\"]},\"common_neighbors\":{\"score\":0.1,\"via\":[\"01KBX000000000000000000001\"]}}",
+      0.6760858951392072,
       "112ce3895f728a400fea8eb383bada6d5551cb018b602bb28468e601de5ffbc5",
       "1c67649d9f891a6360b150b51d7d30f0cfe3d3958bf6cd762c24eb8a35d302a9"
     ],
@@ -2415,6 +2415,22 @@
       "verdict": "accept"
     },
     {
+      "cid": "f536cd970116e10da2f3d2830f2d130d",
+      "dst": "01KBX000000000000000000006",
+      "dst_title": "Rate limits",
+      "generators": [
+        "adamic_adar",
+        "alias_cooccur",
+        "common_neighbors"
+      ],
+      "rationale": "Related.",
+      "rel": "see_also",
+      "score": 0.6760858951392072,
+      "src": "01KBX000000000000000000011",
+      "src_title": "Respond to an incident",
+      "verdict": "accept"
+    },
+    {
       "cid": "4760815f056368b445ffb6d7da21ac6b",
       "dst": "01KBX000000000000000000012",
       "dst_title": "Session expiry",
@@ -2492,22 +2508,6 @@
       "score": 0.5625109841922191,
       "src": "01KBX000000000000000000007",
       "src_title": "Retries",
-      "verdict": "accept"
-    },
-    {
-      "cid": "f536cd970116e10da2f3d2830f2d130d",
-      "dst": "01KBX000000000000000000006",
-      "dst_title": "Rate limits",
-      "generators": [
-        "adamic_adar",
-        "alias_cooccur",
-        "common_neighbors"
-      ],
-      "rationale": "Related.",
-      "rel": "see_also",
-      "score": 0.5625109841922191,
-      "src": "01KBX000000000000000000011",
-      "src_title": "Respond to an incident",
       "verdict": "accept"
     },
     {

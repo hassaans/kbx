@@ -308,7 +308,12 @@ fn a_fresh_vault_gets_qmd_knn_candidates() {
     let output = vault.kbx(&["suggest", "--judge", "none"]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(!stderr(&output).contains("skipped"), "{}", stderr(&output));
-    assert!(stdout(&output).contains("qmd_knn 1"), "{}", stdout(&output));
+    let out = stdout(&output);
+    let row = out
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>());
+    let found_and_kept = ["qmd_knn", "1", "1"];
+    assert!(row.into_iter().any(|row| row == found_and_kept), "{out}");
     assert_eq!(knn_pairs(&vault), [(id(1), id(2))]);
 }
 

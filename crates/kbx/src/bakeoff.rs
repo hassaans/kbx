@@ -879,6 +879,7 @@ pub fn enqueue(file: &Path) -> Result<ExitCode, Box<dyn Error>> {
         dropped: 0,
         locked: 0,
         over_budget: 0,
+        generators: Vec::new(),
         skipped: Vec::new(),
     };
     store(&graph, &run)?;
