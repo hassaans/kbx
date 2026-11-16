@@ -69,6 +69,7 @@ impl Written {
             }],
             dropped: 0,
             over_budget: 0,
+            generators: Vec::new(),
             locked: 0,
             skipped: Vec::new(),
         };
@@ -170,6 +171,7 @@ fn a_pair_has_one_row_whichever_sections_it_is_about() {
         candidates: vec![proposal],
         dropped: 0,
         over_budget: 0,
+        generators: Vec::new(),
         locked: 0,
         skipped: Vec::new(),
     };

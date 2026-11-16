@@ -27,7 +27,7 @@ use std::path::Path;
 use kbx_core::{Graph, Ontology};
 use serde_json::Value;
 
-pub use alias::AliasCooccur;
+pub use alias::{AliasCooccur, MAX_PAIRS_PER_TERM};
 pub use builtin::{BuiltinSearch, SearchIndex, SyncError, Synced};
 pub use cache::{CachedSearch, SearchCache, vault_state};
 pub use embed::{
@@ -38,8 +38,8 @@ pub use eval::{Evaluation, Score, evaluate, score};
 pub use kbx_core::cid;
 pub use knn::{MAX_SEARCHES, QmdKnn};
 pub use pipeline::{
-    Budget, EXCERPT_TOKENS, Proposal, Run, UnknownGenerator, estimate_tokens, generators, store,
-    suggest,
+    Budget, EXCERPT_TOKENS, Proposal, Run, Share, UnknownGenerator, estimate_tokens, generators,
+    store, suggest,
 };
 pub use prior::TypePairPrior;
 pub use schema::SchemaGap;

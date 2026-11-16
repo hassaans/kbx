@@ -375,6 +375,156 @@ fn budget_keeps_the_best_and_counts_both_ends_of_a_pair() {
     assert_eq!(run.over_budget, 2);
 }
 
+/// `count` pairs among notes that don't exist, so nothing links them, from
+/// `first` up, each scoring `score`.
+fn spread(first: u32, count: u32, score: f64) -> Vec<(u32, u32, f64)> {
+    (0..count)
+        .map(|n| (first + 2 * n, first + 2 * n + 1, score))
+        .collect()
+}
+
+/// `(name, found, kept)` for each generator that ran, in the order they ran.
+fn shares(run: &kbx_gen::Run) -> Vec<(&str, usize, usize)> {
+    run.generators
+        .iter()
+        .map(|g| (g.name.as_str(), g.found, g.kept))
+        .collect()
+}
+
+#[test]
+fn no_generator_takes_the_whole_budget_while_another_has_candidates() {
+    let setup = Setup::new();
+    let generators = boxed(vec![
+        Fake {
+            name: "loud",
+            pairs: spread(1000, 10, 100.0),
+        },
+        Fake {
+            name: "quiet",
+            pairs: spread(2000, 5, 0.1),
+        },
+    ]);
+    let budget = Budget {
+        per_note: 40,
+        per_run: 4,
+    };
+    let run = suggest(&setup.graph, &generators, &setup.scope(None), budget).unwrap();
+    assert_eq!(run.candidates.len(), 4);
+    assert_eq!(shares(&run), [("loud", 10, 2), ("quiet", 5, 2)]);
+    assert_eq!(run.over_budget, 11);
+    let scores: Vec<f64> = run.candidates.iter().map(|c| c.score).collect();
+    assert!(scores.is_sorted_by(|a, b| a >= b), "best first: {scores:?}");
+}
+
+#[test]
+fn a_share_one_generator_leaves_goes_to_the_others() {
+    let setup = Setup::new();
+    let generators = boxed(vec![
+        Fake {
+            name: "loud",
+            pairs: spread(1000, 10, 100.0),
+        },
+        Fake {
+            name: "quiet",
+            pairs: spread(2000, 1, 0.1),
+        },
+        Fake {
+            name: "silent",
+            pairs: Vec::new(),
+        },
+    ]);
+    let budget = Budget {
+        per_note: 40,
+        per_run: 6,
+    };
+    let run = suggest(&setup.graph, &generators, &setup.scope(None), budget).unwrap();
+    assert_eq!(run.candidates.len(), 6, "the total stays at the budget");
+    assert_eq!(
+        shares(&run),
+        [("loud", 10, 5), ("quiet", 1, 1), ("silent", 0, 0)]
+    );
+    assert_eq!(run.over_budget, 5);
+}
+
+#[test]
+fn shares_split_the_remainder_in_the_order_generators_run() {
+    let setup = Setup::new();
+    let generators = boxed(vec![
+        Fake {
+            name: "first",
+            pairs: spread(1000, 10, 0.1),
+        },
+        Fake {
+            name: "second",
+            pairs: spread(2000, 10, 100.0),
+        },
+    ]);
+    let budget = Budget {
+        per_note: 40,
+        per_run: 3,
+    };
+    let runs: Vec<_> = (0..2)
+        .map(|_| suggest(&setup.graph, &generators, &setup.scope(None), budget).unwrap())
+        .collect();
+    assert_eq!(shares(&runs[0]), [("first", 10, 2), ("second", 10, 1)]);
+    assert!(runs[0].candidates[0].src >= id(2000), "the best pair leads");
+    assert_eq!(runs[0].candidates, runs[1].candidates, "the same each time");
+}
+
+#[test]
+fn a_pair_found_by_two_generators_counts_once_and_ranks_above_one() {
+    let setup = Setup::new();
+    let generators = boxed(vec![
+        Fake {
+            name: "a",
+            pairs: vec![(1000, 1001, 1.0), (1002, 1003, 1.0)],
+        },
+        Fake {
+            name: "b",
+            pairs: vec![(1001, 1000, 1.0), (1004, 1005, 1.0)],
+        },
+    ]);
+    let budget = Budget {
+        per_note: 40,
+        per_run: 3,
+    };
+    let run = suggest(&setup.graph, &generators, &setup.scope(None), budget).unwrap();
+    assert_eq!(run.candidates.len(), 3, "the shared pair took one place");
+    assert_eq!(run.candidates[0].src, id(1000));
+    assert_eq!(run.candidates[0].generators, ["a", "b"]);
+    assert!(run.candidates[0].score > run.candidates[1].score);
+    assert_eq!(shares(&run), [("a", 2, 2), ("b", 2, 2)]);
+    assert_eq!(run.over_budget, 0);
+}
+
+#[test]
+fn generators_that_find_the_same_pairs_are_sure_of_one_share_between_them() {
+    let setup = Setup::new();
+    let generators = boxed(vec![
+        Fake {
+            name: "twin",
+            pairs: spread(1000, 10, 0.1),
+        },
+        Fake {
+            name: "other_twin",
+            pairs: spread(1000, 10, 0.1),
+        },
+        Fake {
+            name: "apart",
+            pairs: spread(2000, 10, 100.0),
+        },
+    ]);
+    let budget = Budget {
+        per_note: 40,
+        per_run: 9,
+    };
+    let run = suggest(&setup.graph, &generators, &setup.scope(None), budget).unwrap();
+    assert_eq!(
+        shares(&run),
+        [("twin", 10, 3), ("other_twin", 10, 3), ("apart", 10, 6)]
+    );
+}
+
 #[test]
 fn a_failing_generator_is_reported_and_the_rest_still_run() {
     let setup = Setup::new();

@@ -220,12 +220,21 @@ pub trait Generator {
 
 Candidates from all generators are unioned on `(src, dst)`; `generators` records every contributor and `features` their raw scores. Pairs present in `reviews` as `reject` (or already linked) are dropped before judging. Default budget: ≤ 40 candidates per note, ≤ 2,000 per run.
 
+The run's budget is shared, so that no generator takes it all while another has candidates (`docs/generators.md`):
+
+- Each generator with at least one pair left after the filters is sure of an equal share of the run, `per_run / n`, the remainder going one each to the first in the order they ran. A generator that only re-ranks, `type_pair_prior`, has no share.
+- Pairs are taken best first. A pair is kept while any generator that found it has share left and both its notes are under the per-note limit, and it counts against the share of every generator that found it. It takes one place in the run, however many found it.
+- What the shares leave, because a generator found fewer pairs than its share or its pairs met the per-note limit, goes to the best pairs not yet kept, from any generator, up to `per_run`.
+- Order is by combined score, then `cid`, so the same vault gives the same run. The combined score is `1 − Π(1 − squash(score))` over the generators that found the pair, so a pair two generators found scores above what either gives it alone.
+
+`kbx suggest` prints, for each generator that ran, the pairs it found after the filters and how many the budget kept; a pair two found counts for both.
+
 | Generator | Signal | Why it finds what embeddings miss |
 |---|---|---|
 | `common_neighbors` / `adamic_adar` | shared typed neighbours, hubs downweighted | structure, not vocabulary |
 | `two_hop_bridge` | A→X←B where A,B unlinked; weighted by relation weights | the "both depend on the same concept" case |
 | `schema_gap` | node violates `requires` (e.g. Procedure without `depends_on`); candidates = nodes whose class is in the relation's `range`, same scope, ranked by other signals | uses the ontology as a hypothesis generator |
-| `alias_cooccur` | FTS hit of another note's `title`/`aliases` in this note's body with no link | exact, free, style-independent |
+| `alias_cooccur` | FTS hit of another note's `title`/`aliases` in this note's body with no link; scored by how telling the term is (rarer in the vault, longer, naming fewer notes) and how often it's said; at most 50 pairs per term, from the notes that say it most | exact, free, style-independent |
 | `qmd_knn` | `qmd --index <vault index> query --json -n 20 -c <collection>` per note, least linked first, at most 100 per run; HyDE sub-queries optional. With `search = "builtin"`, the same loop over kbx's own index (`docs/search-engine.md`) | topical neighbours; the hit side is section-level |
 | `type_pair_prior` (optional) | learned from `reviews`: P(rel \| type(src), type(dst)) | cheap, improves over time |
 

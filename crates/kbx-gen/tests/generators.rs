@@ -9,8 +9,9 @@ use std::rc::Rc;
 
 use kbx_core::{DEFAULT_MENTION_WEIGHT, Exclusions, Graph, IndexOptions, Ontology, index_vault};
 use kbx_gen::{
-    AdamicAdar, AliasCooccur, Budget, Candidate, CommonNeighbors, Generator, Hit, MAX_SEARCHES,
-    QmdKnn, Query, SchemaGap, Scope, Search, SearchError, TwoHopBridge,
+    AdamicAdar, AliasCooccur, Budget, Candidate, CommonNeighbors, Generator, Hit,
+    MAX_PAIRS_PER_TERM, MAX_SEARCHES, QmdKnn, Query, SchemaGap, Scope, Search, SearchError,
+    TwoHopBridge,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -296,7 +297,7 @@ fn alias_cooccur_finds_an_alias_in_a_body_without_a_link() {
     let indexed = Indexed::fixture();
     let pairs = indexed.run(&AliasCooccur);
     let candidate = &pairs[&(id(11), id(6))];
-    assert_eq!(candidate.score, 1.0);
+    assert!(candidate.score > 0.0);
     assert_eq!(candidate.features["terms"], json!(["token bucket"]));
     assert_eq!(candidate.features["src"], json!(id(11)));
     assert_no_linked_pairs(&indexed, &pairs);
@@ -325,7 +326,127 @@ fn alias_cooccur_matches_whole_words_in_any_case_outside_frontmatter() {
     let pairs = Indexed::at(dir.path()).run(&AliasCooccur);
     let found: Vec<_> = pairs.keys().cloned().collect();
     assert_eq!(found, [(id(2), id(1))]);
-    assert_eq!(pairs[&(id(2), id(1))].score, 2.0);
+    assert_eq!(pairs[&(id(2), id(1))].features["mentions"], 2);
+}
+
+/// What the union makes of an `alias_cooccur` score: the chance it gives.
+fn chance(candidate: &Candidate) -> f64 {
+    candidate.score / (1.0 + candidate.score)
+}
+
+#[test]
+fn alias_cooccur_scores_a_term_few_notes_mention_above_one_many_do() {
+    let dir = TempDir::new().unwrap();
+    let mut notes = vec![
+        (
+            1,
+            "Concept",
+            "a",
+            "aliases: [zephyr project]\n",
+            String::new(),
+        ),
+        (
+            2,
+            "Concept",
+            "a",
+            "aliases: [quartz ledger]\n",
+            String::new(),
+        ),
+        (
+            3,
+            "Concept",
+            "a",
+            "",
+            "The zephyr project keeps a quartz ledger.".into(),
+        ),
+    ];
+    for n in 4..=13 {
+        notes.push((n, "Concept", "a", "", "More on the zephyr project.".into()));
+    }
+    let notes: Vec<_> = notes
+        .iter()
+        .map(|(n, c, s, f, b)| (*n, *c, *s, *f, b.as_str()))
+        .collect();
+    write_vault(dir.path(), &notes);
+    let pairs = Indexed::written(dir).run(&AliasCooccur);
+    let (narrow, broad) = (&pairs[&(id(3), id(2))], &pairs[&(id(3), id(1))]);
+    assert!(chance(narrow) > chance(broad), "{narrow:?} {broad:?}");
+    assert!(chance(narrow) < 1.0);
+}
+
+#[test]
+fn alias_cooccur_scores_a_long_or_multi_word_term_above_a_short_word() {
+    let dir = TempDir::new().unwrap();
+    write_vault(
+        dir.path(),
+        &[
+            (1, "Concept", "a", "aliases: [ark]\n", ""),
+            (2, "Concept", "a", "aliases: [harbor ledger]\n", ""),
+            (3, "Concept", "a", "", "The ark and the harbor ledger."),
+            (4, "Concept", "a", "", "Nothing here."),
+            (5, "Concept", "a", "", "Nothing here either."),
+        ],
+    );
+    let pairs = Indexed::written(dir).run(&AliasCooccur);
+    let (long, short) = (&pairs[&(id(3), id(2))], &pairs[&(id(3), id(1))]);
+    assert!(chance(long) > chance(short), "{long:?} {short:?}");
+}
+
+#[test]
+fn alias_cooccur_scores_more_mentions_higher() {
+    let dir = TempDir::new().unwrap();
+    write_vault(
+        dir.path(),
+        &[
+            (1, "Concept", "a", "aliases: [harbor ledger]\n", ""),
+            (
+                2,
+                "Concept",
+                "a",
+                "",
+                "The harbor ledger, and the harbor ledger again.",
+            ),
+            (3, "Concept", "a", "", "The harbor ledger."),
+            (4, "Concept", "a", "", "Nothing here."),
+        ],
+    );
+    let pairs = Indexed::written(dir).run(&AliasCooccur);
+    assert!(chance(&pairs[&(id(2), id(1))]) > chance(&pairs[&(id(3), id(1))]));
+}
+
+#[test]
+fn alias_cooccur_caps_the_pairs_one_term_makes_at_the_notes_saying_it_most() {
+    let dir = TempDir::new().unwrap();
+    let last = MAX_PAIRS_PER_TERM as u32 + 31;
+    let mut notes = vec![(
+        1,
+        "Concept",
+        "a",
+        "aliases: [zephyr project]\n",
+        String::new(),
+    )];
+    for n in 2..=last {
+        let times = if n <= 11 { 3 } else { 1 };
+        notes.push((n, "Concept", "a", "", "The zephyr project. ".repeat(times)));
+    }
+    let notes: Vec<_> = notes
+        .iter()
+        .map(|(n, c, s, f, b)| (*n, *c, *s, *f, b.as_str()))
+        .collect();
+    write_vault(dir.path(), &notes);
+    let pairs = Indexed::written(dir).run(&AliasCooccur);
+    assert_eq!(pairs.len(), MAX_PAIRS_PER_TERM);
+    for n in 2..=11 {
+        assert!(pairs.contains_key(&(id(n), id(1))), "…{n} says it most");
+    }
+    let kept: Vec<u32> = (12..=last)
+        .filter(|&n| pairs.contains_key(&(id(n), id(1))))
+        .collect();
+    assert_eq!(
+        kept,
+        (12..12 + MAX_PAIRS_PER_TERM as u32 - 10).collect::<Vec<_>>(),
+        "ties by id"
+    );
 }
 
 /// Answers each note with `hits`, and remembers what it was asked.

@@ -1,4 +1,4 @@
-# Structural generators and inline links
+# Generators: structure, inline links, the budget and `alias_cooccur`
 
 `common_neighbors`, `adamic_adar` and `two_hop_bridge` read typed relations and
 inline `[[links]]`. An inline link counts for less, and a typed pair scores
@@ -133,3 +133,146 @@ Most of the 2 GiB is `schema_gap` and the typed pairs, and it was there before.
 - **No precision.** No pair here has been reviewed, so `--eval` reports what's
   proposed and nothing about how many are right. Once a real vault has reviews,
   `--eval` at different weights is how to tune the default.
+
+## The budget is shared
+
+The second `~/HQ` run (`docs/e2e-hq.md`) kept 2,000 candidates, every one from
+`alias_cooccur`, and dropped 10,424,689 over budget. One list, ranked by score,
+lets whichever generator scores highest take it all. The budget is now shared:
+
+- **Each generator with a pair is sure of a share.** A generator that has at
+  least one pair left after the linked, rejected and locked filters gets
+  `per_run / n` of the run, with the remainder one each to the first in the
+  order they ran. `type_pair_prior` only re-ranks, so it has no share.
+- **A pair counts once.** It takes one place in the run however many found it,
+  and it counts against the share of each generator that found it.
+  `common_neighbors`, `adamic_adar` and `two_hop_bridge` find many of the same
+  pairs, and this keeps the three of them from having three shares' worth
+  between them.
+- **Unused shares go to the others.** A generator that finds fewer pairs than
+  its share, or whose pairs hit the per-note limit, leaves the rest of the run to
+  the best pairs not yet kept, from any generator. The total stays at `per_run`.
+- **A pair found by two ranks above what either gives it.** The combined score
+  is `1 − Π(1 − squash(score))`, as before. A pair two generators found isn't
+  put above every pair one found: `common_neighbors` and `adamic_adar` find the
+  same pairs by construction, and that rule would hand them the top of the queue.
+- **The same vault gives the same run.** Pairs are taken by combined score,
+  then `cid`.
+
+There's no setting for this in `kbx.toml`: equal shares, with what's unused passed
+on, needs none. `--budget` still sets `per_run`.
+
+`kbx suggest` shows what each generator found and kept. "Found" is the pairs
+that passed the filters to compete for the budget; a pair two generators found
+counts for both, so the column doesn't add up to the total. `kbx suggest`
+prints no JSON, so the text summary is the only place this appears.
+
+```
+2000 candidates
+  generator             found    kept
+  schema_gap                0       0
+  alias_cooccur          2481     500
+  common_neighbors       3613    1500
+  adamic_adar            3613    1500
+  two_hop_bridge         3613    1500
+dropped 0 linked or rejected, 4094 over budget
+```
+
+## `alias_cooccur`'s score
+
+It used to score a pair by how many times the body said the term, which the union
+put at 0.5 for one mention and close to 1.0 for a few. A one-word project name
+said four times in passing outranked a two-word name said once in a note about
+it, and a title such as "Overview", shared by five notes, made five pairs from
+every note that used the word.
+
+Now each term (a title or alias, by its words) has a **specificity** from 0 to
+1, the product of:
+
+- **Rarity:** `ln((N + 1) / (df + 1)) / ln(N + 1)`, where `N` is the notes in
+  the index and `df` the notes whose body says the term. A term said by one note
+  in 10,000 scores about 0.92; one said by a fifth of them, 0.17.
+- **Length:** `(characters + 4 × (words − 1)) / 16`, up to 1, counting the
+  spaces. "Ark" is 0.19, "kubernetes" 0.63, "token bucket" 1.
+- **One over the notes it names.** A title that five notes share says a fifth as
+  much about each of them.
+
+A pair's chance is `1 − Π(1 − specificity × (1 − 0.2^mentions))` over the terms
+naming the target that the source says: one mention of a fully specific term is
+0.8, two 0.96. The generator reports the odds, `chance / (1 − chance)`, as its
+raw score, so the union's `squash` turns it back into that chance. The evidence
+gains `mentions`, the times the terms were said; `terms` and `src` are unchanged.
+
+**At most 50 pairs per term** (`MAX_PAIRS_PER_TERM`), from the notes that say it
+most, then by id. Ten million pairs is mostly a few broad terms each said by
+thousands of notes, and their pairs all say the same thing at a low score. The
+cap was chosen over dropping broad terms, so the notes that keep coming back to a
+project still reach the queue. Rarity still counts every note that says the term.
+
+What it costs: a note that says a broad term no more than the 50 it keeps loses
+its pair, even if the note is about the project. On the vault below, that is 45
+true pairs, the notes about each of the three projects, which say the name three
+times against passing notes that say it up to four.
+
+## Measurements
+
+`tools/gen-alias-vault.py` writes a vault with known truth, and labels for
+`kbx import reviews`:
+
+- **Narrow:** one note in 20 is a topic with a two-word alias, such as "quartz
+  ledger", said one to three times by two to six notes about it, which share a
+  `part_of` group. Those pairs are true.
+- **Broad:** projects named Atlas, Orion and Nova, said in passing one to four
+  times by 20%, 8% and 3% of notes (false), and three times each by 15 notes about
+  them (true).
+- **Common titles:** five notes each titled Overview, Summary, Status, Planning,
+  Meeting and Update, whose words 60% of bodies use up to three times (false).
+
+Before is `13c9a50`, after is this change. Each run is
+`kbx suggest --judge none` on an emptied `candidates` table, with no `qmd_knn`.
+"Top 100" is the kept pairs by stored score.
+
+**10,000 notes, alias_cooccur alone:**
+
+| | Before | After |
+|---|---|---|
+| Found, over budget | 49,712 | 2,481 |
+| Kept | 2,000 | 2,000 |
+| True among kept | 699 | 2,000 |
+| True in top 100 | 0 | 100 |
+| Top 100 scores | 0.8000 to 0.9375, 6 distinct | 0.8455 to 0.8737, 2 distinct |
+
+Before, the top 100 are all passing mentions said four times. After, they are
+all narrow aliases. The narrow pairs have similar `df` and length here, so
+the top scores are close together; the spread is between kinds of term, not
+within them.
+
+**10,000 notes, all five generators:**
+
+| Generator | Found before | Kept before | Found after | Kept after |
+|---|---|---|---|---|
+| `schema_gap` | 0 | 0 | 0 | 0 |
+| `alias_cooccur` | 49,712 | 11 | 2,481 | 500 |
+| `common_neighbors` | 3,613 | 1,989 | 3,613 | 1,500 |
+| `adamic_adar` | 3,613 | 1,989 | 3,613 | 1,500 |
+| `two_hop_bridge` | 3,613 | 1,989 | 3,613 | 1,500 |
+| Over budget | | 51,325 | | 4,094 |
+| True in top 100 | | 91 | | 100 |
+| True among kept | | 1,989 | | 2,000 |
+
+Before, the 11 `alias_cooccur` pairs that got in scored above the structural
+pairs, and all 11 were false. After, it keeps its 500 and the structural group
+keeps the rest, ranked above it by score.
+
+**`kbx suggest --eval`, labels imported:**
+
+| Vault | Generator | Proposed | Hits | Precision | Recall |
+|---|---|---|---|---|---|
+| 10,000 notes, before | `alias_cooccur` | 49,712 | 2,076 | 0.04 | 0.36 |
+| 10,000 notes, after | `alias_cooccur` | 2,481 | 2,031 | 0.82 | 0.36 |
+| fixture, before and after | `alias_cooccur` | 2 | 1 | 1.00 | 0.33 |
+
+The structural generators are unchanged. The fixture vault and its 7 labels in
+`tests/fixtures/bakeoff/synthetic-labels.jsonl` are the only labelled pairs in
+the repo; they give the same numbers before and after, as the fixture has one
+alias pair. `tests/fixtures/bakeoff/pairs.jsonl` has no labels yet.

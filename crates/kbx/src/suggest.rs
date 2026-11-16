@@ -1,6 +1,5 @@
 //! `kbx suggest`: run the generators and store what they find.
 
-use std::collections::BTreeMap;
 use std::env;
 use std::error::Error;
 use std::fs;
@@ -605,13 +604,21 @@ fn print_tally(id: JudgeId, model: &str, tally: &Tally, reported: f64, budget_us
     }
 }
 
+/// Found and kept by each generator that ran. A pair two found counts for both.
 fn print_counts(run: &Run) {
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for name in run.candidates.iter().flat_map(|c| &c.generators) {
-        *counts.entry(name).or_default() += 1;
-    }
-    for (name, count) in counts {
-        println!("  {name} {count}");
+    if !run.generators.is_empty() {
+        let width = run
+            .generators
+            .iter()
+            .map(|g| g.name.len())
+            .fold(9, usize::max);
+        println!("  {:<width$}  {:>9}  {:>6}", "generator", "found", "kept");
+        for share in &run.generators {
+            println!(
+                "  {:<width$}  {:>9}  {:>6}",
+                share.name, share.found, share.kept
+            );
+        }
     }
     println!(
         "dropped {} linked or rejected, {} over budget",
