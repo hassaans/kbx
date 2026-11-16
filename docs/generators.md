@@ -276,3 +276,29 @@ The structural generators are unchanged. The fixture vault and its 7 labels in
 `tests/fixtures/bakeoff/synthetic-labels.jsonl` are the only labelled pairs in
 the repo; they give the same numbers before and after, as the fixture has one
 alias pair. `tests/fixtures/bakeoff/pairs.jsonl` has no labels yet.
+
+**Cost at 80,000 notes,** `--generators alias_cooccur`, on this machine:
+
+| Vault | Over budget before | After | Wall before | After | Peak before | After |
+|---|---|---|---|---|---|---|
+| `gen-alias-vault.py --notes 80000` | 387,202 | 2,449 | 18.9 s | 2.9 s | 890 MiB | 97 MiB |
+| `gen-vault.py`, 80,000 files, 64,000 indexed | 0 | 0 | 57 to 75 s | 48 s | 215 to 220 MiB | 237 MiB |
+
+On the alias vault, true pairs among the 2,000 kept go from 694 to 2,000, and in
+the top 100 from 0 to 100. The pairs over budget were being built, with their
+evidence, and thrown away; now a term stops at 50. On `gen-vault.py`'s vault
+`alias_cooccur` finds nothing either way, as its aliases end in a number no body
+says, and the time is reading 64,000 bodies. The 22 MiB more is the terms held by
+words. A run of all five generators there didn't finish in 30 minutes before this
+change, and `schema_gap` and the structural generators, which this doesn't touch,
+are most of that, so it isn't in the table.
+
+## Limits of this evidence
+
+- **Synthetic labels.** The truth is what the generator wrote, and it was written
+  to have broad and narrow terms. A real vault's terms sit between, and the next
+  `~/HQ` run is the check.
+- **The top-100 spread is narrow.** Every top pair here is a narrow alias said
+  three times, so the top 100 hold two distinct scores. What the score separates
+  is kinds of term: the broad and common ones fall below 0.5.
+- **No `qmd_knn`.** It competes for the same budget and gets its own share.

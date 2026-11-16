@@ -27,10 +27,12 @@ const EXTRA_WORD_CHARS: f64 = 4.0;
 const MENTION_MISS: f64 = 0.2;
 
 /// A title or alias to look for, by its words, and the notes it names, each
-/// with the ways it's written there.
+/// with the ways it's written there, as `(id, text)` sorted.
 struct Term<'a> {
     words: Vec<String>,
-    owners: BTreeMap<&'a str, BTreeSet<&'a str>>,
+    owners: Vec<(&'a str, &'a str)>,
+    /// How many notes it names.
+    named: usize,
 }
 
 impl Term<'_> {
@@ -43,7 +45,7 @@ impl Term<'_> {
         let chars = self.words.iter().map(|w| w.chars().count()).sum::<usize>();
         let extra = self.words.len().saturating_sub(1) as f64;
         let length = (chars as f64 + extra * (1.0 + EXTRA_WORD_CHARS)) / FULL_LENGTH_CHARS;
-        (rarity.max(0.0) * length.min(1.0)) / self.owners.len() as f64
+        (rarity.max(0.0) * length.min(1.0)) / self.named as f64
     }
 }
 
@@ -77,10 +79,7 @@ impl Generator for AliasCooccur {
 
         let titles = snapshot.notes.iter().map(|(id, n)| (&**id, &*n.title));
         let names = aliases.iter().map(|(id, alias)| (&**id, &**alias));
-        let mut terms: Vec<Term<'_>> = Vec::new();
-        let mut known: HashMap<Vec<String>, usize> = HashMap::new();
-        // By first word, so a body is read once however many terms there are.
-        let mut by_first: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut named: HashMap<Vec<String>, Vec<(&str, &str)>> = HashMap::new();
         for (id, text) in titles.chain(names) {
             let words = words(text);
             let long_enough = words.len() > 1
@@ -90,18 +89,27 @@ impl Generator for AliasCooccur {
             if !long_enough {
                 continue;
             }
-            let at = *known.entry(words.clone()).or_insert_with(|| {
-                by_first
-                    .entry(words[0].clone())
-                    .or_default()
-                    .push(terms.len());
-                terms.push(Term {
+            named.entry(words).or_default().push((id, text));
+        }
+        // In order, so that a pair's chance adds up the same way each run.
+        let mut terms: Vec<Term<'_>> = named
+            .into_iter()
+            .map(|(words, mut owners)| {
+                owners.sort_unstable();
+                owners.dedup();
+                let named = owners.chunk_by(|a, b| a.0 == b.0).count();
+                Term {
                     words,
-                    owners: BTreeMap::new(),
-                });
-                terms.len() - 1
-            });
-            terms[at].owners.entry(id).or_default().insert(text);
+                    owners,
+                    named,
+                }
+            })
+            .collect();
+        terms.sort_unstable_by(|a, b| a.words.cmp(&b.words));
+        // By first word, so a body is read once however many terms there are.
+        let mut by_first: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (at, term) in terms.iter().enumerate() {
+            by_first.entry(&term.words[0]).or_default().push(at);
         }
 
         // For each term, the notes that say it and how often.
@@ -124,7 +132,7 @@ impl Generator for AliasCooccur {
             let body = words(body);
             let mut counts: BTreeMap<usize, u32> = BTreeMap::new();
             for (start, word) in body.iter().enumerate() {
-                for &term in by_first.get(word).into_iter().flatten() {
+                for &term in by_first.get(word.as_str()).into_iter().flatten() {
                     if body[start..].starts_with(&terms[term].words) {
                         *counts.entry(term).or_default() += 1;
                     }
@@ -145,7 +153,8 @@ impl Generator for AliasCooccur {
             sayers.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
             let mut made = 0;
             'sayers: for (src, count) in sayers {
-                for (&dst, texts) in &term.owners {
+                for owner in term.owners.chunk_by(|a, b| a.0 == b.0) {
+                    let dst = owner[0].0;
                     if made == MAX_PAIRS_PER_TERM {
                         break 'sayers;
                     }
@@ -162,7 +171,7 @@ impl Generator for AliasCooccur {
                     let telling = 1.0 - MENTION_MISS.powi(count.min(64) as i32);
                     pair.miss *= 1.0 - specificity * telling;
                     pair.mentions += count;
-                    pair.terms.extend(texts);
+                    pair.terms.extend(owner.iter().map(|(_, text)| text));
                 }
             }
         }
