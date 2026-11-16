@@ -10,7 +10,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
-use crate::exclude::{ExcludeError, Exclusions};
+use crate::exclude::{ExcludeError, Excluded, Exclusions, visible_folders};
 use crate::graph::Graph;
 use crate::infer::TypeDefaults;
 use crate::note::{Cause, Note, parse_note_with, split_frontmatter};
@@ -455,6 +455,114 @@ fn count_ignored(
         } else if kind.is_file() && is_note_path(&path) && ignored {
             counts.removed += 1;
             counts.restored += usize::from(exclusions.includes(&path, false));
+        }
+    }
+}
+
+/// A top-level folder that isn't excluded itself, yet holds markdown and no
+/// note kbx reads: `kbx init` makes a scope of it, and nothing says it's empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmptiedFolder {
+    pub folder: String,
+    /// Its markdown files outside hidden folders, from the vault root.
+    pub files: Vec<String>,
+    /// Why they're left out, with how many each, the commonest first.
+    pub reasons: Vec<(Excluded, usize)>,
+    /// Some that `exclude` keeps out are ignored by a `.gitignore` too, which
+    /// `exclude` is checked before: taking them out of `exclude` isn't enough.
+    pub ignored_beneath: bool,
+}
+
+/// The [`EmptiedFolder`]s of `vault`, by name.
+pub fn emptied_folders(vault: &Path, exclusions: &Exclusions) -> Vec<EmptiedFolder> {
+    let folders = visible_folders(vault).into_iter();
+    let folders = folders.filter(|folder| exclusions.why(folder, true).is_none());
+    folders
+        .filter_map(|folder| emptied_folder(vault, exclusions, &folder))
+        .collect()
+}
+
+/// `folder` as an [`EmptiedFolder`], if it is one. A folder with a note kbx
+/// reads costs only the walk to that note.
+pub fn emptied_folder(
+    vault: &Path,
+    exclusions: &Exclusions,
+    folder: &str,
+) -> Option<EmptiedFolder> {
+    if reads_a_note(vault, folder, exclusions) {
+        return None;
+    }
+    let mut found = Vec::new();
+    excluded_in(vault, folder, None, exclusions, &mut found);
+    if found.is_empty() {
+        return None;
+    }
+    let mut reasons: Vec<(Excluded, usize)> = Vec::new();
+    for (_, why) in &found {
+        match reasons.iter_mut().find(|(seen, _)| seen == why) {
+            Some((_, count)) => *count += 1,
+            None => reasons.push((why.clone(), 1)),
+        }
+    }
+    reasons.sort_by_key(|(why, count)| (usize::MAX - count, why.to_string()));
+    let ignored_beneath = found.iter().any(|(path, why)| {
+        matches!(why, Excluded::Listed(_)) && exclusions.ignored_beneath(path, false)
+    });
+    Some(EmptiedFolder {
+        folder: folder.to_string(),
+        files: found.into_iter().map(|(path, _)| path).collect(),
+        reasons,
+        ignored_beneath,
+    })
+}
+
+/// Whether [`walk`] would find a note under `folder`, stopping at the first.
+fn reads_a_note(vault: &Path, folder: &str, exclusions: &Exclusions) -> bool {
+    let Ok(entries) = fs::read_dir(vault.join(folder)) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = format!("{folder}/{}", entry.file_name().to_string_lossy());
+        let found = match entry.file_type() {
+            Ok(kind) if kind.is_dir() => {
+                exclusions.entry(&path, true).is_none() && reads_a_note(vault, &path, exclusions)
+            }
+            Ok(kind) => {
+                kind.is_file() && is_note_path(&path) && exclusions.entry(&path, false).is_none()
+            }
+            Err(_) => false,
+        };
+        if found {
+            return true;
+        }
+    }
+    false
+}
+
+/// Collects the markdown under `folder` outside hidden folders that kbx leaves
+/// out, with why. `why` is the folder's own reason, which goes for all of it.
+fn excluded_in(
+    vault: &Path,
+    folder: &str,
+    why: Option<&Excluded>,
+    exclusions: &Exclusions,
+    found: &mut Vec<(String, Excluded)>,
+) {
+    let Ok(entries) = fs::read_dir(vault.join(folder)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = format!("{folder}/{name}");
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() && !name.starts_with('.') {
+            let why = why.cloned().or_else(|| exclusions.entry(&path, true));
+            excluded_in(vault, &path, why.as_ref(), exclusions, found);
+        } else if kind.is_file() && is_note_path(&path) {
+            let why = why.cloned().or_else(|| exclusions.entry(&path, false));
+            found.extend(why.map(|why| (path, why)));
         }
     }
 }

@@ -110,7 +110,9 @@ frontmatter = true
 Then `kbx accept` and `a` in `kbx review` write the relation and its inverse to
 frontmatter, and [`kbx suggest --stage`, `kbx sync-stage`](docs/staging.md) and the
 `kbx.reviewed` lock work. Without the setting the staging commands refuse and say
-so. See [the frontmatter writer](docs/frontmatter-writer.md).
+so. See [the frontmatter writer](docs/frontmatter-writer.md). `kbx doctor` has a
+`write` row that says whether the setting is on, so you can check that kbx won't
+edit your notes without reading `kbx.toml`.
 
 Relations you accepted before turning it on stay in `.kbx/` until you run
 `kbx apply`, which writes them the same way. `kbx apply --dry-run` prints the diff
