@@ -13,6 +13,7 @@ use toml_edit::{Array, DocumentMut, InlineTable, Key, value};
 
 use crate::exclude::{DEFAULT_EXCLUDE, ExcludeError, Excluded, Exclusions};
 use crate::graph::Graph;
+use crate::index::emptied_folder;
 use crate::infer::{DEFAULT_CLASS, TypeDefaults};
 use crate::ontology::{Ontology, OntologyError};
 use crate::path::canonical_path;
@@ -486,14 +487,24 @@ impl Project {
     }
 
     /// The QMD settings once every scope has a collection, as has a folder
-    /// `include` brings notes back from, and nothing excluded has one. With no
-    /// scopes there's one collection for the vault, which reaches them already.
+    /// `include` brings notes back from, and nothing excluded has one. Nor has
+    /// a folder whose markdown is all excluded, which would sit empty: it gets
+    /// one once `include` brings a note back. A folder with no markdown yet
+    /// keeps its collection, ready for the notes written there. With no scopes
+    /// there's one collection for the vault, which reaches them already.
     pub fn planned_qmd(&self) -> Result<Qmd, ConfigError> {
         let exclusions = self.exclusions()?;
-        let allowed = |folder: &String| exclusions.why(folder, true).is_none();
+        let roots = self.config.qmd.roots.values();
+        let emptied: Vec<&String> = (self.config.scopes.iter().chain(roots))
+            .filter(|folder| *folder != ".")
+            .filter(|folder| emptied_folder(&self.vault, &exclusions, folder).is_some())
+            .collect();
+        let allowed =
+            |folder: &String| exclusions.why(folder, true).is_none() && !emptied.contains(&folder);
         let mut scopes = self.config.scopes.clone();
         scopes.retain(allowed);
-        if !scopes.is_empty() {
+        let scoped = !self.config.scopes.is_empty();
+        if scoped {
             let restored = exclusions.restored_folders().into_iter();
             let restored: Vec<String> = restored.filter(|f| !scopes.contains(f)).collect();
             scopes.extend(restored);
@@ -503,6 +514,14 @@ impl Project {
         qmd.collections
             .retain(|name| roots.get(name).is_none_or(allowed));
         qmd.roots.retain(|_, root| allowed(root));
+        // Scopes that are all ruled out leave a vault with scopes, not one
+        // without: a collection for its root would read them twice once back.
+        if scoped && scopes.is_empty() {
+            qmd.roots.retain(|_, root| root != ".");
+            let roots = &qmd.roots;
+            qmd.collections.retain(|name| roots.contains_key(name));
+            return Ok(qmd);
+        }
         Ok(qmd.with_scopes(&scopes))
     }
 

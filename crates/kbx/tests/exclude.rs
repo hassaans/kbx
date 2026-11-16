@@ -493,3 +493,160 @@ fn doctor_does_not_call_a_partly_included_scope_excluded() {
 
     assert!(!printed.contains("scope personal"), "{printed}");
 }
+
+/// A vault where `personal/.gitignore` starts with `/*`, so `personal` is a
+/// scope with none of its notes read. Notes 1 to 4, the hidden one aside.
+fn with_emptied_folder() -> Fixture {
+    let vault = bare();
+    vault.write("a/one.md", &note(1, "One"));
+    vault.write("personal/.gitignore", "/*\n");
+    vault.write("personal/two.md", &note(2, "Two"));
+    vault.write("personal/journal/three.md", &note(3, "Three"));
+    vault.write("personal/journal/four.md", &note(4, "Four"));
+    vault.write("personal/.trash/five.md", &note(5, "Five"));
+    vault
+}
+
+fn left_out_rows(printed: &str) -> String {
+    let rows = printed.lines().filter(|line| line.starts_with("left out"));
+    rows.collect::<Vec<_>>().join("\n")
+}
+
+/// Puts the real `git` on the vault's `PATH`.
+#[cfg(unix)]
+fn with_git(vault: Fixture) -> Fixture {
+    let paths = std::env::var_os("PATH").unwrap();
+    let git = std::env::split_paths(&paths).map(|dir| dir.join("git"));
+    let git = git
+        .into_iter()
+        .find(|git| git.is_file())
+        .expect("git on PATH");
+    vault
+        .path
+        .tool("git", &format!("exec '{}' \"$@\"", git.display()));
+    vault
+}
+
+#[test]
+fn init_says_when_every_note_in_a_folder_is_excluded_and_how_to_bring_them_back() {
+    let vault = with_emptied_folder();
+
+    let printed = vault.ok(&["init"]);
+
+    assert_eq!(list(&config(&vault)["scopes"]), ["a", "personal"]);
+    for words in [
+        "left out personal: all 3 markdown files in it are excluded",
+        "3 ignored by personal/.gitignore",
+        r#"add `include = ["/personal/"]` to .kbx/kbx.toml"#,
+    ] {
+        assert!(printed.contains(words), "no {words:?} in:\n{printed}");
+    }
+    assert!(!printed.contains("left out a"), "{printed}");
+    assert!(!printed.contains("git tracks"), "{printed}");
+}
+
+#[test]
+fn the_line_it_names_brings_the_notes_back() {
+    let vault = with_emptied_folder();
+    vault.ok(&["init"]);
+    set_include(&vault, r#"["/personal/"]"#);
+
+    let printed = vault.ok(&["doctor"]);
+    vault.ok(&["index"]);
+
+    assert_eq!(left_out_rows(&printed), "", "{printed}");
+    assert_eq!(paths(&vault).len(), 4);
+}
+
+#[test]
+fn doctor_says_when_every_note_in_a_folder_is_excluded_and_keeps_the_include_there_is() {
+    let vault = with_emptied_folder();
+    vault.ok(&["init"]);
+    set_include(&vault, r#"["a/typo"]"#);
+
+    let rows = left_out_rows(&vault.ok(&["doctor"]));
+
+    assert!(rows.contains("warn"), "{rows}");
+    assert!(rows.contains("personal: all 3 markdown files"), "{rows}");
+    let line = r#"`include = ["a/typo", "/personal/"]`"#;
+    assert!(rows.contains(line), "{rows}");
+}
+
+#[test]
+fn a_folder_kept_out_by_exclude_says_to_change_exclude() {
+    let vault = bare();
+    vault.write("a/one.md", &note(1, "One"));
+    vault.write("b/drafts/two.md", &note(2, "Two"));
+    vault.ok(&["init"]);
+    set_exclude(&vault, r#"["drafts"]"#);
+
+    let rows = left_out_rows(&vault.ok(&["doctor"]));
+
+    assert!(
+        rows.contains("b: all 1 markdown file in it is excluded"),
+        "{rows}"
+    );
+    assert!(rows.contains("1 matches `drafts` in `exclude`"), "{rows}");
+    assert!(rows.contains("remove `drafts` from `exclude`"), "{rows}");
+    assert!(!rows.contains("include"), "{rows}");
+}
+
+#[test]
+fn a_folder_with_a_note_read_or_no_markdown_is_not_left_out() {
+    let vault = with_emptied_folder();
+    vault.write("personal/.gitignore", "/*\n!/two.md\n");
+    vault.write("empty/note.txt", "Not markdown.\n");
+
+    let printed = vault.ok(&["init"]);
+
+    assert!(!printed.contains("left out"), "{printed}");
+}
+
+/// The notes `/*` keeps out were force-added, so git has them. That still
+/// doesn't make them notes; it only says how many there are.
+#[cfg(unix)]
+#[test]
+fn it_says_how_many_of_them_git_tracks() {
+    let vault = with_git(with_emptied_folder());
+    git(&vault, &["init", "-q"]);
+    git(&vault, &["add", "a"]);
+    git(
+        &vault,
+        &["add", "-f", "personal/two.md", "personal/journal/four.md"],
+    );
+
+    let printed = vault.ok(&["init"]);
+    vault.ok(&["index"]);
+
+    assert!(printed.contains("git tracks 2 of them"), "{printed}");
+    assert_eq!(paths(&vault), ["a/one.md"]);
+}
+
+#[test]
+fn without_git_it_says_nothing_of_what_git_tracks() {
+    let vault = with_emptied_folder();
+    git(&vault, &["init", "-q"]);
+    git(&vault, &["add", "-f", "personal/two.md"]);
+
+    let printed = vault.ok(&["init"]);
+
+    assert!(printed.contains("left out personal"), "{printed}");
+    assert!(!printed.contains("git tracks"), "{printed}");
+}
+
+/// `exclude` is checked first, so it hides the `.gitignore` behind it: taking
+/// `drafts` out of `exclude` alone would still leave the note ignored.
+#[test]
+fn a_folder_kept_out_by_exclude_and_gitignore_names_both_fixes() {
+    let vault = bare();
+    vault.write("a/one.md", &note(1, "One"));
+    vault.write("personal/.gitignore", "/*\n");
+    vault.write("personal/drafts/two.md", &note(2, "Two"));
+    vault.ok(&["init"]);
+    set_exclude(&vault, r#"["drafts"]"#);
+
+    let rows = left_out_rows(&vault.ok(&["doctor"]));
+
+    assert!(rows.contains("remove `drafts` from `exclude`"), "{rows}");
+    assert!(rows.contains(r#"`include = ["/personal/"]`"#), "{rows}");
+}

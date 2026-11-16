@@ -2,6 +2,7 @@ mod bakeoff;
 mod builtin;
 mod doctor;
 mod embedding;
+mod emptied;
 mod export;
 mod hook;
 mod qmd;
@@ -540,6 +541,9 @@ fn run_init(ontology: Option<PathBuf>, search: Option<Search>) -> Result<ExitCod
     }
     for (folder, why) in &report.skipped {
         println!("skipped {folder}: {why}");
+    }
+    for line in emptied::lines(&project, &project.exclusions()?) {
+        println!("left out {line}");
     }
     if report.ontology {
         println!("created .kbx/ontology.yaml");

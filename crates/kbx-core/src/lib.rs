@@ -41,8 +41,9 @@ pub use export::{
 };
 pub use graph::{Graph, GraphStats, Neighbor, Node};
 pub use index::{
-    GitignoreCounts, IndexError, IndexOptions, IndexReport, IndexState, LeftOut, MENTIONS,
-    count_note_files, excluded_notes, gitignore_counts, index_state, index_vault, is_note_path,
+    EmptiedFolder, GitignoreCounts, IndexError, IndexOptions, IndexReport, IndexState, LeftOut,
+    MENTIONS, count_note_files, emptied_folder, emptied_folders, excluded_notes, gitignore_counts,
+    index_state, index_vault, is_note_path,
 };
 pub use infer::{DEFAULT_CLASS, Inferred, TypeDefaults, inferred_id};
 pub use link::Link;

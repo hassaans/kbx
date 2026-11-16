@@ -16,7 +16,7 @@ use kbx_judge::{Availability, JudgeId, backend};
 use sysinfo::System;
 use tokio::runtime;
 
-use crate::{plural, qmd};
+use crate::{emptied, plural, qmd};
 
 const GIB: f64 = (1u64 << 30) as f64;
 
@@ -67,6 +67,12 @@ pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
             report("exclude", check_exclude(project));
             if let Some(gitignore) = check_gitignore(project) {
                 report("gitignore", gitignore);
+            }
+            for line in project
+                .exclusions()
+                .map_or(Vec::new(), |e| emptied::lines(project, &e))
+            {
+                report("left out", (Status::Warn, line));
             }
             report("index", index);
             if let Some(types) = types {
