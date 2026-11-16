@@ -562,23 +562,67 @@ fn a_scope_default_applies_and_changing_it_rebuilds_the_index() {
     assert_eq!(files["Areas/Pinned.md"].1, "Reference");
 }
 
+/// The example ontology `kbx init` wrote up to 0.1.3, before `Note` was added.
+const ONTOLOGY_0_1_3: &str = r#"version: 1
+classes:
+  Concept:   {description: "A definable idea or term."}
+  Procedure: {description: "Steps to achieve an outcome.", requires: [depends_on]}
+  Decision:  {description: "A choice made, with rationale."}
+  Entity:    {description: "A system, team, person, or product."}
+  Reference: {description: "External source material."}
+relations:
+  part_of:     {inverse: has_part,     domain: [any],       range: [any],       weight: 1.0, transitive: true}
+  depends_on:  {inverse: required_by,  domain: [Procedure], range: [Concept, Procedure, Entity], weight: 0.9}
+  implements:  {inverse: implemented_by, domain: [Procedure, Entity], range: [Concept], weight: 0.8}
+  supersedes:  {inverse: superseded_by, domain: [Decision], range: [Decision], weight: 0.8, exclusive: true}
+  contradicts: {inverse: contradicts,  domain: [any],       range: [any],       weight: 0.7, symmetric: true}
+  example_of:  {inverse: has_example,  domain: [any],       range: [Concept],   weight: 0.6}
+  see_also:    {inverse: see_also,     domain: [any],       range: [any],       weight: 0.3, symmetric: true}
+judge:
+  vocabulary: [part_of, depends_on, implements, supersedes, contradicts, example_of, see_also, none]
+  direction: from_schema          # direction is decided by domain/range, never by the model
+"#;
+
+#[test]
+fn an_ontology_from_0_1_3_gets_note_without_being_edited() {
+    let vault = Fixture::bare(FakePath::with_qmd());
+    copy_dir(Path::new(EXISTING), vault.root());
+    vault.write(".kbx/ontology.yaml", ONTOLOGY_0_1_3);
+    let init = vault.ok(&["init"]);
+    vault.ok(&["index"]);
+
+    let ontology = vault.root().join(".kbx/ontology.yaml");
+    assert_eq!(fs::read_to_string(&ontology).unwrap(), ONTOLOGY_0_1_3);
+    assert!(!init.contains("Note"), "{init}");
+    let doctor = vault.ok(&["doctor"]);
+    let types = doctor.lines().find(|l| l.starts_with("types ")).unwrap();
+    assert!(types.contains(" ok "), "{doctor}");
+    let lint = common::stdout(&vault.kbx(&["lint"]));
+    assert!(!lint.contains("type.unknown"), "{lint}");
+    assert_eq!(files(&vault)["Inbox.md"].1, "Note");
+}
+
 #[test]
 fn doctor_says_what_to_add_for_a_default_type_the_ontology_lacks() {
     let vault = indexed();
-    let path = vault.root().join(".kbx/ontology.yaml");
+    let path = vault.root().join(".kbx/kbx.toml");
     let text = fs::read_to_string(&path).unwrap();
-    let kept: Vec<&str> = text.lines().filter(|l| !l.starts_with("  Note:")).collect();
-    fs::write(&path, kept.join("\n")).unwrap();
+    let edited = text.replace(
+        "Projects = { default_type = \"Note\" }",
+        "Projects = { default_type = \"Meeting\" }",
+    );
+    fs::write(&path, edited).unwrap();
+    vault.ok(&["index"]);
 
     let output = vault.kbx(&["doctor"]);
     let out = common::stdout(&output);
     assert!(output.status.success(), "{}", stderr(&output));
-    assert!(out.contains("`default_type` gives `Note`"), "{out}");
-    assert!(out.contains("add `Note: {description:"), "{out}");
+    assert!(out.contains("`default_type` gives `Meeting`"), "{out}");
+    assert!(out.contains("add `Meeting: {description:"), "{out}");
 
     let lint = common::stdout(&vault.kbx(&["lint"]));
     assert!(
-        lint.contains("default type `Note` is not a class"),
+        lint.contains("default type `Meeting` is not a class"),
         "{lint}"
     );
 }

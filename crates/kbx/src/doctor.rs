@@ -56,6 +56,7 @@ pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
         Ok(project) => {
             report("vault", (Status::Ok, project.vault.display().to_string()));
             report("config", config.unwrap_or((Status::Ok, String::new())));
+            report("write", check_write(project));
             let yaml = fs::read_to_string(&project.ontology).ok();
             let ontology = check_ontology(project, yaml.as_deref());
             // Staleness means nothing against a file `kbx index` would refuse.
@@ -141,6 +142,18 @@ fn check_config(project: &mut Project, fix: bool) -> Check {
         Ok(path) => (Status::Ok, format!("moved to {}", path.display())),
         Err(error) => (Status::Fail, error.to_string()),
     }
+}
+
+/// Whether kbx writes to notes, so a user can see it won't without reading
+/// kbx.toml. Either way is a choice, so neither is a warning.
+fn check_write(project: &Project) -> Check {
+    let detail = match project.config.write.frontmatter {
+        false => "frontmatter off: kbx won't edit your notes; accepted relations stay in .kbx/",
+        true => {
+            "frontmatter on: accepted relations are written into notes ([write] frontmatter = true)"
+        }
+    };
+    (Status::Ok, detail.to_string())
 }
 
 fn check_ontology(project: &Project, yaml: Option<&str>) -> Check {

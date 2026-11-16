@@ -2,7 +2,8 @@
 
 The writer is off by default. `kbx accept` then keeps the relation in `.kbx/` and
 [prints the diff](review.md#accepted-relations) of what writing it would do, and no
-note changes. To have kbx write to your notes, add this to `.kbx/kbx.toml`:
+note changes. `kbx doctor` says which way it's set in its `write` row. To have kbx
+write to your notes, add this to `.kbx/kbx.toml`:
 
 ```toml
 [write]
