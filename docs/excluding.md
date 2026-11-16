@@ -153,7 +153,11 @@ what's in the graph, so the next `kbx index` is all it needs.
 
 `kbx doctor` warns about any collection of an excluded folder or with an outdated glob.
 `kbx doctor --fix` removes the first kind and makes the second again, which has qmd read
-that collection afresh. An index named in `qmd.index` is left as it is, but kbx stops
+that collection afresh. Every collection in the vault's own index is kbx's, so one there
+that `kbx.toml` doesn't name is left over, perhaps from a config that has since moved or
+been rewritten. `kbx doctor` names it as left over, whether or not its folder is excluded,
+and `kbx doctor --fix` and `kbx init` remove it. An index named in `qmd.index` may be shared
+with other tools, so nothing in it is removed: it is left as it is, but kbx stops
 searching a collection of an excluded folder there. Nested folders in such an index are
 still read by qmd, and their hits come to nothing as above.
 
