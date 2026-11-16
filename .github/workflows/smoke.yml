@@ -96,7 +96,10 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - run: .github/scripts/smoke-wait.sh crates kbx "$VERSION"
+      # Outside the checkout, so it builds on stable as a user's would, and not
+      # with the version in rust-toolchain.toml.
       - run: cargo install kbx --locked --version "$VERSION"
+        working-directory: ${{ runner.temp }}
       - name: Check the version it prints
         run: |
           printed=$("$HOME/.cargo/bin/kbx" --version)

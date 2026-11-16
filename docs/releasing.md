@@ -69,6 +69,46 @@ gh workflow run release.yml --ref <branch>
 
 A manual run only publishes if it's started on a tag with `dry_run` turned off.
 
+## Bump the Rust version
+
+`rust-toolchain.toml` names the one Rust version that CI, the release build and
+any `cargo` command in the repo use. rustup installs it on first use, with clippy
+and rustfmt. The workflows don't name a version of their own: `ci.yml` and
+`release.yml` run `rustup toolchain install`, which reads the file, and the
+release build adds its target to that toolchain. So a new stable can't change
+what they build with until the file changes. On 2026-11-09, before the pin,
+stable 1.100.0 brought a new lint that turned `main` red with no code change.
+
+`.github/workflows/stable.yml` is the early warning. Every Monday it runs fmt,
+clippy and the tests on the latest stable, on Linux, macOS and Windows. It never
+runs on a push or a pull request, so it can't block a merge, and its runs don't
+touch the `CI` workflow's status. A failed run sends GitHub's usual failed-run
+notification for a scheduled workflow, which goes to whoever last changed its
+`cron` line. Start it by hand with `gh workflow run stable.yml`.
+
+To bump the version, when a new stable is out or `stable.yml` fails:
+
+1. On a branch, set `channel` in `rust-toolchain.toml` to the new version, for
+   example `"1.101.0"`. Change nothing else in that pull request.
+2. Run the checks CI runs. In the repo, `cargo` now uses the new version, and
+   rustup installs it the first time:
+
+   ```sh
+   rustc --version
+   cargo fmt --all --check
+   cargo clippy --workspace --all-targets --locked -- -D warnings
+   cargo test --workspace --locked
+   ```
+
+   Fix what they find in the same pull request, and only that.
+3. Open the pull request by itself. It runs CI on the new version, and, because
+   it doesn't touch the release tooling, no release dry run: start one with
+   `gh workflow run release.yml --ref <branch>` to build the five targets too.
+
+The pin is for building kbx here. It isn't in any crate package, so `cargo
+install kbx` builds with the user's own Rust. The npm packages carry binaries
+built with the pinned version. The crates set no `rust-version`.
+
 ## Check a release
 
 `.github/workflows/smoke.yml` installs a published version on clean runners. On
