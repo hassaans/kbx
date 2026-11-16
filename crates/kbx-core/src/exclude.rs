@@ -288,6 +288,12 @@ impl Exclusions {
         None
     }
 
+    /// Whether a `.gitignore` would keep `path` out with `exclude` left aside:
+    /// what's hidden behind an `exclude` that also needs `include`.
+    pub(crate) fn ignored_beneath(&self, path: &str, is_dir: bool) -> bool {
+        !self.included.covers(path, is_dir) && self.gitignored_from_the_top(path, is_dir).is_some()
+    }
+
     /// Why the `.gitignore` files ignore `path` or a folder it's in.
     fn gitignored_from_the_top(&self, path: &str, is_dir: bool) -> Option<Excluded> {
         from_the_top(path, is_dir).find_map(|(part, is_dir)| self.gitignored(part, is_dir))

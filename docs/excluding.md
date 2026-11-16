@@ -124,9 +124,11 @@ those files git tracks. That's one `git ls-files` for those folders, not one per
 and the line simply leaves it out without git or a repository. If an `include` is
 already set, the line to use is the whole list with the folder added. A file `exclude`
 keeps out can't come back through `include`, so for those the line names the pattern to
-take out of `exclude` instead. A folder with no markdown at all isn't named.
+take out of `exclude` instead, and adds the `include` too if a `.gitignore` would still
+keep them out. A folder with no markdown at all isn't named.
 
-Such a folder gets no qmd collection, as it would sit empty; see [QMD](#qmd). Once
+Such a folder gets no qmd collection, as it would sit empty; see [QMD](#qmd). If every
+scope is one, the vault gets none either, rather than one for its root. Once
 `include` brings a note back, `kbx doctor` reports the collection as missing and
 `kbx doctor --fix` makes it.
 

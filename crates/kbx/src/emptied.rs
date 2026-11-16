@@ -48,7 +48,8 @@ fn describe(emptied: &EmptiedFolder, tracked: Option<&HashSet<String>>) -> Strin
 }
 
 /// What to change in `kbx.toml`: `include` for what `.gitignore` keeps out,
-/// and `exclude` for what that keeps out, as `include` can't win over it.
+/// and `exclude` for what that keeps out, as `include` can't win over it. A
+/// file can need both.
 fn fix(project: &Project, emptied: &[EmptiedFolder]) -> String {
     let file = if project.config_at_root() {
         "kbx.toml"
@@ -59,11 +60,8 @@ fn fix(project: &Project, emptied: &[EmptiedFolder]) -> String {
     let mut ignored = Vec::new();
     let mut listed = Vec::new();
     for folder in emptied {
-        if folder
-            .reasons
-            .iter()
-            .any(|(why, _)| matches!(why, Excluded::Ignored(_)))
-        {
+        let mut reasons = folder.reasons.iter();
+        if folder.ignored_beneath || reasons.any(|(why, _)| matches!(why, Excluded::Ignored(_))) {
             ignored.push(format!("/{}/", escape_pattern(&folder.folder)));
         }
     }

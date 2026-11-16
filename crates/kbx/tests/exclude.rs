@@ -633,3 +633,20 @@ fn without_git_it_says_nothing_of_what_git_tracks() {
     assert!(printed.contains("left out personal"), "{printed}");
     assert!(!printed.contains("git tracks"), "{printed}");
 }
+
+/// `exclude` is checked first, so it hides the `.gitignore` behind it: taking
+/// `drafts` out of `exclude` alone would still leave the note ignored.
+#[test]
+fn a_folder_kept_out_by_exclude_and_gitignore_names_both_fixes() {
+    let vault = bare();
+    vault.write("a/one.md", &note(1, "One"));
+    vault.write("personal/.gitignore", "/*\n");
+    vault.write("personal/drafts/two.md", &note(2, "Two"));
+    vault.ok(&["init"]);
+    set_exclude(&vault, r#"["drafts"]"#);
+
+    let rows = left_out_rows(&vault.ok(&["doctor"]));
+
+    assert!(rows.contains("remove `drafts` from `exclude`"), "{rows}");
+    assert!(rows.contains(r#"`include = ["/personal/"]`"#), "{rows}");
+}

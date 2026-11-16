@@ -1131,3 +1131,23 @@ fn doctor_fix_removes_the_collection_of_a_scope_whose_notes_are_now_all_excluded
         removes(&vault)
     );
 }
+
+/// With every scope emptied, the vault isn't one without scopes: it gets no
+/// collection for its root, which would read the scopes twice once they're back.
+#[test]
+fn a_vault_whose_scopes_are_all_emptied_gets_no_collection_at_its_root() {
+    let vault = Fixture::bare(fake_qmd("[]"));
+    vault.write("personal/.gitignore", "/*\n");
+    vault.write("personal/journal/one.md", &note(1, "one"));
+
+    vault.ok(&["init", "--search", "qmd"]);
+    assert_eq!(adds(&vault), Vec::<String>::new());
+
+    let file = vault.root().join(".kbx/kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(&file, format!("include = [\"/personal/\"]\n{text}")).unwrap();
+    vault.ok(&["doctor", "--fix"]);
+    let roots = config(&vault)["qmd"]["roots"].clone();
+    assert_eq!(roots.as_table().unwrap().len(), 1, "{roots}");
+    assert_eq!(roots["personal"].as_str(), Some("personal"), "{roots}");
+}

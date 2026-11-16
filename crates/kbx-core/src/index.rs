@@ -468,6 +468,9 @@ pub struct EmptiedFolder {
     pub files: Vec<String>,
     /// Why they're left out, with how many each, the commonest first.
     pub reasons: Vec<(Excluded, usize)>,
+    /// Some that `exclude` keeps out are ignored by a `.gitignore` too, which
+    /// `exclude` is checked before: taking them out of `exclude` isn't enough.
+    pub ignored_beneath: bool,
 }
 
 /// The [`EmptiedFolder`]s of `vault`, by name.
@@ -502,10 +505,14 @@ pub fn emptied_folder(
         }
     }
     reasons.sort_by_key(|(why, count)| (usize::MAX - count, why.to_string()));
+    let ignored_beneath = found.iter().any(|(path, why)| {
+        matches!(why, Excluded::Listed(_)) && exclusions.ignored_beneath(path, false)
+    });
     Some(EmptiedFolder {
         folder: folder.to_string(),
         files: found.into_iter().map(|(path, _)| path).collect(),
         reasons,
+        ignored_beneath,
     })
 }
 

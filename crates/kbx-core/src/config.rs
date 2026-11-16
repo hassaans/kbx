@@ -503,7 +503,8 @@ impl Project {
             |folder: &String| exclusions.why(folder, true).is_none() && !emptied.contains(&folder);
         let mut scopes = self.config.scopes.clone();
         scopes.retain(allowed);
-        if !scopes.is_empty() {
+        let scoped = !self.config.scopes.is_empty();
+        if scoped {
             let restored = exclusions.restored_folders().into_iter();
             let restored: Vec<String> = restored.filter(|f| !scopes.contains(f)).collect();
             scopes.extend(restored);
@@ -513,6 +514,14 @@ impl Project {
         qmd.collections
             .retain(|name| roots.get(name).is_none_or(allowed));
         qmd.roots.retain(|_, root| allowed(root));
+        // Scopes that are all ruled out leave a vault with scopes, not one
+        // without: a collection for its root would read them twice once back.
+        if scoped && scopes.is_empty() {
+            qmd.roots.retain(|_, root| root != ".");
+            let roots = &qmd.roots;
+            qmd.collections.retain(|name| roots.contains_key(name));
+            return Ok(qmd);
+        }
         Ok(qmd.with_scopes(&scopes))
     }
 
