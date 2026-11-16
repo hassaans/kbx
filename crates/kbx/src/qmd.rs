@@ -8,10 +8,21 @@ use std::process::{Command, Output, Stdio};
 use kbx_core::{Exclusions, MAX_MASK, Project, canonical_path, find_on_path};
 use tracing::info;
 
+use crate::embedding::{Backlog, Coverage};
 use crate::plural;
 
 const PACKAGE: &str = "@tobilu/qmd";
 const INSTALL: &str = "npm i -g @tobilu/qmd";
+
+/// `qmd embed` on an M2 Pro: about 20 a second on `~/HQ`, 23 on the 10,000-note
+/// vault.
+const CHUNKS_PER_SECOND: f64 = 20.0;
+
+/// What a note comes to before anything is embedded to measure it by: `~/HQ`'s
+/// 256,317 chunks of 80,050 documents. Short notes come to less.
+const CHUNKS_PER_DOCUMENT: f64 = 3.2;
+
+const DOCUMENTS: &str = "documents";
 
 /// After a collection's name, the name its replacement is read under.
 const REPLACEMENT: &str = "-kbx-new";
@@ -87,9 +98,12 @@ fn failure(output: &Output) -> String {
 pub struct Changes {
     /// Planned collections qmd doesn't have yet.
     pub missing: Vec<String>,
-    /// Collections of folders that are now excluded, and replacements an
-    /// earlier run left behind.
+    /// Collections `kbx.toml` records for folders that are now excluded.
     pub barred: Vec<String>,
+    /// Collections in the vault's own index that nothing plans: from a config
+    /// that has since moved or been rewritten, or replacements an earlier run
+    /// left behind. Every collection there is kbx's.
+    pub leftover: Vec<String>,
     /// Collections whose mask isn't the one the folders on disk call for now.
     pub narrowing: Vec<String>,
     /// Collections whose mask stops short of what's excluded, with how many
@@ -102,7 +116,10 @@ pub struct Changes {
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        self.missing.is_empty() && self.barred.is_empty() && self.narrowing.is_empty()
+        self.missing.is_empty()
+            && self.barred.is_empty()
+            && self.leftover.is_empty()
+            && self.narrowing.is_empty()
     }
 
     /// What the masks that stop short mean for the user, if there are any.
@@ -157,9 +174,11 @@ pub fn collection_changes(project: &Project) -> Result<Changes, String> {
         .filter(|n| listed.contains_key(*n))
         .cloned()
         .collect();
-    let left = listed.keys().filter(|name| name.ends_with(REPLACEMENT));
-    let left = left.filter(|name| !planned.roots.contains_key(*name));
-    changes.barred.extend(left.cloned());
+    let in_plan =
+        |name: &String| planned.roots.contains_key(name) || planned.collections.contains(name);
+    let left = listed.keys().filter(|name| !in_plan(name));
+    let left = left.filter(|name| !changes.barred.contains(*name));
+    changes.leftover = left.cloned().collect();
     Ok(changes)
 }
 
@@ -203,6 +222,9 @@ pub fn set_up_collections(project: &mut Project) -> Result<Changes, String> {
     let exclusions = project.exclusions().map_err(|e| e.to_string())?;
     let mut failed = Vec::new();
     attempt(&mut changes.barred, &mut failed, |name| {
+        remove_collection(project, name)
+    });
+    attempt(&mut changes.leftover, &mut failed, |name| {
         remove_collection(project, name)
     });
     if failed.is_empty() {
@@ -322,6 +344,68 @@ pub struct Status {
     pub models: String,
     /// The lines counting the index's files and vectors.
     pub index: String,
+    /// Those counts, if they could be read.
+    counts: Option<Counts>,
+}
+
+/// What the `Total:`, `Vectors:` and `Pending:` lines say. No `Pending:` line
+/// means that nothing is waiting.
+#[derive(Clone, Copy)]
+struct Counts {
+    documents: usize,
+    /// Chunks, of which a document can have several.
+    vectors: usize,
+    /// Documents with no vector.
+    pending: usize,
+}
+
+impl Status {
+    /// What's left to embed, if qmd says. It counts documents, not chunks, so
+    /// those come from the documents embedded so far.
+    pub fn backlog(&self) -> Option<Backlog> {
+        let Counts {
+            documents,
+            vectors,
+            pending,
+        } = self.counts?;
+        let embedded = documents.saturating_sub(pending);
+        let per_document = match (vectors, embedded) {
+            (0, _) | (_, 0) => CHUNKS_PER_DOCUMENT,
+            _ => vectors as f64 / embedded as f64,
+        };
+        let chunks = pending as f64 * per_document;
+        Some(Backlog {
+            count: pending,
+            unit: DOCUMENTS,
+            chunks: Some(chunks.round() as usize),
+            seconds: chunks / CHUNKS_PER_SECOND,
+        })
+    }
+
+    pub fn coverage(&self) -> Option<Coverage> {
+        let counts = self.counts?;
+        Some(Coverage {
+            embedded: counts.documents.saturating_sub(counts.pending),
+            total: counts.documents,
+            unit: DOCUMENTS,
+        })
+    }
+}
+
+/// The number that follows `label` in `stdout`.
+fn count_after(stdout: &str, label: &str) -> Option<usize> {
+    let (_, rest) = stdout.split_once(label)?;
+    let rest = rest.trim_start();
+    let end = rest.find(|c: char| !c.is_ascii_digit())?;
+    rest[..end].parse().ok()
+}
+
+fn counts(stdout: &str) -> Option<Counts> {
+    Some(Counts {
+        documents: count_after(stdout, "Total:")?,
+        vectors: count_after(stdout, "Vectors:")?,
+        pending: count_after(stdout, "Pending:").unwrap_or(0),
+    })
 }
 
 /// `None` if qmd doesn't say which models it uses, and with no way to tell
@@ -339,23 +423,41 @@ pub fn status(project: &Project) -> Option<Status> {
     };
     let models = lines(&["Embedding:", "Reranking:", "Generation:"]);
     let index = lines(&["Total:", "Vectors:", "Pending:"]);
-    (!models.is_empty()).then_some(Status { models, index })
+    (!models.is_empty()).then_some(Status {
+        models,
+        index,
+        counts: counts(&stdout),
+    })
 }
 
-/// Brings the vault's own index up to the notes on disk: `qmd query` finds
-/// neighbours by their vectors, so a note has to be embedded to be found.
-/// Both commands work on a whole index, which is why a named index, perhaps
+/// Brings the vault's own index up to the text of the notes on disk.
+pub fn update(project: &Project) -> Result<(), String> {
+    refresh(project, "update")
+}
+
+/// Embeds what `update` found: `qmd query` finds neighbours by their vectors,
+/// so a note with none can only be found by its words.
+pub fn embed(project: &Project) -> Result<(), String> {
+    refresh(project, "embed")
+}
+
+/// How to do what [`embed`] does, on its own or from `kbx`.
+pub fn embed_by_hand(project: &Project) -> String {
+    let bin = &project.config.qmd.bin;
+    let index = project.qmd_index();
+    format!("`kbx suggest --embed wait`, or `{bin} --index {index} embed`")
+}
+
+/// Both steps work on a whole index, which is why a named index, perhaps
 /// shared with much else, is left alone.
-pub fn refresh(project: &Project) -> Result<(), String> {
+fn refresh(project: &Project, step: &str) -> Result<(), String> {
     if project.config.qmd.index.is_some() {
         return Ok(());
     }
-    for step in ["update", "embed"] {
-        info!("running qmd {step}");
-        let output = run(project, &[step])?;
-        if !output.status.success() {
-            return Err(format!("qmd {step}: {}", failure(&output)));
-        }
+    info!("running qmd {step}");
+    let output = run(project, &[step])?;
+    if !output.status.success() {
+        return Err(format!("qmd {step}: {}", failure(&output)));
     }
     Ok(())
 }

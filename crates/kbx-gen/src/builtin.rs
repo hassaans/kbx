@@ -89,16 +89,20 @@ impl SearchIndex {
         (version.ok() == Some(VERSION)).then_some(SearchIndex { connection })
     }
 
-    /// Whether a section's text has no vector from the model `model`, so that
-    /// [`sync`](SearchIndex::sync) would have embedding to do.
-    pub fn needs_embedding(&self, g: &Graph, model: &str) -> rusqlite::Result<bool> {
-        if self.stored_model()?.as_deref() != Some(model) {
-            return has_sections(g);
-        }
-        let embedded = self.embedded()?;
-        Ok(places(g)?
-            .iter()
-            .any(|place| !embedded.contains(&place.text_hash)))
+    /// How many texts have a vector from the model `model`, and how many
+    /// there are, so that the difference is what
+    /// [`sync`](SearchIndex::sync) has to embed.
+    pub fn vectors(&self, model: &str) -> rusqlite::Result<(usize, usize)> {
+        let count = |query: &str| -> rusqlite::Result<usize> {
+            let count: i64 = self.connection.query_row(query, [], |row| row.get(0))?;
+            Ok(count as usize)
+        };
+        let total = count("SELECT count(*) FROM texts")?;
+        let embedded = match self.stored_model()?.as_deref() == Some(model) {
+            true => count("SELECT count(*) FROM texts WHERE vector IS NOT NULL")?,
+            false => 0,
+        };
+        Ok((embedded, total))
     }
 
     /// Brings the index up to the graph. `embedder`'s vectors are kept next to
@@ -140,13 +144,6 @@ impl SearchIndex {
         self.connection
             .query_row(query, [], |row| row.get(0))
             .optional()
-    }
-
-    fn embedded(&self) -> rusqlite::Result<HashSet<String>> {
-        let query = "SELECT text_hash FROM texts WHERE vector IS NOT NULL";
-        let mut statement = self.connection.prepare(query)?;
-        let rows = statement.query_map([], |row| row.get(0))?;
-        rows.collect()
     }
 
     /// Adds the texts of new sections and drops those nothing says any more.
@@ -321,11 +318,6 @@ pub enum SyncError {
     /// The model failed.
     #[error(transparent)]
     Embed(#[from] EmbedError),
-}
-
-fn has_sections(g: &Graph) -> rusqlite::Result<bool> {
-    let query = "SELECT EXISTS (SELECT 1 FROM sections)";
-    g.connection().query_row(query, [], |row| row.get(0))
 }
 
 fn places(g: &Graph) -> rusqlite::Result<Vec<Place>> {
