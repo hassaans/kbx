@@ -95,6 +95,8 @@ pub struct Run {
     pub generators: Vec<Share>,
     /// Generators that failed, by name, and why.
     pub skipped: Vec<(String, GenError)>,
+    /// The note the run was limited to, as with `--note`.
+    pub note: Option<String>,
 }
 
 /// What one generator came to in a [`Run`]. A pair found by two counts for
@@ -253,6 +255,7 @@ pub fn suggest(
         locked,
         generators: shares,
         skipped,
+        note: scope.note.map(String::from),
     })
 }
 
@@ -368,6 +371,8 @@ fn squash(raw: f64) -> f64 {
 /// that one accepted in `.kbx/` stays, for `kbx reject` to take back. Each row
 /// records the `content_hash` of both notes, for `kbx accept` to check. A
 /// pair has one row, so one with other sections, and another cid, gives way.
+/// A pair on `alias_cooccur`'s scale from before 0.1.5 goes too, if the run
+/// covered it and didn't keep it (`docs/generators.md`).
 pub fn store(g: &Graph, run: &Run) -> Result<(), GenError> {
     let connection = g.connection();
     // Immediate, so that what's checked here is still true at the commit.
@@ -381,14 +386,19 @@ pub fn store(g: &Graph, run: &Run) -> Result<(), GenError> {
             && !suppressed.contains(&ordered(src, dst))
     };
 
-    let mut statement = tx.prepare("SELECT cid, src, dst FROM candidates")?;
-    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-    let stored = rows.collect::<rusqlite::Result<Vec<(String, String, String)>>>()?;
+    let mut statement = tx.prepare("SELECT cid, src, dst, features FROM candidates")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    })?;
+    type Stored = (String, String, String, Option<String>);
+    let stored = rows.collect::<rusqlite::Result<Vec<Stored>>>()?;
     drop(statement);
     let held = accepted_relations(&tx)?;
     let held: HashSet<&str> = held.iter().map(|relation| relation.cid.as_str()).collect();
-    for (cid, src, dst) in stored {
-        if !eligible(&src, &dst) && !held.contains(cid.as_str()) {
+    let outdated = Outdated::load(&tx, run, &held)?;
+    for (cid, src, dst, features) in stored {
+        let gone = !eligible(&src, &dst) && !held.contains(cid.as_str());
+        if gone || outdated.covers(&cid, &src, &dst, features.as_deref()) {
             tx.execute("DELETE FROM candidates WHERE cid = ?", [cid])?;
         }
     }
@@ -431,6 +441,81 @@ pub fn store(g: &Graph, run: &Run) -> Result<(), GenError> {
     }
     tx.commit()?;
     Ok(())
+}
+
+/// Stored candidates ranked by `alias_cooccur`'s score from before 0.1.5, which
+/// counted mentions: one was 0.5 and four 0.8, above most of what it scores
+/// now. Their evidence has no `mentions`. A run of `alias_cooccur` takes out
+/// those it covered and didn't keep, so none outranks the pairs it found.
+///
+/// It leaves those with a verdict, a decision in `reviews` or an acceptance
+/// held in `.kbx/`, and, with `--note`, those away from the note. A run without
+/// `alias_cooccur`, or where it failed, takes out none.
+struct Outdated<'a> {
+    /// `None` if `alias_cooccur` didn't run.
+    covered: Option<Covered<'a>>,
+}
+
+struct Covered<'a> {
+    note: Option<&'a str>,
+    kept: HashSet<&'a str>,
+    held: &'a HashSet<&'a str>,
+    judged: HashSet<String>,
+    reviewed: HashSet<(String, String)>,
+}
+
+impl<'a> Outdated<'a> {
+    fn load(
+        tx: &Transaction<'_>,
+        run: &'a Run,
+        held: &'a HashSet<&'a str>,
+    ) -> rusqlite::Result<Outdated<'a>> {
+        if !run
+            .generators
+            .iter()
+            .any(|share| share.name == "alias_cooccur")
+        {
+            return Ok(Outdated { covered: None });
+        }
+        let mut statement = tx.prepare("SELECT DISTINCT cid FROM verdicts")?;
+        let judged = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<HashSet<String>>>()?;
+        let mut statement = tx.prepare("SELECT DISTINCT src, dst FROM reviews")?;
+        let reviewed = statement
+            .query_map([], |row| {
+                Ok(ordered(
+                    &row.get::<_, String>(0)?,
+                    &row.get::<_, String>(1)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<HashSet<(String, String)>>>()?;
+        Ok(Outdated {
+            covered: Some(Covered {
+                note: run.note.as_deref(),
+                kept: run.candidates.iter().map(|c| c.cid.as_str()).collect(),
+                held,
+                judged,
+                reviewed,
+            }),
+        })
+    }
+
+    /// Whether the stored candidate is one this run takes out.
+    fn covers(&self, cid: &str, src: &str, dst: &str, features: Option<&str>) -> bool {
+        let Some(covered) = &self.covered else {
+            return false;
+        };
+        let old = features
+            .and_then(|features| serde_json::from_str::<Value>(features).ok())
+            .and_then(|features| features.get("alias_cooccur").cloned())
+            .is_some_and(|alias| alias.get("mentions").is_none());
+        old && covered.note.is_none_or(|id| src == id || dst == id)
+            && !covered.kept.contains(cid)
+            && !covered.held.contains(cid)
+            && !covered.judged.contains(cid)
+            && !covered.reviewed.contains(&ordered(src, dst))
+    }
 }
 
 /// The tokens each candidate would add to a judge batch: an excerpt from each

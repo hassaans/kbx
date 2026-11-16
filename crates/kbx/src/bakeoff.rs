@@ -881,6 +881,7 @@ pub fn enqueue(file: &Path) -> Result<ExitCode, Box<dyn Error>> {
         over_budget: 0,
         generators: Vec::new(),
         skipped: Vec::new(),
+        note: None,
     };
     store(&graph, &run)?;
     let mut statement = graph
