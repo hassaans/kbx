@@ -63,14 +63,16 @@ Projects = { default_type = "Note" }
 A `kbx.toml` from before this has neither, and every note gets `Note`. Changing
 either makes the next `kbx index` rebuild.
 
-The example ontology has a `Note` class. `see_also`, `part_of` and `contradicts`
-accept any class, so notes of the default class can take those from the start.
-The other relations name their classes, so give a scope a more specific class,
-or widen a relation, to use them.
+`Note` is always a class, whether or not your ontology declares it, so an ontology
+written before `Note` was added, such as the example `kbx init` wrote up to 0.1.3,
+needs no change and kbx never edits it. Declare `Note` yourself to give it your own
+description or `requires`. `see_also`, `part_of` and `contradicts` accept any class,
+so notes of the default class can take those from the start. The other relations
+name their classes, so give a scope a more specific class, or widen a relation, to
+use them.
 
-`kbx doctor` has a `types` row. It warns if a `default_type` isn't a class in your
-ontology, as in a vault made before `Note` was added, and says what to add. It
-also lists the values of your notes' own `type` keys that the ontology lacks,
+`kbx doctor` has a `types` row. It warns if a `default_type` other than `Note` isn't
+a class in your ontology, and says what to add. It also lists the values of your notes' own `type` keys that the ontology lacks,
 most common first. Those notes are indexed with the class they state, `kbx lint`
 reports them as `type.unknown`, and relations that accept any class still work.
 

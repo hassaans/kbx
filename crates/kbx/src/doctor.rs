@@ -56,6 +56,7 @@ pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
         Ok(project) => {
             report("vault", (Status::Ok, project.vault.display().to_string()));
             report("config", config.unwrap_or((Status::Ok, String::new())));
+            report("write", check_write(project));
             let yaml = fs::read_to_string(&project.ontology).ok();
             let ontology = check_ontology(project, yaml.as_deref());
             // Staleness means nothing against a file `kbx index` would refuse.
@@ -141,6 +142,18 @@ fn check_config(project: &mut Project, fix: bool) -> Check {
         Ok(path) => (Status::Ok, format!("moved to {}", path.display())),
         Err(error) => (Status::Fail, error.to_string()),
     }
+}
+
+/// Whether kbx writes to notes, so a user can see it won't without reading
+/// kbx.toml. Either way is a choice, so neither is a warning.
+fn check_write(project: &Project) -> Check {
+    let detail = match project.config.write.frontmatter {
+        false => "frontmatter off: kbx won't edit your notes; accepted relations stay in .kbx/",
+        true => {
+            "frontmatter on: accepted relations are written into notes ([write] frontmatter = true)"
+        }
+    };
+    (Status::Ok, detail.to_string())
 }
 
 fn check_ontology(project: &Project, yaml: Option<&str>) -> Check {
@@ -375,38 +388,46 @@ fn check_collections(
             Ok(changes) if !changes.failed.is_empty() => {
                 let failed = changes.failed.iter().map(|(name, _)| name.as_str());
                 let failed = format!("failed for {}", failed.collect::<Vec<_>>().join(", "));
-                let done = describe(changes, "created", "removed", "narrowed");
+                let done = describe(changes, FIXED);
                 let parts = [failed, done].into_iter().filter(|part| !part.is_empty());
                 (Status::Fail, parts.collect::<Vec<_>>().join("; "))
             }
             Ok(changes) if changes.is_empty() => collections_present(project),
-            Ok(changes) => (
-                Status::Ok,
-                describe(changes, "created", "removed", "narrowed"),
-            ),
+            Ok(changes) => (Status::Ok, describe(changes, FIXED)),
             Err(error) => (Status::Fail, error.clone()),
         };
     }
     match changes {
         Ok(changes) if changes.is_empty() => collections_present(project),
-        Ok(changes) if changes.barred.is_empty() && changes.narrowing.is_empty() => {
+        Ok(changes) if only_missing(changes) => {
             let names = changes.missing.join(", ");
             let detail = format!("missing {names}; run `kbx doctor --fix` to create them");
             (Status::Warn, detail)
         }
         Ok(changes) => {
-            let found = describe(changes, "missing", "excluded", "mask out of date for");
+            let found = describe(changes, FOUND);
             (Status::Warn, format!("{found}; run `kbx doctor --fix`"))
         }
         Err(error) => (Status::Warn, format!("can't be listed: {error}")),
     }
 }
 
+fn only_missing(changes: &qmd::Changes) -> bool {
+    changes.barred.is_empty() && changes.leftover.is_empty() && changes.narrowing.is_empty()
+}
+
+/// Labels for what's missing, barred, left over and narrowing, before a fix.
+const FOUND: [&str; 4] = ["missing", "excluded", "left over", "mask out of date for"];
+/// The same labels, once fixed.
+const FIXED: [&str; 4] = ["created", "removed", "removed left over", "narrowed"];
+
 /// The collections in `changes`, each kind under its label.
-fn describe(changes: &qmd::Changes, missing: &str, barred: &str, narrowing: &str) -> String {
+fn describe(changes: &qmd::Changes, labels: [&str; 4]) -> String {
+    let [missing, barred, leftover, narrowing] = labels;
     let kinds = [
         (missing, &changes.missing),
         (barred, &changes.barred),
+        (leftover, &changes.leftover),
         (narrowing, &changes.narrowing),
     ];
     let kinds = kinds.iter().filter(|(_, names)| !names.is_empty());

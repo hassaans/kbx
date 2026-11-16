@@ -1094,3 +1094,139 @@ fn a_replacement_that_is_already_there_is_not_swapped_in() {
     );
     assert!(collections(&vault).contains(&"team-a".to_string()));
 }
+
+// --- leftovers --------------------------------------------------------------
+
+/// A vault set up with qmd, whose own index also holds `names`, as one does
+/// after its config was moved or rewritten and no longer records them.
+fn with_leftovers(names: &[&str]) -> Fixture {
+    let vault = two_scopes("[]");
+    vault.write("credentials/keys.md", &note(3, "keys"));
+    vault.ok(&["init", "--search", "qmd"]);
+    let file = vault.path.dir().join("collections");
+    let mut listed = fs::read_to_string(&file).unwrap();
+    for name in names {
+        listed.push_str(&format!("{name}\n"));
+    }
+    fs::write(&file, listed).unwrap();
+    forget_calls(&vault);
+    vault
+}
+
+fn sorted_collections(vault: &Fixture) -> Vec<String> {
+    let mut names = collections(vault);
+    names.sort();
+    names
+}
+
+#[test]
+fn doctor_names_collections_the_config_no_longer_names() {
+    let vault = with_leftovers(&["workspace", "credentials"]);
+
+    let printed = vault.ok(&["doctor"]);
+
+    let row = row(&printed, "collections");
+    assert!(row.contains("warn"), "{row}");
+    assert!(row.contains("left over"), "{row}");
+    assert!(row.contains("workspace"), "{row}");
+    assert!(row.contains("credentials"), "{row}");
+    assert!(row.contains("kbx doctor --fix"), "{row}");
+    assert!(!row.contains("team-a"), "{row}");
+    assert!(removes(&vault).is_empty());
+}
+
+#[test]
+fn doctor_fix_removes_collections_the_config_no_longer_names() {
+    let vault = with_leftovers(&["workspace", "credentials"]);
+
+    let printed = vault.ok(&["doctor", "--fix"]);
+
+    assert!(
+        row(&printed, "collections").contains("workspace"),
+        "{printed}"
+    );
+    assert_eq!(sorted_collections(&vault), ["team-a", "team-b"]);
+    let qmd = config(&vault)["qmd"].clone();
+    assert_eq!(qmd["collections"].as_array().unwrap().len(), 2, "{qmd}");
+
+    forget_calls(&vault);
+    let printed = vault.ok(&["doctor"]);
+    assert!(row(&printed, "collections").contains(" ok "), "{printed}");
+    assert!(removes(&vault).is_empty());
+}
+
+#[test]
+fn init_removes_collections_the_config_no_longer_names() {
+    let vault = with_leftovers(&["workspace"]);
+
+    let printed = vault.ok(&["init", "--search", "qmd"]);
+
+    assert!(
+        printed.contains("removed qmd collection workspace"),
+        "{printed}"
+    );
+    assert_eq!(sorted_collections(&vault), ["team-a", "team-b"]);
+}
+
+#[test]
+fn a_collection_kbx_toml_names_without_a_root_is_not_a_leftover() {
+    let vault = with_leftovers(&["mine"]);
+    let file = vault.root().join(".kbx/kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(
+        &file,
+        text.replace("collections = [", "collections = [\"mine\", "),
+    )
+    .unwrap();
+
+    vault.ok(&["doctor", "--fix"]);
+
+    assert!(removes(&vault).is_empty(), "{:?}", calls(&vault));
+    assert!(collections(&vault).contains(&"mine".to_string()));
+}
+
+#[test]
+fn a_leftover_that_will_not_go_fails_the_fix_and_the_rest_still_go() {
+    let vault = with_leftovers(&["workspace", "repos"]);
+    refuse(&vault, "refuse-remove-repos");
+
+    let output = vault.kbx(&["doctor", "--fix"]);
+
+    assert!(!output.status.success(), "{}", stdout(&output));
+    assert!(row(&stdout(&output), "collections").contains("fail"));
+    let error = stderr(&output);
+    assert!(
+        error.contains("repos") && error.contains("index is locked"),
+        "{error}"
+    );
+    assert_eq!(sorted_collections(&vault), ["repos", "team-a", "team-b"]);
+
+    allow(&vault, "refuse-remove-repos");
+    vault.ok(&["doctor", "--fix"]);
+    assert_eq!(sorted_collections(&vault), ["team-a", "team-b"]);
+}
+
+#[test]
+fn a_named_index_keeps_collections_the_config_does_not_name() {
+    let vault = with_leftovers(&["workspace", "credentials"]);
+    let file = vault.root().join(".kbx/kbx.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(
+        &file,
+        text.replace(r#"bin = "qmd","#, r#"bin = "qmd", index = "shared","#),
+    )
+    .unwrap();
+
+    let printed = vault.ok(&["doctor"]);
+    let row = row(&printed, "collections");
+    assert!(!row.contains("workspace"), "{row}");
+    assert!(!row.contains("credentials"), "{row}");
+
+    vault.ok(&["doctor", "--fix"]);
+    vault.ok(&["init", "--search", "qmd"]);
+    assert!(removes(&vault).is_empty(), "{:?}", calls(&vault));
+    assert_eq!(
+        sorted_collections(&vault),
+        ["credentials", "team-a", "team-b", "workspace"]
+    );
+}

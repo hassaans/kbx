@@ -334,7 +334,10 @@ fn init_writes_builtin_and_runs_neither_npm_nor_qmd() {
     let vault = Fixture::bare(path);
     let out = vault.ok(&["init"]);
     let config = fs::read_to_string(vault.root().join(".kbx/kbx.toml")).unwrap();
-    assert!(config.contains("search = \"builtin\""), "{config}");
+    assert!(
+        config.contains("search = \"builtin\"  # or \"qmd\"\n"),
+        "{config}"
+    );
     assert!(out.contains("built-in engine"), "{out}");
     assert!(!out.contains("found qmd"), "{out}");
     assert!(!calls.exists());
@@ -427,7 +430,10 @@ fn a_vault_written_with_search_qmd_stays_on_qmd() {
     copy_dir(Path::new(FIXTURE), vault.root());
     vault.ok(&["init", "--search", "qmd"]);
     let config = fs::read_to_string(vault.root().join(".kbx/kbx.toml")).unwrap();
-    assert!(config.contains("search = \"qmd\""), "{config}");
+    assert!(
+        config.contains("search = \"qmd\"  # or \"builtin\"\n"),
+        "{config}"
+    );
     let text = vault.ok(&["doctor"]);
     assert!(
         text.lines().any(|line| line.starts_with("collections")),
