@@ -220,18 +220,24 @@ fn another_model_embeds_everything_again() {
 }
 
 #[test]
-fn needs_embedding_says_when_the_model_has_to_be_loaded() {
+fn vectors_counts_what_a_model_has_embedded() {
     let mut vault = Vault::new(&[(ID_A, THROTTLE)]);
-    let index = || SearchIndex::open(&vault.file).unwrap();
-    assert!(index().needs_embedding(&vault.graph, "fake-1").unwrap());
+    let file = vault.file.clone();
+    let index = || SearchIndex::open(&file).unwrap();
+    vault.sync(None).unwrap();
+    let (embedded, total) = index().vectors("fake-1").unwrap();
+    assert_eq!(embedded, 0);
+    assert!(total > 0);
+
     vault.sync(Some(&Fake::new())).unwrap();
-    assert!(!index().needs_embedding(&vault.graph, "fake-1").unwrap());
-    assert!(index().needs_embedding(&vault.graph, "fake-2").unwrap());
+    assert_eq!(index().vectors("fake-1").unwrap(), (total, total));
+    assert_eq!(index().vectors("fake-2").unwrap(), (0, total));
 
     write_note(&vault.root, ID_A, "", "# One\n\nChanged.");
     vault.reindex();
-    let index = SearchIndex::open(&vault.file).unwrap();
-    assert!(index.needs_embedding(&vault.graph, "fake-1").unwrap());
+    vault.sync(None).unwrap();
+    let (embedded, total) = index().vectors("fake-1").unwrap();
+    assert!(embedded < total);
 }
 
 #[test]

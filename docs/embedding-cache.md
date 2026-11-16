@@ -116,6 +116,9 @@ Some cases don't use the cache:
   they changed.
 - A run whose refresh fails neither reads nor writes the cache, so results from a
   half-built index aren't kept.
+- Nor does a run that leaves something unembedded, under `--embed skip` or because
+  the embed was too long for `auto`, for the same reason. See
+  [When a run embeds](search-engine.md#when-a-run-embeds).
 - `--dry-run` and `--eval` read the cache but don't write to it.
 
 ### Per scope

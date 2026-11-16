@@ -1,6 +1,7 @@
 mod bakeoff;
 mod builtin;
 mod doctor;
+mod embedding;
 mod export;
 mod hook;
 mod qmd;
@@ -155,13 +156,19 @@ enum Command {
         /// Stop judging before this run would spend more than this.
         #[arg(long, value_name = "USD", value_parser = parse_usd)]
         budget_usd: Option<f64>,
+        /// What to do about notes with no vector yet: `auto` embeds them if
+        /// that should take under 15 minutes, `wait` always does, and `skip`
+        /// never does. Without them, a search uses the vectors there are and
+        /// keywords.
+        #[arg(long, value_enum, default_value_t = embedding::Embed::Auto, value_name = "WHEN")]
+        embed: embedding::Embed,
         /// Print counts and token estimates; leave the database alone.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "embed")]
         dry_run: bool,
         /// Score each generator's precision and recall against the reviews
         /// table, and change nothing.
         #[arg(long, conflicts_with_all = [
-            "note", "judge", "budget", "stage", "batch", "budget_usd", "dry_run",
+            "note", "judge", "budget", "stage", "batch", "budget_usd", "embed", "dry_run",
         ])]
         eval: bool,
     },
@@ -430,6 +437,7 @@ fn main() -> ExitCode {
             stage,
             batch,
             budget_usd,
+            embed,
             dry_run,
             eval,
         } => suggest::run(suggest::Options {
@@ -440,6 +448,7 @@ fn main() -> ExitCode {
             stage,
             batch,
             budget_usd,
+            embed,
             dry_run,
             eval,
         }),
