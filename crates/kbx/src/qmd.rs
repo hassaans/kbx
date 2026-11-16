@@ -87,9 +87,12 @@ fn failure(output: &Output) -> String {
 pub struct Changes {
     /// Planned collections qmd doesn't have yet.
     pub missing: Vec<String>,
-    /// Collections of folders that are now excluded, and replacements an
-    /// earlier run left behind.
+    /// Collections `kbx.toml` records for folders that are now excluded.
     pub barred: Vec<String>,
+    /// Collections in the vault's own index that nothing plans: from a config
+    /// that has since moved or been rewritten, or replacements an earlier run
+    /// left behind. Every collection there is kbx's.
+    pub leftover: Vec<String>,
     /// Collections whose mask isn't the one the folders on disk call for now.
     pub narrowing: Vec<String>,
     /// Collections whose mask stops short of what's excluded, with how many
@@ -102,7 +105,10 @@ pub struct Changes {
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        self.missing.is_empty() && self.barred.is_empty() && self.narrowing.is_empty()
+        self.missing.is_empty()
+            && self.barred.is_empty()
+            && self.leftover.is_empty()
+            && self.narrowing.is_empty()
     }
 
     /// What the masks that stop short mean for the user, if there are any.
@@ -157,9 +163,11 @@ pub fn collection_changes(project: &Project) -> Result<Changes, String> {
         .filter(|n| listed.contains_key(*n))
         .cloned()
         .collect();
-    let left = listed.keys().filter(|name| name.ends_with(REPLACEMENT));
-    let left = left.filter(|name| !planned.roots.contains_key(*name));
-    changes.barred.extend(left.cloned());
+    let in_plan =
+        |name: &String| planned.roots.contains_key(name) || planned.collections.contains(name);
+    let left = listed.keys().filter(|name| !in_plan(name));
+    let left = left.filter(|name| !changes.barred.contains(*name));
+    changes.leftover = left.cloned().collect();
     Ok(changes)
 }
 
@@ -203,6 +211,9 @@ pub fn set_up_collections(project: &mut Project) -> Result<Changes, String> {
     let exclusions = project.exclusions().map_err(|e| e.to_string())?;
     let mut failed = Vec::new();
     attempt(&mut changes.barred, &mut failed, |name| {
+        remove_collection(project, name)
+    });
+    attempt(&mut changes.leftover, &mut failed, |name| {
         remove_collection(project, name)
     });
     if failed.is_empty() {
