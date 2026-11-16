@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use common::{FIXTURE, FakePath, Fixture, copy_dir, stderr, stdout};
+use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, params};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -188,6 +189,51 @@ fn an_accepted_relation_and_its_inverse_are_edges_that_survive_every_reindex() {
     vault.ok(&["index"]);
 
     assert_eq!(outside_kbx(vault.root()), before);
+}
+
+/// Every row of `table`, in order.
+fn rows(vault: &Fixture, table: &str) -> Vec<Vec<SqlValue>> {
+    let db = db(vault);
+    let mut statement = db
+        .prepare(&format!("SELECT * FROM {table} ORDER BY 1, 2, 3"))
+        .unwrap();
+    let columns = statement.column_count();
+    let rows = statement
+        .query_map([], |row| {
+            (0..columns).map(|i| row.get::<_, SqlValue>(i)).collect()
+        })
+        .unwrap();
+    rows.map(Result::unwrap).collect()
+}
+
+#[test]
+fn upgrading_from_pipeline_4_rebuilds_and_keeps_every_decision_and_candidate() {
+    let vault = small();
+    candidate(&vault, "c1", "a", "b");
+    candidate(&vault, "c2", "d1", "d2");
+    candidate(&vault, "c3", "k", "p");
+    vault.ok(&["accept", "c1", "--rel", "see_also"]);
+    vault.ok(&["reject", "c2"]);
+    let kept =
+        |vault: &Fixture| ["candidates", "reviews", "accepted"].map(|table| rows(vault, table));
+    let before = kept(&vault);
+    let [candidates, reviews, accepted] = &before;
+    let pending = SqlValue::Text("c3".to_string());
+    assert!(
+        candidates.iter().any(|row| row[0] == pending),
+        "{candidates:?}"
+    );
+    assert_eq!((reviews.len(), accepted.len()), (2, 1));
+
+    // The version 0.1.4 wrote.
+    db(&vault)
+        .execute("UPDATE meta SET v = '4' WHERE k = 'pipeline_version'", [])
+        .unwrap();
+    let out = vault.ok(&["index"]);
+
+    assert!(out.contains("indexed 7,"), "a rebuild: {out}");
+    assert_eq!(kept(&vault), before);
+    assert_eq!(edges(&vault), see_also());
 }
 
 #[test]

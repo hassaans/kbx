@@ -105,6 +105,10 @@ case as written. If several notes match, the link stays hidden, as other ambiguo
 links do, and `link.unresolved` says how many match. Obsidian would pick one for you,
 but kbx won't guess at an edge. `./` and `../` links aren't read relative to the note.
 
+An index built by 0.1.4 or earlier left these links hidden. The first `kbx index`
+after upgrading rebuilds the index once to pick them up, with no `--full`, and keeps
+your reviews, accepted relations and candidates.
+
 The structural generators read those edges, so a vault with nothing but inline
 links gets `common_neighbors`, `adamic_adar` and `two_hop_bridge` candidates from
 the start: see [the generators](generators.md).
