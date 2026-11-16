@@ -128,7 +128,7 @@ Most of the 2 GiB is `schema_gap` and the typed pairs, and it was there before.
   With it, kept counts would differ, as it competes for the same budget.
 - **The synthetic vault is mostly typed.** It has 3,124 inline links to about 34,000
   typed rows, so it shows that typed pairs hold their place, not how good
-  inline-only pairs are. `existing-vault` has 7 notes. A real vault of inline links
+  inline-only pairs are. `existing-vault` had 7 notes then. A real vault of inline links
   is the test still to come.
 - **No precision.** No pair here has been reviewed, so `--eval` reports what's
   proposed and nothing about how many are right. Once a real vault has reviews,
