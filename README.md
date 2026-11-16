@@ -26,6 +26,7 @@ kbx suggest --note <id> --generators schema_gap,alias_cooccur
 kbx suggest --budget 50    # keep at most 50 candidates
 kbx suggest --judge none   # stop at the candidates; by default a logged-in claude or codex CLI judges them, else local ollama or llama-server
 kbx suggest --budget-usd 0.50   # stop judging before this run spends more (see docs/judge.md)
+kbx suggest --embed skip   # search the vectors there are and keywords; embed nothing (see docs/search-engine.md)
 kbx suggest --stage        # with writing on, also put proposals in `kbx.proposed` for your editor
 kbx sync-stage             # with writing on, take edits there as decisions; see docs/staging.md
 kbx suggest --eval         # each generator's precision and recall against your reviews
@@ -161,7 +162,10 @@ not. To move a vault, change the key; each backend keeps its own index.
 On QMD, each vault gets its own qmd index, with one collection per scope, so your other
 qmd collections are left alone. `qmd.roots` in `kbx.toml` says which folder each
 collection covers. `kbx suggest` brings the index up to date first, which
-downloads qmd's models (about 2 GB) the first time, then runs one search per
+downloads qmd's models (about 2 GB) the first time, and embeds new notes if that
+should take under 15 minutes. It says how much it's about to embed, and `--embed wait`
+or `--embed skip` decide for it ([details](docs/search-engine.md#when-a-run-embeds)).
+Then it runs one search per
 note, the least linked first, at most 100 per run. Those searches are most of the
 run's time, so kbx keeps what they found in `.kbx/search-cache.sqlite` and repeats a
 search only when its note, or a section it found, has changed. Delete that file to
