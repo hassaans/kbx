@@ -72,6 +72,7 @@ impl Written {
             generators: Vec::new(),
             locked: 0,
             skipped: Vec::new(),
+            note: None,
         };
         place_sections(&self.graph, self.dir.path(), &mut run).unwrap();
         run.candidates.remove(0)
@@ -174,6 +175,7 @@ fn a_pair_has_one_row_whichever_sections_it_is_about() {
         generators: Vec::new(),
         locked: 0,
         skipped: Vec::new(),
+        note: None,
     };
     let first = vault.place(json!({"qmd_knn": {"sections": {"a": vault.key("a", "Limits", 0)}}}));
     let second = vault.place(json!({"qmd_knn": {"sections": {"a": vault.key("a", "Other", 0)}}}));

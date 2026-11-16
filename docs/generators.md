@@ -203,6 +203,22 @@ naming the target that the source says: one mention of a fully specific term is
 raw score, so the union's `squash` turns it back into that chance. The evidence
 gains `mentions`, the times the terms were said; `terms` and `src` are unchanged.
 
+**Pairs stored by 0.1.4 and earlier.** A run adds to the queue. It doesn't
+replace it, so a pair that a run doesn't keep stays at its old score. On the old
+scale, one mention was 0.5 and four about 0.8 to 0.94, above the best scores now,
+so an old queue would stay on top. A run in which `alias_cooccur` ran takes out
+the stored pairs whose `alias_cooccur` evidence has no `mentions` and that it
+didn't keep. It leaves:
+
+- **Pairs with a verdict,** a decision in `reviews` (a deferral, say), or an
+  acceptance held in `.kbx/`. Their old score stays until a run finds them again.
+- **Pairs away from the note** in a `--note` run.
+- **Every pair** if `--generators` leaves out `alias_cooccur`, or it fails.
+
+A pair taken out that a generator still finds comes back, scored on the new
+scale, on a run that keeps it. Its verdicts are stored by cid, so they come back
+with it.
+
 **At most 50 pairs per term** (`MAX_PAIRS_PER_TERM`), from the notes that say it
 most, then by id. Ten million pairs is mostly a few broad terms each said by
 thousands of notes, and their pairs all say the same thing at a low score. The

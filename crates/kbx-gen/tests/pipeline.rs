@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use kbx_core::{
-    DEFAULT_MENTION_WEIGHT, Exclusions, Graph, IndexOptions, Ontology, STRIKES, index_vault,
+    DEFAULT_MENTION_WEIGHT, Exclusions, Graph, IndexOptions, Ontology, Queue, STRIKES, index_vault,
 };
 use kbx_gen::{
     Budget, Candidate, GenError, Generator, Hit, Query, Scope, Search, SearchError, cid,
@@ -729,4 +729,161 @@ fn generators_selects_by_name_and_refuses_unknown_names() {
     );
     let error = generators(Some(&["nope".to_string()]), None).err().unwrap();
     assert!(error.to_string().contains("nope"), "{error}");
+}
+
+/// Stores a candidate the way 0.1.4 did: `alias_cooccur`'s `score` was the
+/// mention count, its evidence had no `mentions`, and the union put four
+/// mentions at 0.8. `others` adds evidence from other generators.
+fn store_old(setup: &Setup, src: u32, dst: u32, others: &[&str]) {
+    let mut features = json!({
+        "alias_cooccur": { "score": 4.0, "src": id(src), "terms": ["old term"] },
+    });
+    for name in others {
+        features[*name] = json!({ "score": 0.1 });
+    }
+    let mut generators: Vec<&str> = others.to_vec();
+    generators.push("alias_cooccur");
+    generators.sort();
+    setup
+        .graph
+        .connection()
+        .execute(
+            "INSERT INTO candidates (cid, src, dst, generators, features, score, created_at)
+             VALUES (?, ?, ?, ?, ?, 0.8, 1)",
+            params![
+                cid(&id(src), &id(dst)),
+                id(src),
+                id(dst),
+                json!(generators).to_string(),
+                features.to_string()
+            ],
+        )
+        .unwrap();
+}
+
+/// Runs `names`, or every generator but `qmd_knn`, as `kbx suggest` would,
+/// limited to `note`, and stores what it keeps.
+fn suggest_and_store(setup: &Setup, names: Option<&[&str]>, note: Option<&str>) {
+    let names: Option<Vec<String>> = names.map(|n| n.iter().map(|s| s.to_string()).collect());
+    let chosen = generators(names.as_deref(), None).unwrap();
+    let run = suggest(&setup.graph, &chosen, &setup.scope(note), Budget::default()).unwrap();
+    store(&setup.graph, &run).unwrap();
+}
+
+/// The pending queue, as `kbx review` loads it: each cid and its features.
+fn pending(setup: &Setup) -> Vec<(String, Value)> {
+    let queue = Queue::load(&setup.graph, &setup.ontology).unwrap();
+    let features: Vec<_> = rows(&setup.graph)
+        .into_iter()
+        .map(|row| (row.0, row.4))
+        .collect();
+    let of = |cid: &str| features.iter().find(|row| row.0 == cid).unwrap().1.clone();
+    queue
+        .items()
+        .iter()
+        .map(|item| (item.cid.clone(), of(&item.cid)))
+        .collect()
+}
+
+/// `alias_cooccur` evidence on the 0.1.4 scale: a score with no `mentions`.
+fn old_scale(features: &Value) -> bool {
+    features
+        .get("alias_cooccur")
+        .is_some_and(|alias| alias.get("mentions").is_none())
+}
+
+#[test]
+fn a_run_takes_out_old_scale_alias_cooccur_pairs_it_did_not_keep() {
+    let setup = Setup::new();
+    store_old(&setup, 8, 13, &[]);
+    store_old(&setup, 9, 12, &["common_neighbors"]);
+    assert_eq!(
+        pending(&setup).iter().filter(|(_, f)| old_scale(f)).count(),
+        2
+    );
+
+    suggest_and_store(&setup, None, None);
+
+    let pending = pending(&setup);
+    let old: Vec<_> = pending.iter().filter(|(_, f)| old_scale(f)).collect();
+    assert!(old.is_empty(), "old-scale pairs still pending: {old:?}");
+    let alias = cid(&id(11), &id(6));
+    let (_, found) = pending.iter().find(|(cid, _)| *cid == alias).unwrap();
+    assert!(found["alias_cooccur"]["mentions"].is_number(), "{found}");
+}
+
+#[test]
+fn a_run_leaves_old_scale_pairs_that_were_judged_reviewed_or_accepted() {
+    let setup = Setup::new();
+    // Pairs no generator finds in the fixture, so the run has no fresh
+    // evidence to write over them.
+    for (src, dst) in [(8, 13), (9, 12), (8, 15), (9, 16)] {
+        store_old(&setup, src, dst, &[]);
+    }
+    let connection = setup.graph.connection();
+    connection
+        .execute(
+            "INSERT INTO verdicts (cid, backend, model, prompt_hash, verdict, rel)
+             VALUES (?, 'claude-cli', 'm', 'h', 'accept', 'see_also')",
+            [cid(&id(8), &id(13))],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO reviews (src, dst, rel, decision) VALUES (?, ?, 'see_also', 'defer')",
+            [id(12), id(9)],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO accepted (cid, src, dst, rel) VALUES (?, ?, ?, 'see_also')",
+            params![cid(&id(8), &id(15)), id(8), id(15)],
+        )
+        .unwrap();
+    let count = |table: &str| -> i64 {
+        let sql = format!("SELECT COUNT(*) FROM {table}");
+        connection.query_row(&sql, [], |row| row.get(0)).unwrap()
+    };
+    let before = rows(&setup.graph);
+
+    suggest_and_store(&setup, None, None);
+
+    let kept: Vec<_> = rows(&setup.graph)
+        .into_iter()
+        .filter(|row| old_scale(&row.4))
+        .collect();
+    assert_eq!(
+        kept,
+        before[..]
+            .iter()
+            .filter(|row| row.2 != id(16))
+            .cloned()
+            .collect::<Vec<_>>(),
+        "judged, reviewed and accepted pairs stay as they were; the plain one goes"
+    );
+    assert_eq!(count("verdicts"), 1);
+    assert_eq!(count("reviews"), 1);
+    assert_eq!(count("accepted"), 1);
+}
+
+#[test]
+fn a_narrowed_run_takes_out_only_old_scale_pairs_it_covered() {
+    let setup = Setup::new();
+    store_old(&setup, 8, 13, &[]);
+    store_old(&setup, 9, 12, &[]);
+    let old = |setup: &Setup| -> Vec<String> {
+        let rows = rows(&setup.graph)
+            .into_iter()
+            .filter(|row| old_scale(&row.4));
+        rows.map(|row| row.1).collect()
+    };
+
+    suggest_and_store(&setup, Some(&["common_neighbors", "adamic_adar"]), None);
+    assert_eq!(old(&setup), [id(8), id(9)], "alias_cooccur didn't run");
+
+    suggest_and_store(&setup, Some(&["alias_cooccur"]), Some(&id(13)));
+    assert_eq!(old(&setup), [id(9)], "--note covers only pairs at its note");
+
+    suggest_and_store(&setup, Some(&["alias_cooccur"]), None);
+    assert!(old(&setup).is_empty());
 }
