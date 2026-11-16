@@ -98,7 +98,18 @@ pub fn run(fix: bool) -> Result<ExitCode, Box<dyn Error>> {
             Ok(path) => {
                 report("qmd", (Status::Ok, path.display().to_string()));
                 if let Ok(project) = &mut found {
-                    report("collections", check_collections(project, fix));
+                    let changes = match fix {
+                        true => qmd::set_up_collections(project),
+                        false => qmd::collection_changes(project),
+                    };
+                    report("collections", check_collections(project, &changes, fix));
+                    let changes = changes.unwrap_or_default();
+                    if let Some(warning) = changes.mask_warning() {
+                        report("masks", (Status::Warn, warning));
+                    }
+                    for (name, error) in &changes.failed {
+                        eprintln!("error: collection {name}: {error}");
+                    }
                 }
             }
             Err(error) => {
@@ -352,19 +363,31 @@ fn check_search(project: Option<&Project>, backend: Search) -> Check {
 }
 
 /// Missing collections stop `qmd_knn` alone, so they are worth a warning, and
-/// so is one reading what's excluded, though nothing it finds goes further.
-fn check_collections(project: &mut Project, fix: bool) -> Check {
+/// so is one reading what's excluded, though nothing it finds goes further. A
+/// fix that was asked for and didn't work is a failure.
+fn check_collections(
+    project: &Project,
+    changes: &Result<qmd::Changes, String>,
+    fix: bool,
+) -> Check {
     if fix {
-        return match qmd::set_up_collections(project) {
+        return match changes {
+            Ok(changes) if !changes.failed.is_empty() => {
+                let failed = changes.failed.iter().map(|(name, _)| name.as_str());
+                let failed = format!("failed for {}", failed.collect::<Vec<_>>().join(", "));
+                let done = describe(changes, "created", "removed", "narrowed");
+                let parts = [failed, done].into_iter().filter(|part| !part.is_empty());
+                (Status::Fail, parts.collect::<Vec<_>>().join("; "))
+            }
             Ok(changes) if changes.is_empty() => collections_present(project),
             Ok(changes) => (
                 Status::Ok,
-                describe(&changes, "created", "removed", "narrowed"),
+                describe(changes, "created", "removed", "narrowed"),
             ),
-            Err(error) => (Status::Warn, error),
+            Err(error) => (Status::Fail, error.clone()),
         };
     }
-    match qmd::collection_changes(project) {
+    match changes {
         Ok(changes) if changes.is_empty() => collections_present(project),
         Ok(changes) if changes.barred.is_empty() && changes.narrowing.is_empty() => {
             let names = changes.missing.join(", ");
@@ -372,7 +395,7 @@ fn check_collections(project: &mut Project, fix: bool) -> Check {
             (Status::Warn, detail)
         }
         Ok(changes) => {
-            let found = describe(&changes, "missing", "excluded", "mask out of date for");
+            let found = describe(changes, "missing", "excluded", "mask out of date for");
             (Status::Warn, format!("{found}; run `kbx doctor --fix`"))
         }
         Err(error) => (Status::Warn, format!("can't be listed: {error}")),

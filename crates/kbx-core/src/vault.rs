@@ -25,6 +25,9 @@ pub struct Resolver {
     by_id: HashMap<String, BTreeSet<usize>>,
     by_filename: HashMap<String, BTreeSet<usize>>,
     by_alias: HashMap<String, BTreeSet<usize>>,
+    /// Paths without `.md`, as written, under their last two components: any
+    /// partial path ends with those, and storing every ending costs too much.
+    by_tail: HashMap<String, Vec<(usize, String)>>,
 }
 
 /// Where a link landed.
@@ -43,8 +46,9 @@ pub enum ResolvedVia {
     /// (`{id}-tokens`), the shape §3 uses. The slug is ignored, so renaming
     /// the file doesn't break the link.
     Id,
-    /// The target is the file's name or vault path. Breaks on rename, so it's
-    /// flagged [`FindingCode::LinkUnstable`].
+    /// The target is the file's name, its vault path, or the end of that path
+    /// from a folder boundary. Breaks on rename, so it's flagged
+    /// [`FindingCode::LinkUnstable`].
     Filename,
     /// The target is one of the note's aliases.
     Alias,
@@ -171,12 +175,32 @@ impl Resolver {
                 .or_default()
                 .insert(index);
         }
+        let stored = path_key(&path.to_string_lossy());
+        if let Some(tail) = tail(&stored) {
+            let notes = self.by_tail.entry(tail.to_string()).or_default();
+            notes.push((index, stored));
+        }
     }
 
-    /// Resolves by id first, then by filename, then by alias; filename and
-    /// alias ignore case, as Obsidian does. The first step that matches
-    /// decides, so a target is `None` if that step matches several notes.
+    /// Resolves by id first, then by filename, then by alias, then by partial
+    /// path; filename and alias ignore case, as Obsidian does, and a partial
+    /// path keeps it. The first step that matches decides, so a target is
+    /// `None` if that step matches several notes.
     pub fn resolve(&self, target: &str) -> Option<(usize, ResolvedVia)> {
+        let (matches, via) = self.matches(target)?;
+        match matches[..] {
+            [index] => Some((index, via)),
+            _ => None,
+        }
+    }
+
+    /// How many notes the deciding step of [`Resolver::resolve`] matches.
+    pub fn match_count(&self, target: &str) -> usize {
+        self.matches(target).map_or(0, |(matches, _)| matches.len())
+    }
+
+    /// What the first step to match anything found.
+    fn matches(&self, target: &str) -> Option<(Vec<usize>, ResolvedVia)> {
         let id_prefix = target.split_once('-').map_or(target, |(id, _)| id);
         let name = normalize_name(target);
         let steps = [
@@ -188,12 +212,25 @@ impl Resolver {
                 ResolvedVia::Alias,
             ),
         ];
-        let (matches, via) = steps.into_iter().find_map(|(hit, via)| Some((hit?, via)))?;
-        let mut matches = matches.iter();
-        match (matches.next(), matches.next()) {
-            (Some(&index), None) => Some((index, via)),
-            _ => None,
+        let found = steps.into_iter().find_map(|(hit, via)| Some((hit?, via)));
+        if let Some((matches, via)) = found {
+            return Some((matches.iter().copied().collect(), via));
         }
+        let matches = self.path_endings(target);
+        (!matches.is_empty()).then_some((matches, ResolvedVia::Filename))
+    }
+
+    /// The notes whose path ends with `target` at a folder boundary, which is
+    /// how Obsidian reads a link with a folder in it. A full path never gets
+    /// here, so the `/` before the target is always there to match.
+    fn path_endings(&self, target: &str) -> Vec<usize> {
+        let target = path_key(target);
+        let Some(notes) = tail(&target).and_then(|tail| self.by_tail.get(tail)) else {
+            return Vec::new();
+        };
+        let ending = format!("/{target}");
+        let found = notes.iter().filter(|(_, path)| path.ends_with(&ending));
+        found.map(|(index, _)| *index).collect()
     }
 }
 
@@ -364,7 +401,11 @@ impl Vault {
         report: &mut impl FnMut(FindingCode, usize, String),
     ) -> String {
         let Some(resolved) = self.resolve(link) else {
-            let message = format!("`{}` does not resolve to exactly one note", link.target);
+            let mut message = format!("`{}` does not resolve to exactly one note", link.target);
+            let count = self.resolver.match_count(&link.target);
+            if count > 1 {
+                message.push_str(&format!(": {count} notes match"));
+            }
             report(FindingCode::LinkUnresolved, link.line, message);
             return link.target.clone();
         };
@@ -395,4 +436,21 @@ fn filename_keys(path: &Path) -> BTreeSet<String> {
 fn normalize_name(name: &str) -> String {
     let name = name.replace('\\', "/").to_lowercase();
     name.strip_suffix(".md").map(str::to_string).unwrap_or(name)
+}
+
+/// A path as partial paths compare it: `/` separators, its case, and no `.md`
+/// in any case, since the walk takes `.MD` for a note too.
+fn path_key(path: &str) -> String {
+    let mut path = path.replace('\\', "/");
+    if path.to_lowercase().ends_with(".md") {
+        path.truncate(path.len() - ".md".len());
+    }
+    path
+}
+
+/// The last two components of `path`, if it has that many.
+fn tail(path: &str) -> Option<&str> {
+    let (rest, _) = path.rsplit_once('/')?;
+    let start = rest.rfind('/').map_or(0, |slash| slash + 1);
+    Some(&path[start..])
 }
