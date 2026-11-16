@@ -567,6 +567,9 @@ fn run_init(ontology: Option<PathBuf>, search: Option<Search>) -> Result<ExitCod
             for name in &changes.missing {
                 println!("created qmd collection {name}");
             }
+            for name in changes.barred.iter().chain(&changes.leftover) {
+                println!("removed qmd collection {name}");
+            }
             if let Some(warning) = changes.mask_warning() {
                 eprintln!("warning: {warning}");
             }
