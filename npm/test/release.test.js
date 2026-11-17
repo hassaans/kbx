@@ -525,12 +525,14 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
         const result = smokeNpm(t, { FAKE_SKIPS: '2' });
         assert.equal(result.status, 0, result.stderr);
         const installs = result.calls.filter((call) => /^npm (i|rm) /.test(call));
+        // npm keeps the metadata it fetched for five minutes, and would hand a
+        // retry the same answer without asking the registry again.
         assert.deepEqual(installs, [
           'npm i -g kbx-cli@1.2.3',
           'npm rm -g kbx-cli',
-          'npm i -g kbx-cli@1.2.3',
+          'npm i -g --prefer-online kbx-cli@1.2.3',
           'npm rm -g kbx-cli',
-          'npm i -g kbx-cli@1.2.3',
+          'npm i -g --prefer-online kbx-cli@1.2.3',
         ]);
         assert.equal(result.stderr.match(/npm left out kbx-linux-x64-gnu on try \d of 3, trying again/g).length, 2);
         assert.match(result.stdout, /^installed kbx-cli 1\.2\.3 with kbx-linux-x64-gnu on try 3 of 3$/m);

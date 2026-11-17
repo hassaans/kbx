@@ -30,7 +30,7 @@ for tool in kbx qmd; do
 done
 
 attempts=${KBX_SMOKE_INSTALL_ATTEMPTS:-5}
-delay=${KBX_SMOKE_INSTALL_SECONDS:-30}
+delay=${KBX_SMOKE_INSTALL_SECONDS:-60}
 
 # Sets $platforms to the platform packages npm installed.
 find_platforms() {
@@ -47,13 +47,17 @@ find_platforms() {
 
 # npm skips an optional dependency it can't fetch without failing, and for a
 # minute or so after a release it can miss one that npm view already shows. So
-# an install without any platform package is tried again, from scratch.
+# an install without any platform package is tried again, from scratch. npm
+# keeps the metadata it fetched for the registry's max-age of five minutes and
+# would reuse it, so a retry has to ask the registry again.
+online=()
 for ((try = 1; ; try++)); do
-  npm i -g "kbx-cli@$version"
+  npm i -g ${online[@]+"${online[@]}"} "kbx-cli@$version"
   find_platforms
   [[ ${#platforms[@]} -eq 0 && $try -lt $attempts ]] || break
   echo "smoke-npm: npm left out $package on try $try of $attempts, trying again in ${delay}s" >&2
   npm rm -g kbx-cli
+  online=(--prefer-online)
   sleep "$delay"
 done
 
