@@ -444,11 +444,17 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
         'i -g')
           cp "$here/fake-kbx" "$here/kbx"
           [[ -z $FAKE_INSTALL_FAILS ]] || exit 1
+          [[ ! -e $here/root/kbx-cli ]] || exit 98
           mkdir -p "$here/root/kbx-cli"
+          echo >> "$here/installs"
+          # FAKE_SKIPS: how many installs leave the platform package out, as npm
+          # does with an optional dependency it can't fetch yet.
+          [[ $(wc -l < "$here/installs") -gt \${FAKE_SKIPS:-0} ]] || exit 0
           parent=$here/root/kbx-cli/node_modules
           [[ -z $FAKE_HOISTED ]] || parent=$here/root
           for pkg in \${FAKE_PLATFORMS-${PLATFORM}}; do mkdir -p "$parent/$pkg"; done
           ;;
+        'rm -g') [[ $3 == kbx-cli ]] && rm -rf "$here/root/kbx-cli" "$here/kbx" ;;
         'root -g') echo "$here/root" ;;
         'ls -g') [[ -e $here/qmd ]] ;;
         *) exit 97 ;;
@@ -463,7 +469,7 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
     function smokeNpm(t, env = {}, tools = {}) {
       return run(t, 'smoke-npm.sh', ['1.2.3', PLATFORM, VAULT], {
         tools: { npm: FAKE_NPM, 'fake-kbx': FAKE_KBX, ...tools },
-        env,
+        env: { KBX_SMOKE_INSTALL_ATTEMPTS: '3', KBX_SMOKE_INSTALL_SECONDS: '0', ...env },
         inheritedPath: CLEAN_PATH,
       });
     }
@@ -505,6 +511,45 @@ describe('release scripts', { skip: process.platform === 'win32' && 'they run on
         const result = smokeNpm(t, { FAKE_HOISTED: '1' });
         assert.equal(result.status, 0, result.stderr);
         assert.match(result.stdout, /platform package: .*\/root\/kbx-linux-x64-gnu$/m);
+      });
+
+      it('says it took one try when the first install is whole', (t) => {
+        const result = smokeNpm(t);
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /^installed kbx-cli 1\.2\.3 with kbx-linux-x64-gnu on try 1 of 3$/m);
+      });
+
+      // npm skips an optional dependency it can't fetch yet without failing,
+      // which it did once on macOS a minute after a release.
+      it('installs again when npm leaves out the platform package at first', (t) => {
+        const result = smokeNpm(t, { FAKE_SKIPS: '2' });
+        assert.equal(result.status, 0, result.stderr);
+        const installs = result.calls.filter((call) => /^npm (i|rm) /.test(call));
+        assert.deepEqual(installs, [
+          'npm i -g kbx-cli@1.2.3',
+          'npm rm -g kbx-cli',
+          'npm i -g kbx-cli@1.2.3',
+          'npm rm -g kbx-cli',
+          'npm i -g kbx-cli@1.2.3',
+        ]);
+        assert.equal(result.stderr.match(/npm left out kbx-linux-x64-gnu on try \d of 3, trying again/g).length, 2);
+        assert.match(result.stdout, /^installed kbx-cli 1\.2\.3 with kbx-linux-x64-gnu on try 3 of 3$/m);
+        assert.match(result.stdout, /kbx doctor, in the vault/);
+      });
+
+      it('gives up when the platform package never arrives', (t) => {
+        const result = smokeNpm(t, { FAKE_SKIPS: '3' });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /expected one platform package, found 0: none \(expected kbx-linux-x64-gnu\)/);
+        assert.equal(result.calls.filter((call) => call.startsWith('npm i ')).length, 3);
+        assert.doesNotMatch(result.stdout, /kbx doctor/);
+      });
+
+      it('does not install again for the wrong platform package', (t) => {
+        const result = smokeNpm(t, { FAKE_PLATFORMS: 'kbx-darwin-arm64' });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /expected kbx-linux-x64-gnu, found .*kbx-darwin-arm64$/m);
+        assert.equal(result.calls.filter((call) => /^npm (i|rm) /.test(call)).length, 1);
       });
 
       it('finishes the default before anything may install qmd', (t) => {

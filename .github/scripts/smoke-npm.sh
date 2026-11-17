@@ -29,16 +29,34 @@ for tool in kbx qmd; do
   fi
 done
 
-npm i -g "kbx-cli@$version"
+attempts=${KBX_SMOKE_INSTALL_ATTEMPTS:-5}
+delay=${KBX_SMOKE_INSTALL_SECONDS:-30}
 
-root=$(to_bash "$(npm root -g)")
-shopt -s nullglob
-platforms=()
-# The shim's own folder matches kbx-* too.
-for folder in "$root"/kbx-* "$root"/kbx-cli/node_modules/kbx-*; do
-  [[ $(basename "$folder") == kbx-cli ]] || platforms+=("$folder")
+# Sets $platforms to the platform packages npm installed.
+find_platforms() {
+  local root
+  root=$(to_bash "$(npm root -g)")
+  shopt -s nullglob
+  platforms=()
+  # The shim's own folder matches kbx-* too.
+  for folder in "$root"/kbx-* "$root"/kbx-cli/node_modules/kbx-*; do
+    [[ $(basename "$folder") == kbx-cli ]] || platforms+=("$folder")
+  done
+  shopt -u nullglob
+}
+
+# npm skips an optional dependency it can't fetch without failing, and for a
+# minute or so after a release it can miss one that npm view already shows. So
+# an install without any platform package is tried again, from scratch.
+for ((try = 1; ; try++)); do
+  npm i -g "kbx-cli@$version"
+  find_platforms
+  [[ ${#platforms[@]} -eq 0 && $try -lt $attempts ]] || break
+  echo "smoke-npm: npm left out $package on try $try of $attempts, trying again in ${delay}s" >&2
+  npm rm -g kbx-cli
+  sleep "$delay"
 done
-shopt -u nullglob
+
 if [[ ${#platforms[@]} -ne 1 ]]; then
   fail "expected one platform package, found ${#platforms[@]}: ${platforms[*]:-none} (expected $package)"
 fi
@@ -46,6 +64,7 @@ if [[ $(basename "${platforms[0]}") != "$package" ]]; then
   fail "expected $package, found ${platforms[0]}"
 fi
 echo "platform package: ${platforms[0]}"
+echo "installed kbx-cli $version with $package on try $try of $attempts"
 
 printed=$(kbx --version)
 [[ $printed == "kbx $version" ]] || fail "kbx --version printed $printed, not kbx $version"
